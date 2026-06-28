@@ -1,7 +1,8 @@
 // Icon metadata for search and categorization
 import { IconMetadata } from "@/types/icon";
 
-export const iconMetadata: Record<string, IconMetadata> = {  apikeyfun: {
+export const iconMetadata: Record<string, IconMetadata> = {
+  apikeyfun: {
     name: "apikeyfun",
     displayName: "APIKEY.FUN",
     category: "ai-provider",

@@ -96,4 +96,6 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run tests
+        env:
+          RUSTFLAGS: -C linker-features=-lld
         run: cargo test --manifest-path src-tauri/Cargo.toml

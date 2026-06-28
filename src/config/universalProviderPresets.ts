@@ -71,7 +71,8 @@ export const universalProviderPresets: UniversalProviderPreset[] = [
     websiteUrl: "https://puppyrouter.com",
     icon: "openai",
     iconColor: "#F59E0B",
-    description: "PuppyRouter 统一模型网关，面向 Claude Code、Codex 和 Gemini CLI 的一站式接入",
+    description:
+      "PuppyRouter 统一模型网关，面向 Claude Code、Codex 和 Gemini CLI 的一站式接入",
   },
 ];
 
