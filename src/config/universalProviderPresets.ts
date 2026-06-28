@@ -2,7 +2,7 @@
  * 统一供应商（Universal Provider）预设配置
  *
  * 统一供应商是跨应用共享的配置，修改后会自动同步到 Claude、Codex、Gemini 三个应用。
- * 适用于 NewAPI 等支持多种协议的 API 网关。
+ * 适用于 PuppyRouter 等支持多种协议的 API 网关。
  */
 
 import type {
@@ -37,9 +37,9 @@ export interface UniversalProviderPreset {
 }
 
 /**
- * NewAPI 默认模型配置
+ * PuppyRouter 默认模型配置
  */
-const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
+const PUPPYROUTER_DEFAULT_MODELS: UniversalProviderModels = {
   claude: {
     model: "claude-sonnet-4-6",
     haikuModel: "claude-haiku-4-5-20251001",
@@ -60,33 +60,18 @@ const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
  */
 export const universalProviderPresets: UniversalProviderPreset[] = [
   {
-    name: "NewAPI",
-    providerType: "newapi",
+    name: "PuppyRouter",
+    providerType: "puppyrouter",
     defaultApps: {
       claude: true,
       codex: true,
       gemini: true,
     },
-    defaultModels: NEWAPI_DEFAULT_MODELS,
-    websiteUrl: "https://www.newapi.pro",
-    icon: "newapi",
-    iconColor: "#00A67E",
-    description:
-      "NewAPI 是一个可自部署的 API 网关，支持 Anthropic、OpenAI、Gemini 等多种协议",
-  },
-  {
-    name: "自定义网关",
-    providerType: "custom_gateway",
-    defaultApps: {
-      claude: true,
-      codex: true,
-      gemini: true,
-    },
-    defaultModels: NEWAPI_DEFAULT_MODELS,
+    defaultModels: PUPPYROUTER_DEFAULT_MODELS,
+    websiteUrl: "https://puppyrouter.com",
     icon: "openai",
-    iconColor: "#6366F1",
-    description: "自定义配置的 API 网关",
-    isCustomTemplate: true,
+    iconColor: "#F59E0B",
+    description: "PuppyRouter 统一模型网关，面向 Claude Code、Codex 和 Gemini CLI 的一站式接入",
   },
 ];
 

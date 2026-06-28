@@ -1,15 +1,7 @@
 // Icon metadata for search and categorization
 import { IconMetadata } from "@/types/icon";
 
-export const iconMetadata: Record<string, IconMetadata> = {
-  aigocode: {
-    name: "aigocode",
-    displayName: "AIGoCode",
-    category: "ai-provider",
-    keywords: ["aigocode", "aigo", "code", "third-party"],
-    defaultColor: "#5B7FFF",
-  },
-  apikeyfun: {
+export const iconMetadata: Record<string, IconMetadata> = {  apikeyfun: {
     name: "apikeyfun",
     displayName: "APIKEY.FUN",
     category: "ai-provider",
@@ -24,21 +16,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     ],
     defaultColor: "#9C3F00",
   },
-  apinebula: {
-    name: "apinebula",
-    displayName: "APINebula",
-    category: "ai-provider",
-    keywords: [
-      "apinebula",
-      "api nebula",
-      "gateway",
-      "relay",
-      "claude",
-      "codex",
-      "gemini",
-    ],
-    defaultColor: "#C86F49",
-  },
   atlascloud: {
     name: "atlascloud",
     displayName: "AtlasCloud",
@@ -51,22 +28,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
       "anthropic",
       "codex",
       "claude",
-    ],
-    defaultColor: "#111111",
-  },
-  sudocode: {
-    name: "sudocode",
-    displayName: "SudoCode",
-    category: "ai-provider",
-    keywords: [
-      "sudocode",
-      "sudo code",
-      "gateway",
-      "relay",
-      "claude",
-      "codex",
-      "gemini",
-      "openclaw",
     ],
     defaultColor: "#111111",
   },
@@ -119,20 +80,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: [],
     defaultColor: "currentColor",
   },
-  huoshan: {
-    name: "huoshan",
-    displayName: "火山方舟",
-    category: "ai-provider",
-    keywords: ["huoshan", "volcengine", "ark", "agentplan", "byteplus"],
-    defaultColor: "#3370FF",
-  },
-  byteplus: {
-    name: "byteplus",
-    displayName: "BytePlus",
-    category: "ai-provider",
-    keywords: ["byteplus", "volcengine", "ark", "modelark"],
-    defaultColor: "#3370FF",
-  },
   ccsub: {
     name: "ccsub",
     displayName: "CCSub",
@@ -154,32 +101,11 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: ["anthropic"],
     defaultColor: "#D4915D",
   },
-  cherryin: {
-    name: "cherryin",
-    displayName: "CherryIN",
-    category: "ai-provider",
-    keywords: [
-      "cherryin",
-      "cherry",
-      "gateway",
-      "relay",
-      "newapi",
-      "claude",
-      "codex",
-    ],
-    defaultColor: "#FB6354",
-  },
   claudeapi: {
     name: "claudeapi",
     displayName: "ClaudeAPI",
     category: "ai-provider",
     keywords: ["claudeapi", "claude", "anthropic", "bedrock"],
-  },
-  claudecn: {
-    name: "claudecn",
-    displayName: "ClaudeCN",
-    category: "ai-provider",
-    keywords: ["claudecn", "claude", "enterprise"],
   },
   cloudflare: {
     name: "cloudflare",
@@ -201,13 +127,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     category: "other",
     keywords: [],
     defaultColor: "currentColor",
-  },
-  ctok: {
-    name: "ctok",
-    displayName: "CTok",
-    category: "ai-provider",
-    keywords: ["ctok", "ai", "programming"],
-    defaultColor: "#3B82F6",
   },
   cubence: {
     name: "cubence",
@@ -384,13 +303,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: ["hermes", "agent", "nous", "nousresearch"],
     defaultColor: "#000000",
   },
-  packycode: {
-    name: "packycode",
-    displayName: "PackyCode",
-    category: "ai-provider",
-    keywords: ["packycode", "packy", "packyapi"],
-    defaultColor: "currentColor",
-  },
   pateway: {
     name: "pateway",
     displayName: "PatewayAI",
@@ -431,13 +343,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     category: "ai-provider",
     keywords: ["hunyuan"],
     defaultColor: "#00A4FF",
-  },
-  unity2: {
-    name: "unity2",
-    displayName: "Unity2.ai",
-    category: "ai-provider",
-    keywords: ["unity2", "aggregator", "relay", "claude", "codex", "gateway"],
-    defaultColor: "#000000",
   },
   vercel: {
     name: "vercel",
@@ -487,46 +392,6 @@ export const iconMetadata: Record<string, IconMetadata> = {
     category: "ai-provider",
     keywords: ["openrouter", "router", "aggregator"],
     defaultColor: "#6566F1",
-  },
-  pipellm: {
-    name: "pipellm",
-    displayName: "PIPELLM",
-    category: "ai-provider",
-    keywords: ["pipellm", "pipe"],
-    defaultColor: "currentColor",
-  },
-  runapi: {
-    name: "runapi",
-    displayName: "RunAPI",
-    category: "ai-provider",
-    keywords: ["runapi", "run", "aggregator", "gateway"],
-  },
-  relaxcode: {
-    name: "relaxcode",
-    displayName: "RelaxyCode",
-    category: "ai-provider",
-    keywords: ["relaxycode", "relaxcode", "relax"],
-  },
-  eflowcode: {
-    name: "eflowcode",
-    displayName: "E-FlowCode",
-    category: "ai-provider",
-    keywords: ["eflowcode", "e-flowcode", "flow"],
-    defaultColor: "currentColor",
-  },
-  shengsuanyun: {
-    name: "shengsuanyun",
-    displayName: "Shengsuanyun",
-    category: "ai-provider",
-    keywords: ["shengsuanyun", "shengsuanyun"],
-    defaultColor: "currentColor",
-  },
-  lioncc: {
-    name: "lioncc",
-    displayName: "LionCC",
-    category: "ai-provider",
-    keywords: ["lioncc", "lion"],
-    defaultColor: "#F9DA3C",
   },
   longcat: {
     name: "longcat",
