@@ -172,7 +172,8 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    }
+    },
+    "addFooterHint": "Select a preset, then fill in the API key and other fields below"
   },
   "claudeCode": {
     "needsRouting": "Needs Routing",
@@ -753,7 +754,7 @@
     "appConfigDirDescription": "Customize the storage location for CC Switch configuration (point to cloud sync folder to enable config sync)",
     "browsePlaceholderApp": "e.g., C:\\Users\\Administrator\\.cc-switch",
     "claudeConfigDir": "Claude Code Configuration Directory",
-    "claudeConfigDirDescription": "Override Claude configuration directory (settings.json) and keep claude.json (MCP) alongside it.",
+    "claudeConfigDirDescription": "Override Claude configuration directory (settings.json). Custom directories store .claude.json (MCP) inside the directory; the default ~/.claude directory keeps Claude Code's split ~/.claude.json path.",
     "codexConfigDir": "Codex Configuration Directory",
     "codexConfigDirDescription": "Override Codex configuration directory.",
     "geminiConfigDir": "Gemini Configuration Directory",
@@ -1092,7 +1093,14 @@
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
-    "fetchModelsTimeout": "Request timed out, please check network connection"
+    "fetchModelsTimeout": "Request timed out, please check network connection",
+    "localProxyRequestOverrides": "Local proxy request overrides",
+    "localProxyRequestOverridesHint": "Only takes effect after local routing/proxy takeover; applied to the transformed upstream request.",
+    "localProxyRequestOverridesInvalid": "Local proxy request overrides format error: {{error}}",
+    "localProxyHeaderOverrides": "Header overrides",
+    "localProxyHeaderOverridesInvalidDetail": "Header overrides format error: {{error}}",
+    "localProxyBodyOverrides": "Body overrides",
+    "localProxyBodyOverridesInvalidDetail": "Body overrides format error: {{error}}"
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1223,8 +1231,8 @@
     "modelNameHint": "Specify the model to use, will be auto-updated in config.toml",
     "modelName": "Model Name",
     "localRoutingToggle": "Needs Local Routing",
-    "localRoutingOffHint": "If your provider is not native OpenAI Responses API, or the model name is not Codex's default GPT series, please enable this switch.",
-    "localRoutingOnHint": "Codex currently only natively supports OpenAI Responses API and GPT series models. If your provider uses the Chat Completions protocol or non-GPT models (such as DeepSeek or Kimi), enable this switch and keep local routing running while in use.",
+    "localRoutingOffHint": "Keep off when the provider's model names need no rewriting and you don't need custom names shown in the /model menu; enable it when you need model mapping.",
+    "localRoutingOnHint": "When on, configure model mapping below: show custom model names in Codex's /model menu and map requests to the real upstream model.",
     "upstreamModelName": "Upstream Model Name",
     "upstreamModelNameHint": "For Chat format, enter the real upstream model here; routing converts Codex Responses requests to Chat Completions while keeping this model.",
     "modelNamePlaceholder": "e.g., gpt-5-codex",
@@ -1252,7 +1260,11 @@
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
     "reasoningGroupTitle": "Reasoning Capability",
     "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
-    "advancedSectionHint": "Includes local routing, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models."
+    "advancedSectionHint": "Includes local routing, upstream format, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models.",
+    "upstreamFormatLabel": "Upstream Format",
+    "upstreamFormatHint": "Pick Responses when your provider is natively a Responses API (direct, no format conversion); pick Chat when it uses the Chat Completions protocol (converts to Chat Completions).",
+    "upstreamFormatChat": "Chat Completions (convert)",
+    "upstreamFormatResponses": "Responses (native)"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1493,7 +1505,9 @@
     "modelsDevTruncated": "Showing first {{shown}} of {{total}} results — refine your search",
     "modelsDevDefaultHint": "Showing the {{shown}} most recently released models (of {{total}}) — type to search all",
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
-    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)"
+    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
+    "liveEndTime": "End time follows current time",
+    "liveEndTimeNow": "Now"
   },
   "usageScript": {
     "title": "Configure Usage Query",
@@ -1571,7 +1585,11 @@
     "fieldExtra": "• extra: String, custom display text",
     "tip1": "• Variables {{apiKey}} and {{baseUrl}} are automatically replaced",
     "tip2": "• Extractor function runs in sandbox environment, supports ES2020+ syntax",
-    "tip3": "• Entire config must be wrapped in () to form object literal expression"
+    "tip3": "• Entire config must be wrapped in () to form object literal expression",
+    "accessKeyId": "AccessKey ID",
+    "secretAccessKey": "SecretAccessKey",
+    "volcengineAkSkHint": "Volcengine usage query needs an account-level AccessKey ID / Secret (different from the inference API key). Create them in the Volcengine console via the top-right account menu → 'API Access Keys'.",
+    "volcengineKeyConsoleLink": "Create keys at:"
   },
   "errors": {
     "usage_query_failed": "Usage query failed",
@@ -2189,7 +2207,8 @@
       "successSingle": "Skill {{name}} installed",
       "successMultiple": "Successfully installed {{count}} skills",
       "noSkillsFound": "No skills found in ZIP file (requires SKILL.md file)"
-    }
+    },
+    "unmanagedAvailable": "Skills available to import"
   },
   "deeplink": {
     "confirmImport": "Confirm Import Provider",
@@ -2831,6 +2850,24 @@
     "expired": "Session expired",
     "expiredHint": "Run the {{tool}} command to refresh your login",
     "queryFailed": "Query failed",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "monthly": "Monthly"
+  },
+  "dbUpgrade": {
+    "title": "Database version is too new",
+    "description": "This database was created by a newer version of CC Switch. Upgrade the app to continue. Upgrading will not delete your data.",
+    "versionInfo": "Database v{{db}} · App supports v{{supported}}",
+    "dbPath": "Database file",
+    "checking": "Checking for available updates…",
+    "updateAvailable": "Version v{{version}} is available; upgrading will let you continue.",
+    "incompatibleTitle": "Upgrading won't fix this",
+    "incompatibleDescription": "You are already on the latest version, but the database (v{{db}}) is still newer than this app supports (v{{supported}}). It was likely created by a third-party client or a newer build, so upgrading the official app cannot make it compatible.",
+    "preparing": "Preparing update…",
+    "downloading": "Downloading update…",
+    "upgradeNow": "Upgrade app",
+    "retry": "Retry upgrade",
+    "openReleases": "Open releases page",
+    "openConfigDir": "Open config folder",
+    "quit": "Quit"
   }
 }
