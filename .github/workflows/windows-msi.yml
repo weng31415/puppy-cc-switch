@@ -1,0 +1,117 @@
+name: Windows MSI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows MSI (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: x64
+            os: windows-2022
+            arch: x64
+            target: ""
+            target_root: src-tauri/target/release
+            suffix: ""
+          - label: arm64
+            os: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+            target_root: src-tauri/target/aarch64-pc-windows-msvc/release
+            suffix: -arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Windows ARM64 target
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Setup pnpm
+        if: matrix.arch != 'arm64'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Setup pnpm (Windows ARM64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          corepack enable
+          corepack prepare pnpm@10.12.3 --activate
+          node --version
+          pnpm --version
+
+      - name: Setup LLVM for Windows ARM64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmRoot = 'C:\Program Files\LLVM'
+          if (-not (Test-Path $llvmRoot)) {
+            throw "LLVM not found at $llvmRoot"
+          }
+          $llvmBin = Join-Path $llvmRoot 'bin'
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CLANG_PATH=$(Join-Path $llvmBin 'clang.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build MSI
+        shell: pwsh
+        env:
+          WINDOWS_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_TARGET)) {
+            pnpm tauri build --bundles msi
+          } else {
+            pnpm tauri build --target $env:WINDOWS_TARGET --bundles msi
+          }
+
+      - name: Collect MSI
+        shell: pwsh
+        env:
+          TARGET_ROOT: ${{ matrix.target_root }}
+          ASSET_SUFFIX: ${{ matrix.suffix }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $package = Get-Content package.json | ConvertFrom-Json
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $version = "v$($package.version)-$shortSha"
+          $msi = Get-ChildItem -Path (Join-Path $env:TARGET_ROOT 'bundle/msi') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $msi) {
+            throw "No MSI found under $env:TARGET_ROOT"
+          }
+          $dest = "PuppyRouter-App-$version-Windows$env:ASSET_SUFFIX.msi"
+          Copy-Item $msi.FullName (Join-Path release-assets $dest)
+          Get-ChildItem release-assets
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-${{ matrix.arch }}
+          path: release-assets/*.msi
+          if-no-files-found: error
