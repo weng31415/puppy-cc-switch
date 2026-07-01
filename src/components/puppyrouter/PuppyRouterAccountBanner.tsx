@@ -34,7 +34,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -619,12 +618,13 @@ export function PuppyRouterAccountBanner({
             )}
           </div>
 
-          <DialogFooter>
+          <div className="flex flex-col-reverse items-stretch gap-2 border-t border-border-default bg-muted/20 px-6 py-5">
             <Button
               type="button"
               variant="ghost"
               onClick={() => setIsLoginOpen(false)}
               disabled={isStartingLogin || isCopyingLoginLink}
+              className="w-full"
             >
               {t("common.cancel")}
             </Button>
@@ -633,6 +633,7 @@ export function PuppyRouterAccountBanner({
               variant="outline"
               onClick={() => void handleCopyLoginLink()}
               disabled={isStartingLogin || isCopyingLoginLink}
+              className="w-full"
             >
               {isCopyingLoginLink ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -645,6 +646,7 @@ export function PuppyRouterAccountBanner({
               type="button"
               onClick={() => void handleStartBrowserLogin()}
               disabled={isStartingLogin || isCopyingLoginLink}
+              className="w-full"
             >
               {isStartingLogin ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -657,7 +659,7 @@ export function PuppyRouterAccountBanner({
                 ? t("puppyrouterAccount.openBrowserAgain")
                 : t("puppyrouterAccount.login")}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </section>
