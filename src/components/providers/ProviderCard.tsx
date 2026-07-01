@@ -26,6 +26,10 @@ import {
 } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import {
+  getLockedProviderRank,
+  isLockedProvider,
+} from "@/utils/lockedProviders";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -192,6 +196,8 @@ export function ProviderCard({
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
+  const isLocked = isLockedProvider(provider, appId);
+  const isSortLocked = getLockedProviderRank(provider, appId) !== null;
   const supportsOfficialSubscription =
     isOfficial && ["claude", "codex", "gemini"].includes(appId);
   const isOfficialSubscriptionUsage =
@@ -269,7 +275,7 @@ export function ProviderCard({
 
   // 判断是否是"当前使用中"的供应商
   // - OMO/OMO Slim 供应商：使用 isCurrent
-  // - OpenClaw：使用默认模型归属的 provider 作为当前项（蓝色边框）
+  // - OpenClaw：使用默认模型归属的 provider 作为当前项（主色边框）
   // - OpenCode（非 OMO）：不存在"当前"概念，返回 false
   // - 故障转移模式：代理实际使用的供应商（activeProviderId）
   // - 普通模式：isCurrent
@@ -285,7 +291,7 @@ export function ProviderCard({
 
   const shouldUseGreen = !isAnyOmo && isProxyTakeover && isActiveProvider;
   const hasPersistentConfigHighlight = isAdditiveMode && isInConfig;
-  const shouldUseBlue =
+  const shouldUsePrimary =
     (isAnyOmo && isActiveProvider) ||
     (!isAnyOmo &&
       !isProxyTakeover &&
@@ -301,7 +307,7 @@ export function ProviderCard({
           : "hover:border-border-active",
         shouldUseGreen &&
           "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
-        shouldUseBlue && "border-blue-500/60 shadow-sm shadow-blue-500/10",
+        shouldUsePrimary && "border-primary/60 shadow-sm shadow-primary/10",
         !(isActiveProvider || hasPersistentConfigHighlight) &&
           "hover:shadow-sm",
         dragHandleProps?.isDragging &&
@@ -312,8 +318,8 @@ export function ProviderCard({
         className={cn(
           "absolute inset-0 bg-gradient-to-r to-transparent transition-opacity duration-500 pointer-events-none",
           shouldUseGreen && "from-emerald-500/10",
-          shouldUseBlue && "from-blue-500/10",
-          !shouldUseGreen && !shouldUseBlue && "from-primary/10",
+          shouldUsePrimary && "from-primary/10",
+          !shouldUseGreen && !shouldUsePrimary && "from-primary/10",
           isActiveProvider || hasPersistentConfigHighlight
             ? "opacity-100"
             : "opacity-0",
@@ -327,10 +333,13 @@ export function ProviderCard({
               "-ml-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing p-1.5",
               "text-muted-foreground/50 hover:text-muted-foreground transition-colors",
               dragHandleProps?.isDragging && "cursor-grabbing",
+              isSortLocked &&
+                "cursor-not-allowed opacity-40 hover:text-muted-foreground/50",
             )}
             aria-label={t("provider.dragHandle")}
-            {...(dragHandleProps?.attributes ?? {})}
-            {...(dragHandleProps?.listeners ?? {})}
+            disabled={isSortLocked}
+            {...(isSortLocked ? {} : (dragHandleProps?.attributes ?? {}))}
+            {...(isSortLocked ? {} : (dragHandleProps?.listeners ?? {}))}
           >
             <GripVertical className="h-4 w-4" />
           </button>
@@ -351,13 +360,13 @@ export function ProviderCard({
               </h3>
 
               {isOmo && (
-                <span className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                   OMO
                 </span>
               )}
 
               {isOmoSlim && (
-                <span className="inline-flex items-center rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                   Slim
                 </span>
               )}
@@ -365,7 +374,7 @@ export function ProviderCard({
               {appId === "claude-desktop" &&
                 provider.category !== "official" &&
                 provider.meta?.claudeDesktopMode === "proxy" && (
-                  <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                  <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                     {t("claudeDesktop.modeProxy", {
                       defaultValue: "需要路由",
                     })}
@@ -376,7 +385,7 @@ export function ProviderCard({
                 provider.category !== "official" &&
                 provider.meta?.apiFormat &&
                 provider.meta.apiFormat !== "anthropic" && (
-                  <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                  <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                     {t("claudeCode.needsRouting", {
                       defaultValue: "需要路由",
                     })}
@@ -384,7 +393,7 @@ export function ProviderCard({
                 )}
 
               {codexNeedsRouting && (
-                <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                   {t("codex.needsRouting", {
                     defaultValue: "需要路由",
                   })}
@@ -453,7 +462,7 @@ export function ProviderCard({
                 className={cn(
                   "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
                   isClickableUrl
-                    ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
+                    ? "text-primary transition-colors hover:text-primary/85 hover:underline cursor-pointer"
                     : "text-muted-foreground cursor-default",
                 )}
                 title={displayUrl}
@@ -551,7 +560,7 @@ export function ProviderCard({
                 // 连通检测对第三方/自定义/Copilot/Codex-OAuth 供应商开放（这些正是旧的
                 // 真实请求探测会误报、而可达性探测能正确处理的对象）。官方供应商
                 // (category === "official") 一律隐藏：它们 base_url 故意留空、走客户端
-                // 默认/OAuth 端点，cc-switch 没有可靠的探测目标（尤其 Claude Desktop
+                // 默认/OAuth 端点，puppyrouter-app 没有可靠的探测目标（尤其 Claude Desktop
                 // 官方是原生 1P 模式，根本不在请求路径上）。
                 onTest && provider.category !== "official"
                   ? () => onTest(provider)
@@ -580,6 +589,7 @@ export function ProviderCard({
               // OpenClaw: default model
               isDefaultModel={isDefaultModel}
               onSetAsDefault={onSetAsDefault}
+              isLocked={isLocked}
             />
           </div>
         </div>

@@ -15,7 +15,10 @@ use serde_json::Value;
 use crate::app_config::AppType;
 use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
-use crate::provider::{Provider, UsageResult};
+use crate::provider::{
+    ClaudeDesktopMode, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, Provider,
+    ProviderMeta, UniversalProviderApps, UsageResult,
+};
 use crate::services::mcp::McpService;
 use crate::settings::CustomEndpoint;
 use crate::store::AppState;
@@ -86,6 +89,38 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
 
 /// Provider business logic service
 pub struct ProviderService;
+
+const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
+const PUPPYROUTER_NAME: &str = "PuppyRouter";
+const PUPPYROUTER_BASE_URL: &str = "https://puppyrouter.com";
+const PUPPYROUTER_PROVIDER_TYPE: &str = "puppyrouter";
+
+fn is_restricted_provider_app(app_type: &AppType) -> bool {
+    matches!(
+        app_type,
+        AppType::Claude | AppType::ClaudeDesktop | AppType::Codex | AppType::Gemini
+    )
+}
+
+fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
+    match app_type {
+        AppType::Claude => Some("universal-claude-puppyrouter"),
+        AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
+        AppType::Codex => Some("universal-codex-puppyrouter"),
+        AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        _ => None,
+    }
+}
+
+fn official_seed_id_for_app(app_type: &AppType) -> Option<&'static str> {
+    match app_type {
+        AppType::Claude => Some("claude-official"),
+        AppType::ClaudeDesktop => Some(crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID),
+        AppType::Codex => Some("codex-official"),
+        AppType::Gemini => Some("gemini-official"),
+        _ => None,
+    }
+}
 
 /// Result of a provider switch operation, including any non-fatal warnings
 #[derive(Debug, serde::Serialize, Default)]
@@ -1507,6 +1542,164 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    fn is_puppyrouter_provider_for_app(app_type: &AppType, provider: &Provider) -> bool {
+        puppyrouter_provider_id_for_app(app_type).is_some_and(|id| provider.id == id)
+    }
+
+    fn is_locked_provider_for_app(app_type: &AppType, provider: &Provider) -> bool {
+        crate::database::is_official_seed_id(&provider.id)
+            || Self::is_puppyrouter_provider_for_app(app_type, provider)
+    }
+
+    fn is_allowed_provider_for_app(app_type: &AppType, provider: &Provider) -> bool {
+        if !is_restricted_provider_app(app_type) {
+            return true;
+        }
+        Self::is_locked_provider_for_app(app_type, provider)
+    }
+
+    fn normalize_locked_provider_for_app(app_type: &AppType, provider: &mut Provider) {
+        if Self::is_puppyrouter_provider_for_app(app_type, provider) {
+            provider.name = PUPPYROUTER_NAME.to_string();
+            provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
+            provider.category = Some("aggregator".to_string());
+            provider.sort_index = Some(0);
+            provider.icon = Some("openai".to_string());
+            provider.icon_color = Some("#F59E0B".to_string());
+        } else if crate::database::is_official_seed_id(&provider.id) {
+            provider.category = Some("official".to_string());
+            provider.sort_index = Some(1);
+        }
+    }
+
+    fn puppyrouter_universal_provider(
+        existing: Option<crate::provider::UniversalProvider>,
+    ) -> crate::provider::UniversalProvider {
+        let mut provider = existing.unwrap_or_else(|| {
+            crate::provider::UniversalProvider::new(
+                PUPPYROUTER_UNIVERSAL_ID.to_string(),
+                PUPPYROUTER_NAME.to_string(),
+                PUPPYROUTER_PROVIDER_TYPE.to_string(),
+                PUPPYROUTER_BASE_URL.to_string(),
+                String::new(),
+            )
+        });
+
+        provider.id = PUPPYROUTER_UNIVERSAL_ID.to_string();
+        provider.name = PUPPYROUTER_NAME.to_string();
+        provider.provider_type = PUPPYROUTER_PROVIDER_TYPE.to_string();
+        provider.base_url = PUPPYROUTER_BASE_URL.to_string();
+        provider.apps = UniversalProviderApps {
+            claude: true,
+            codex: true,
+            gemini: true,
+        };
+        provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
+        provider.icon = Some("openai".to_string());
+        provider.icon_color = Some("#F59E0B".to_string());
+        provider.sort_index = Some(0);
+
+        let models = &mut provider.models;
+        let claude = models.claude.get_or_insert_with(ClaudeModelConfig::default);
+        claude
+            .model
+            .get_or_insert_with(|| "claude-sonnet-4-6".to_string());
+        claude
+            .haiku_model
+            .get_or_insert_with(|| "claude-haiku-4-5-20251001".to_string());
+        claude
+            .sonnet_model
+            .get_or_insert_with(|| "claude-sonnet-4-6".to_string());
+        claude
+            .opus_model
+            .get_or_insert_with(|| "claude-opus-4-8".to_string());
+
+        let codex = models.codex.get_or_insert_with(CodexModelConfig::default);
+        codex.model.get_or_insert_with(|| "gpt-5.5".to_string());
+        codex
+            .reasoning_effort
+            .get_or_insert_with(|| "high".to_string());
+
+        let gemini = models.gemini.get_or_insert_with(GeminiModelConfig::default);
+        gemini
+            .model
+            .get_or_insert_with(|| "gemini-3.5-flash".to_string());
+
+        provider
+    }
+
+    fn puppyrouter_claude_desktop_provider(
+        universal: &crate::provider::UniversalProvider,
+    ) -> Option<Provider> {
+        let mut provider = universal.to_claude_provider()?;
+        provider.id = "universal-claude-desktop-puppyrouter".to_string();
+        provider.name = PUPPYROUTER_NAME.to_string();
+        provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
+        provider.category = Some("aggregator".to_string());
+        provider.sort_index = Some(0);
+        let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+        meta.claude_desktop_mode = Some(ClaudeDesktopMode::Direct);
+        Some(provider)
+    }
+
+    fn enforce_locked_provider_sorting_for_app(
+        state: &AppState,
+        app_type: &AppType,
+    ) -> Result<(), AppError> {
+        if !is_restricted_provider_app(app_type) {
+            return Ok(());
+        }
+
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        for mut provider in providers.into_values() {
+            let previous_sort = provider.sort_index;
+            Self::normalize_locked_provider_for_app(app_type, &mut provider);
+            if provider.sort_index != previous_sort {
+                state.db.save_provider(app_type.as_str(), &provider)?;
+            } else if Self::is_puppyrouter_provider_for_app(app_type, &provider)
+                || crate::database::is_official_seed_id(&provider.id)
+            {
+                state.db.save_provider(app_type.as_str(), &provider)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn ensure_locked_puppyrouter_defaults(state: &AppState) -> Result<(), AppError> {
+        for app_type in [
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Codex,
+            AppType::Gemini,
+        ] {
+            if let Some(seed_id) = official_seed_id_for_app(&app_type) {
+                state.db.ensure_official_seed_by_id(seed_id, app_type.clone())?;
+            }
+        }
+
+        let existing = state.db.get_universal_provider(PUPPYROUTER_UNIVERSAL_ID)?;
+        let universal = Self::puppyrouter_universal_provider(existing);
+        state.db.save_universal_provider(&universal)?;
+        Self::sync_universal_to_apps(state, PUPPYROUTER_UNIVERSAL_ID)?;
+
+        if let Some(provider) = Self::puppyrouter_claude_desktop_provider(&universal) {
+            state
+                .db
+                .save_provider(AppType::ClaudeDesktop.as_str(), &provider)?;
+        }
+
+        for app_type in [
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Codex,
+            AppType::Gemini,
+        ] {
+            Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
+        }
+
+        Ok(())
+    }
+
     fn normalize_usage_script_credential_overrides(app_type: &AppType, provider: &mut Provider) {
         let current_credentials = provider.resolve_usage_credentials(app_type);
 
@@ -1578,7 +1771,14 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
-        state.db.get_all_providers(app_type.as_str())
+        if is_restricted_provider_app(&app_type) {
+            Self::ensure_locked_puppyrouter_defaults(state)?;
+        }
+        let mut providers = state.db.get_all_providers(app_type.as_str())?;
+        if is_restricted_provider_app(&app_type) {
+            providers.retain(|_, provider| Self::is_allowed_provider_for_app(&app_type, provider));
+        }
+        Ok(providers)
     }
 
     /// Get current provider ID
@@ -1605,6 +1805,16 @@ impl ProviderService {
         add_to_live: bool,
     ) -> Result<bool, AppError> {
         let mut provider = provider;
+        if is_restricted_provider_app(&app_type) {
+            Self::normalize_locked_provider_for_app(&app_type, &mut provider);
+            if !Self::is_allowed_provider_for_app(&app_type, &provider) {
+                return Err(AppError::localized(
+                    "provider.locked.only_official_puppyrouter",
+                    "当前版本仅允许保留 Official 和 PuppyRouter 供应商。",
+                    "This build only allows Official and PuppyRouter providers.",
+                ));
+            }
+        }
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
@@ -1660,6 +1870,23 @@ impl ProviderService {
         let existing_provider = state
             .db
             .get_provider_by_id(&original_id, app_type.as_str())?;
+        if is_restricted_provider_app(&app_type) {
+            if provider_id_changed {
+                return Err(AppError::localized(
+                    "provider.locked.key_change_blocked",
+                    "固定供应商的标识不可修改。",
+                    "Locked provider IDs cannot be changed.",
+                ));
+            }
+            Self::normalize_locked_provider_for_app(&app_type, &mut provider);
+            if !Self::is_allowed_provider_for_app(&app_type, &provider) {
+                return Err(AppError::localized(
+                    "provider.locked.only_official_puppyrouter",
+                    "当前版本仅允许保留 Official 和 PuppyRouter 供应商。",
+                    "This build only allows Official and PuppyRouter providers.",
+                ));
+            }
+        }
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
@@ -1858,6 +2085,18 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        if is_restricted_provider_app(&app_type) {
+            if let Some(provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
+                if Self::is_locked_provider_for_app(&app_type, &provider) {
+                    return Err(AppError::localized(
+                        "provider.locked.cannot_delete",
+                        "Official 和 PuppyRouter 供应商不可删除。",
+                        "Official and PuppyRouter providers cannot be deleted.",
+                    ));
+                }
+            }
+        }
+
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2633,10 +2872,18 @@ impl ProviderService {
 
         for update in updates {
             if let Some(provider) = providers.get_mut(&update.id) {
-                provider.sort_index = Some(update.sort_index);
+                if is_restricted_provider_app(&app_type)
+                    && Self::is_locked_provider_for_app(&app_type, provider)
+                {
+                    Self::normalize_locked_provider_for_app(&app_type, provider);
+                } else {
+                    provider.sort_index = Some(update.sort_index.max(2));
+                }
                 state.db.save_provider(app_type.as_str(), provider)?;
             }
         }
+
+        Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
 
         Ok(true)
     }
@@ -3076,7 +3323,12 @@ impl ProviderService {
     pub fn list_universal(
         state: &AppState,
     ) -> Result<HashMap<String, UniversalProvider>, AppError> {
-        state.db.get_all_universal_providers()
+        Self::ensure_locked_puppyrouter_defaults(state)?;
+        let providers = state.db.get_all_universal_providers()?;
+        Ok(providers
+            .into_iter()
+            .filter(|(id, _)| id == PUPPYROUTER_UNIVERSAL_ID)
+            .collect())
     }
 
     /// 获取单个统一供应商
@@ -3084,6 +3336,7 @@ impl ProviderService {
         state: &AppState,
         id: &str,
     ) -> Result<Option<UniversalProvider>, AppError> {
+        Self::ensure_locked_puppyrouter_defaults(state)?;
         state.db.get_universal_provider(id)
     }
 
@@ -3092,6 +3345,14 @@ impl ProviderService {
         state: &AppState,
         provider: UniversalProvider,
     ) -> Result<bool, AppError> {
+        if provider.id != PUPPYROUTER_UNIVERSAL_ID {
+            return Err(AppError::localized(
+                "provider.locked.only_puppyrouter_universal",
+                "当前版本仅允许配置 PuppyRouter 统一供应商。",
+                "This build only allows the PuppyRouter universal provider.",
+            ));
+        }
+        let provider = Self::puppyrouter_universal_provider(Some(provider));
         // 保存统一供应商
         state.db.save_universal_provider(&provider)?;
 
@@ -3100,6 +3361,13 @@ impl ProviderService {
 
     /// 删除统一供应商
     pub fn delete_universal(state: &AppState, id: &str) -> Result<bool, AppError> {
+        if id == PUPPYROUTER_UNIVERSAL_ID {
+            return Err(AppError::localized(
+                "provider.locked.cannot_delete",
+                "Official 和 PuppyRouter 供应商不可删除。",
+                "Official and PuppyRouter providers cannot be deleted.",
+            ));
+        }
         // 获取统一供应商（用于删除生成的子供应商）
         let provider = state.db.get_universal_provider(id)?;
 
@@ -3127,6 +3395,13 @@ impl ProviderService {
 
     /// 同步统一供应商到各应用
     pub fn sync_universal_to_apps(state: &AppState, id: &str) -> Result<bool, AppError> {
+        if id != PUPPYROUTER_UNIVERSAL_ID {
+            return Err(AppError::localized(
+                "provider.locked.only_puppyrouter_universal",
+                "当前版本仅允许配置 PuppyRouter 统一供应商。",
+                "This build only allows the PuppyRouter universal provider.",
+            ));
+        }
         let provider = state
             .db
             .get_universal_provider(id)?
@@ -3173,6 +3448,21 @@ impl ProviderService {
         } else {
             let gemini_id = format!("universal-gemini-{id}");
             let _ = state.db.delete_provider("gemini", &gemini_id);
+        }
+
+        if let Some(desktop_provider) = Self::puppyrouter_claude_desktop_provider(&provider) {
+            state
+                .db
+                .save_provider(AppType::ClaudeDesktop.as_str(), &desktop_provider)?;
+        }
+
+        for app_type in [
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Codex,
+            AppType::Gemini,
+        ] {
+            Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
         }
 
         Ok(true)

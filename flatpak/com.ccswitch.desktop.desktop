@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=CC Switch
+Name=puppyrouter app
 Comment=All-in-One Assistant for Claude Code, Codex & Gemini CLI
-Exec=cc-switch
+Exec=puppyrouter-app
 Icon=com.ccswitch.desktop
 Terminal=false
 Categories=Utility;Development;

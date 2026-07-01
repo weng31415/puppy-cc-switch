@@ -78,13 +78,21 @@ impl TrayTexts {
                 quit: "退出",
                 _auto_label: "自動 (故障轉移)",
             },
-            _ => Self {
+            "zh" => Self {
                 show_main: "打开主界面",
                 open_website: "打开官方网站",
                 no_providers_label: "(无供应商)",
                 lightweight_mode: "轻量模式",
                 quit: "退出",
                 _auto_label: "自动 (故障转移)",
+            },
+            _ => Self {
+                show_main: "Open main window",
+                open_website: "Open Official Website",
+                no_providers_label: "(no providers)",
+                lightweight_mode: "Lightweight Mode",
+                quit: "Quit",
+                _auto_label: "Auto (Failover)",
             },
         }
     }
@@ -101,7 +109,7 @@ pub struct TrayAppSection {
 
 /// Auto 菜单项后缀
 pub const AUTO_SUFFIX: &str = "auto";
-pub const TRAY_ID: &str = "cc-switch";
+pub const TRAY_ID: &str = "puppyrouter-app";
 
 pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
     TrayAppSection {
@@ -493,7 +501,7 @@ pub fn create_tray_menu(
     app_state: &AppState,
 ) -> Result<Menu<tauri::Wry>, AppError> {
     let app_settings = crate::settings::get_settings();
-    let tray_texts = TrayTexts::from_language(app_settings.language.as_deref().unwrap_or("zh"));
+    let tray_texts = TrayTexts::from_language(app_settings.language.as_deref().unwrap_or("en"));
 
     // Get visible apps setting, default to all visible
     let visible_apps = app_settings.visible_apps.unwrap_or_default();
@@ -727,7 +735,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             }
         }
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
+            if let Err(e) = app.opener().open_url("https://puppyrouter.com", None::<String>) {
                 log::error!("打开官方网站失败: {e}");
             }
         }
@@ -887,7 +895,7 @@ mod tests {
 
     #[test]
     fn tray_id_is_unique_to_app() {
-        assert_eq!(TRAY_ID, "cc-switch");
+        assert_eq!(TRAY_ID, "puppyrouter-app");
         assert_ne!(TRAY_ID, "main");
     }
 

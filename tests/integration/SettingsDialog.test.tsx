@@ -155,7 +155,7 @@ describe("SettingsPage integration", () => {
     const appInput = await screen.findByPlaceholderText(
       "settings.browsePlaceholderApp",
     );
-    expect((appInput as HTMLInputElement).value).toBe("/home/mock/.cc-switch");
+    expect((appInput as HTMLInputElement).value).toBe("/home/mock/.puppyrouter-app");
   });
 
   it("imports configuration and triggers success callback", async () => {
@@ -226,15 +226,15 @@ describe("SettingsPage integration", () => {
     const appInput = (await screen.findByPlaceholderText(
       "settings.browsePlaceholderApp",
     )) as HTMLInputElement;
-    expect(appInput.value).toBe("/home/mock/.cc-switch");
+    expect(appInput.value).toBe("/home/mock/.puppyrouter-app");
 
     fireEvent.click(browseButtons[0]);
     await waitFor(() =>
-      expect(appInput.value).toBe("/home/mock/.cc-switch/picked"),
+      expect(appInput.value).toBe("/home/mock/.puppyrouter-app/picked"),
     );
 
     fireEvent.click(resetButtons[0]);
-    await waitFor(() => expect(appInput.value).toBe("/home/mock/.cc-switch"));
+    await waitFor(() => expect(appInput.value).toBe("/home/mock/.puppyrouter-app"));
 
     const claudeInput = (await screen.findByPlaceholderText(
       "settings.browsePlaceholderClaude",

@@ -1,27 +1,27 @@
 <div align="center">
 
-# CC Switch
+# puppyrouter app
 
 ### Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw 和 Hermes Agent 的全方位管理工具
 
-[![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Version](https://img.shields.io/github/v/release/farion1231/puppyrouter-app?color=blue&label=version)](https://github.com/farion1231/puppyrouter-app/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/puppyrouter-app/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/farion1231/puppyrouter-app/total)](https://github.com/farion1231/puppyrouter-app/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fpuppyrouter-app | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-### 🌐 唯一官方网站：**[ccswitch.io](https://ccswitch.io)**
+### 🌐 唯一官方网站：**[puppyrouter.com](https://puppyrouter.com)**
 
 [English](README.md) | 中文 | [日本語](README_JA.md) | [Deutsch](README_DE.md) | [更新日志](CHANGELOG.md)
 
 </div>
 
-## 为什么选择 CC Switch？
+## 为什么选择 puppyrouter app？
 
 现代 AI 编程依赖于 Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw 和 Hermes 等工具——但每个工具都有自己的配置格式。切换 API 供应商意味着手动编辑 JSON、TOML 或 `.env` 文件，而在多个工具之间缺乏一个统一管理 MCP, SKILLS 的方式。
 
-**CC Switch** 为你提供一个桌面应用来管理所有支持的 AI 工具。无需手动编辑配置文件，你将获得一个可视化界面，一键将供应商导入应用，一键在不同的供应商之间进行切换，官方供应商快捷入口、自定义网关配置、统一的 MCP, SKILLS 管理以及系统托盘即时切换功能——所有操作都基于可靠的 SQLite 数据库和原子写入机制，保护你的配置不被损坏。
+**puppyrouter app** 为你提供一个桌面应用来管理所有支持的 AI 工具。无需手动编辑配置文件，你将获得一个可视化界面，一键将供应商导入应用，一键在不同的供应商之间进行切换，官方供应商快捷入口、自定义网关配置、统一的 MCP, SKILLS 管理以及系统托盘即时切换功能——所有操作都基于可靠的 SQLite 数据库和原子写入机制，保护你的配置不被损坏。
 
 - **一个应用，七个工具** — 在单一界面中管理 Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw 和 Hermes
 - **告别手动编辑** — 从官方供应商开始，或添加你的私有网关，然后无需再手动改配置文件
@@ -70,15 +70,15 @@
 ### 系统与平台
 
 - **云同步** — 自定义配置目录（Dropbox、OneDrive、iCloud、坚果云、NAS）及 WebDAV 服务器同步
-- **Deep Link** (`ccswitch://`) — 通过 URL 一键导入供应商、MCP 服务器、提示词和技能
+- **Deep Link** (`puppyrouter://`) — 通过 URL 一键导入供应商、MCP 服务器、提示词和技能
 - 深色 / 浅色 / 跟随系统主题、开机自启、自动更新、原子写入、自动备份、国际化（简中/繁中/英/日）
 
 ## 常见问题
 
 <details>
-<summary><strong>CC Switch 支持哪些 AI 工具？</strong></summary>
+<summary><strong>puppyrouter app 支持哪些 AI 工具？</strong></summary>
 
-CC Switch 支持七个工具：**Claude Code**、**Claude Desktop**、**Codex**、**Gemini CLI**、**OpenCode**、**OpenClaw** 和 **Hermes**。每个工具都有专属的供应商预设和配置管理。
+puppyrouter app 支持七个工具：**Claude Code**、**Claude Desktop**、**Codex**、**Gemini CLI**、**OpenCode**、**OpenClaw** 和 **Hermes**。每个工具都有专属的供应商预设和配置管理。
 
 </details>
 
@@ -92,14 +92,14 @@ CC Switch 支持七个工具：**Claude Code**、**Claude Desktop**、**Codex**�
 <details>
 <summary><strong>切换供应商之后我的插件配置怎么不见了？</strong></summary>
 
-CC Switch 使用“通用配置片段”功能，在不同的供应商之间传递 Key 和请求地址之外的通用数据，您可以在“编辑供应商”菜单的“通用配置面板”里，点击“从当前供应商提取”，把所有的通用数据提取到通用配置中，之后在新建“供应商”的时候，只要勾选“写入通用配置”（默认勾选），就会把插件等数据写入到新的供应商配置中。您的所有配置项都会保存在运行本软件的时候，第一次导入的默认供应商里面，不会丢失。
+puppyrouter app 使用“通用配置片段”功能，在不同的供应商之间传递 Key 和请求地址之外的通用数据，您可以在“编辑供应商”菜单的“通用配置面板”里，点击“从当前供应商提取”，把所有的通用数据提取到通用配置中，之后在新建“供应商”的时候，只要勾选“写入通用配置”（默认勾选），就会把插件等数据写入到新的供应商配置中。您的所有配置项都会保存在运行本软件的时候，第一次导入的默认供应商里面，不会丢失。
 
 </details>
 
 <details>
 <summary><strong>macOS 安装</strong></summary>
 
-CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接下载安装，无需额外操作。推荐使用 `.dmg` 安装包。
+puppyrouter app macOS 版本已通过 Apple 代码签名和公证，可直接下载安装，无需额外操作。推荐使用 `.dmg` 安装包。
 
 </details>
 
@@ -122,11 +122,11 @@ CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接下载安
 <details>
 <summary><strong>我的数据存储在哪里？</strong></summary>
 
-- **数据库**：`~/.cc-switch/cc-switch.db`（SQLite — 供应商、MCP、提示词、技能）
-- **本地设置**：`~/.cc-switch/settings.json`（设备级 UI 偏好设置）
-- **备份**：`~/.cc-switch/backups/`（自动轮换，保留最近 10 个）
-- **SKILLS**：`~/.cc-switch/skills/`（默认通过软链接连接到对应应用）
-- **技能备份**：`~/.cc-switch/skill-backups/`（卸载前自动创建，保留最近 20 个）
+- **数据库**：`~/.puppyrouter-app/puppyrouter-app.db`（SQLite — 供应商、MCP、提示词、技能）
+- **本地设置**：`~/.puppyrouter-app/settings.json`（设备级 UI 偏好设置）
+- **备份**：`~/.puppyrouter-app/backups/`（自动轮换，保留最近 10 个）
+- **SKILLS**：`~/.puppyrouter-app/skills/`（默认通过软链接连接到对应应用）
+- **技能备份**：`~/.puppyrouter-app/skill-backups/`（卸载前自动创建，保留最近 20 个）
 
 </details>
 
@@ -164,43 +164,43 @@ CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接下载安
 
 ### Windows 用户
 
-从 [Releases](../../releases) 页面下载最新版本的 `CC-Switch-v{版本号}-Windows.msi` 安装包或 `CC-Switch-v{版本号}-Windows-Portable.zip` 绿色版。
+从 [Releases](../../releases) 页面下载最新版本的 `puppyrouter-app-v{版本号}-Windows.msi` 安装包或 `puppyrouter-app-v{版本号}-Windows-Portable.zip` 绿色版。
 
 ### macOS 用户
 
 **方式一：通过 Homebrew 安装（推荐）**
 
 ```bash
-brew install --cask cc-switch
+brew install --cask puppyrouter-app
 ```
 
 更新：
 
 ```bash
-brew upgrade --cask cc-switch
+brew upgrade --cask puppyrouter-app
 ```
 
 **方式二：手动下载**
 
-从 [Releases](../../releases) 页面下载 `CC-Switch-v{版本号}-macOS.dmg`（推荐）或 `.zip`。
+从 [Releases](../../releases) 页面下载 `puppyrouter-app-v{版本号}-macOS.dmg`（推荐）或 `.zip`。
 
-> **注意**：CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接安装打开。
+> **注意**：puppyrouter app macOS 版本已通过 Apple 代码签名和公证，可直接安装打开。
 
 ### Arch Linux 用户
 
 **通过 paru 安装（推荐）**
 
 ```bash
-paru -S cc-switch-bin
+paru -S puppyrouter-app-bin
 ```
 
 ### Linux 用户
 
 从 [Releases](../../releases) 页面下载最新版本的 Linux 安装包：
 
-- `CC-Switch-v{版本号}-Linux.deb`（Debian/Ubuntu）
-- `CC-Switch-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `CC-Switch-v{版本号}-Linux.AppImage`（通用）
+- `puppyrouter-app-v{版本号}-Linux.deb`（Debian/Ubuntu）
+- `puppyrouter-app-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
+- `puppyrouter-app-v{版本号}-Linux.AppImage`（通用）
 
 > **Flatpak**：官方 Release 不包含 Flatpak 包。如需使用，可从 `.deb` 自行构建 — 参见 [`flatpak/README.md`](flatpak/README.md)。
 
@@ -229,7 +229,7 @@ paru -S cc-switch-bin
 
 **核心设计模式**
 
-- **SSOT**（单一事实源）：所有数据存储在 `~/.cc-switch/cc-switch.db`（SQLite）
+- **SSOT**（单一事实源）：所有数据存储在 `~/.puppyrouter-app/puppyrouter-app.db`（SQLite）
 - **双层存储**：SQLite 存储可同步数据，JSON 存储设备级设置
 - **双向同步**：切换时写入 live 文件，编辑当前供应商时从 live 回填
 - **原子写入**：临时文件 + 重命名模式防止配置损坏
@@ -395,7 +395,7 @@ pnpm test:unit --coverage
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/puppyrouter-app&type=Date)](https://www.star-history.com/#farion1231/puppyrouter-app&Date)
 
 ## License
 

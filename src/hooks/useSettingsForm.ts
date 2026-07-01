@@ -10,7 +10,7 @@ export type SettingsFormState = Omit<Settings, "language"> & {
 };
 
 const normalizeLanguage = (lang?: string | null): Language => {
-  if (!lang) return "zh";
+  if (!lang) return "en";
   const normalized = lang.toLowerCase().replace(/_/g, "-");
 
   if (normalized === "zh") {
@@ -26,15 +26,19 @@ const normalizeLanguage = (lang?: string | null): Language => {
     return "zh-TW";
   }
 
-  if (normalized === "en" || normalized === "ja") {
-    return normalized;
+  if (normalized.startsWith("en")) {
+    return "en";
+  }
+
+  if (normalized.startsWith("ja")) {
+    return "ja";
   }
 
   if (normalized.startsWith("zh")) {
     return "zh";
   }
 
-  return "zh";
+  return "en";
 };
 
 const isSupportedLanguage = (lang?: string | null): boolean => {
@@ -77,7 +81,9 @@ export function useSettingsForm(): UseSettingsFormResult {
     null,
   );
 
-  const initialLanguageRef = useRef<Language>("zh");
+  const initialLanguageRef = useRef<Language>(
+    normalizeLanguage(i18n.resolvedLanguage || i18n.language),
+  );
 
   const readPersistedLanguage = useCallback((): Language => {
     if (typeof window !== "undefined") {
@@ -117,8 +123,8 @@ export function useSettingsForm(): UseSettingsFormResult {
       silentStartup: data.silentStartup ?? false,
       skipClaudeOnboarding: data.skipClaudeOnboarding ?? false,
       preserveCodexOfficialAuthOnSwitch:
-        data.preserveCodexOfficialAuthOnSwitch ?? false,
-      unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
+        data.preserveCodexOfficialAuthOnSwitch ?? true,
+      unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? true,
       claudeConfigDir: sanitizeDir(data.claudeConfigDir),
       codexConfigDir: sanitizeDir(data.codexConfigDir),
       geminiConfigDir: sanitizeDir(data.geminiConfigDir),
@@ -143,8 +149,8 @@ export function useSettingsForm(): UseSettingsFormResult {
             useAppWindowControls: false,
             enableClaudePluginIntegration: false,
             skipClaudeOnboarding: false,
-            preserveCodexOfficialAuthOnSwitch: false,
-            unifyCodexSessionHistory: false,
+            preserveCodexOfficialAuthOnSwitch: true,
+            unifyCodexSessionHistory: true,
             language: readPersistedLanguage(),
           } as SettingsFormState);
 
@@ -183,8 +189,8 @@ export function useSettingsForm(): UseSettingsFormResult {
         silentStartup: serverData.silentStartup ?? false,
         skipClaudeOnboarding: serverData.skipClaudeOnboarding ?? false,
         preserveCodexOfficialAuthOnSwitch:
-          serverData.preserveCodexOfficialAuthOnSwitch ?? false,
-        unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,
+          serverData.preserveCodexOfficialAuthOnSwitch ?? true,
+        unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? true,
         claudeConfigDir: sanitizeDir(serverData.claudeConfigDir),
         codexConfigDir: sanitizeDir(serverData.codexConfigDir),
         geminiConfigDir: sanitizeDir(serverData.geminiConfigDir),

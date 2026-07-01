@@ -7,6 +7,12 @@
 import { Shuffle, Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   useAutoFailoverEnabled,
   useSetAutoFailoverEnabled,
 } from "@/lib/query/failover";
@@ -56,30 +62,41 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
         });
 
   return (
-    <div
-      className={cn(
-        "flex items-center gap-1 px-1.5 h-8 rounded-lg bg-muted/50 transition-all",
-        className,
-      )}
-      title={tooltipText}
-    >
-      {setEnabled.isPending || isLoading ? (
-        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-      ) : (
-        <Shuffle
-          className={cn(
-            "h-4 w-4 transition-colors",
-            isEnabled
-              ? "text-emerald-500 animate-pulse"
-              : "text-muted-foreground",
-          )}
-        />
-      )}
-      <Switch
-        checked={isEnabled}
-        onCheckedChange={handleToggle}
-        disabled={setEnabled.isPending || isLoading || !takeoverEnabled}
-      />
-    </div>
+    <TooltipProvider delayDuration={180}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div
+            className={cn(
+              "flex h-8 items-center gap-1 rounded-lg border border-border bg-muted/70 px-1.5 transition-all hover:border-primary/35 hover:bg-primary/10",
+              isEnabled && "border-primary/45 bg-primary/10",
+              !takeoverEnabled && "opacity-75",
+              className,
+            )}
+          >
+            {setEnabled.isPending || isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : (
+              <Shuffle
+                className={cn(
+                  "h-4 w-4 transition-colors",
+                  isEnabled
+                    ? "animate-pulse text-emerald-500"
+                    : "text-muted-foreground",
+                )}
+              />
+            )}
+            <Switch
+              checked={isEnabled}
+              onCheckedChange={handleToggle}
+              disabled={setEnabled.isPending || isLoading || !takeoverEnabled}
+              aria-label={tooltipText}
+            />
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs whitespace-pre-line">
+          {tooltipText}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }

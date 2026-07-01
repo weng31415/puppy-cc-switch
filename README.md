@@ -1,27 +1,27 @@
 <div align="center">
 
-# CC Switch
+# puppyrouter app
 
 ### The All-in-One Manager for Claude Code, Claude Desktop, Codex, Gemini CLI, OpenCode, OpenClaw & Hermes Agent
 
-[![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Version](https://img.shields.io/github/v/release/farion1231/puppyrouter-app?color=blue&label=version)](https://github.com/farion1231/puppyrouter-app/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/puppyrouter-app/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/farion1231/puppyrouter-app/total)](https://github.com/farion1231/puppyrouter-app/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fpuppyrouter-app | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-### 🌐 The Only Official Website: **[ccswitch.io](https://ccswitch.io)**
+### 🌐 The Only Official Website: **[puppyrouter.com](https://puppyrouter.com)**
 
 English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_DE.md) | [Changelog](CHANGELOG.md)
 
 </div>
 
-## Why CC Switch?
+## Why puppyrouter app?
 
 Modern AI-powered coding relies on tools like Claude Code, Claude Desktop, Codex, Gemini CLI, OpenCode, OpenClaw, and Hermes — but each has its own configuration format. Switching API providers means manually editing JSON, TOML, or `.env` files, and there is no unified way to manage MCP and Skills across multiple tools.
 
-**CC Switch** gives you a single desktop app to manage all supported AI tools. Instead of editing config files by hand, you get a visual interface to import providers with one click, switch between them instantly, with official-provider shortcuts, custom gateway setup, unified MCP and Skills management, and system tray quick switching — all backed by a reliable SQLite database with atomic writes that protect your configs from corruption.
+**puppyrouter app** gives you a single desktop app to manage all supported AI tools. Instead of editing config files by hand, you get a visual interface to import providers with one click, switch between them instantly, with official-provider shortcuts, custom gateway setup, unified MCP and Skills management, and system tray quick switching — all backed by a reliable SQLite database with atomic writes that protect your configs from corruption.
 
 - **One App, Seven Tools** — Manage Claude Code, Claude Desktop, Codex, Gemini CLI, OpenCode, OpenClaw, and Hermes from a single interface
 - **No More Manual Editing** — Start from official providers or add your private gateway once, then switch without touching raw config files
@@ -70,15 +70,15 @@ Modern AI-powered coding relies on tools like Claude Code, Claude Desktop, Codex
 ### System & Platform
 
 - **Cloud sync** — Custom config directory (Dropbox, OneDrive, iCloud, NAS) and WebDAV server sync
-- **Deep Link** (`ccswitch://`) — Import providers, MCP servers, prompts, and skills via URL
+- **Deep Link** (`puppyrouter://`) — Import providers, MCP servers, prompts, and skills via URL
 - Dark / Light / System theme, auto-launch, auto-updater, atomic writes, auto-backups, i18n (zh/zh-TW/en/ja)
 
 ## FAQ
 
 <details>
-<summary><strong>Which AI tools does CC Switch support?</strong></summary>
+<summary><strong>Which AI tools does puppyrouter app support?</strong></summary>
 
-CC Switch supports seven tools: **Claude Code**, **Claude Desktop**, **Codex**, **Gemini CLI**, **OpenCode**, **OpenClaw**, and **Hermes**. Each tool has dedicated provider presets and configuration management.
+puppyrouter app supports seven tools: **Claude Code**, **Claude Desktop**, **Codex**, **Gemini CLI**, **OpenCode**, **OpenClaw**, and **Hermes**. Each tool has dedicated provider presets and configuration management.
 
 </details>
 
@@ -92,21 +92,21 @@ For most tools, yes — restart your terminal or the CLI tool for changes to tak
 <details>
 <summary><strong>My plugin configuration disappeared after switching providers — what happened?</strong></summary>
 
-CC Switch provides a "Shared Config Snippet" feature to pass common data (beyond API keys and endpoints) between providers. Go to "Edit Provider" → "Shared Config Panel" → click "Extract from Current Provider" to save all common data. When creating a new provider, check "Write Shared Config" (enabled by default) to include plugin data in the new provider. All your configuration items are preserved in the default provider imported when you first launched the app.
+puppyrouter app provides a "Shared Config Snippet" feature to pass common data (beyond API keys and endpoints) between providers. Go to "Edit Provider" → "Shared Config Panel" → click "Extract from Current Provider" to save all common data. When creating a new provider, check "Write Shared Config" (enabled by default) to include plugin data in the new provider. All your configuration items are preserved in the default provider imported when you first launched the app.
 
 </details>
 
 <details>
 <summary><strong>macOS installation</strong></summary>
 
-CC Switch for macOS is code-signed and notarized by Apple. You can download and install it directly — no extra steps needed. We recommend using the `.dmg` installer.
+puppyrouter app for macOS is code-signed and notarized by Apple. You can download and install it directly — no extra steps needed. We recommend using the `.dmg` installer.
 
 </details>
 
 <details>
 <summary><strong>Why can't I delete the currently active provider?</strong></summary>
 
-CC Switch follows a "minimal intrusion" design principle — even if you uninstall the app, your CLI tools will continue to work normally. The system always keeps one active configuration, because deleting all configurations would make the corresponding CLI tool unusable. If you rarely use a specific CLI tool, you can hide it in Settings. To switch back to official login, see the next question.
+puppyrouter app follows a "minimal intrusion" design principle — even if you uninstall the app, your CLI tools will continue to work normally. The system always keeps one active configuration, because deleting all configurations would make the corresponding CLI tool unusable. If you rarely use a specific CLI tool, you can hide it in Settings. To switch back to official login, see the next question.
 
 </details>
 
@@ -120,11 +120,11 @@ Add an official provider from the preset list. After switching to it, run the Lo
 <details>
 <summary><strong>Where is my data stored?</strong></summary>
 
-- **Database**: `~/.cc-switch/cc-switch.db` (SQLite — providers, MCP, prompts, skills)
-- **Local settings**: `~/.cc-switch/settings.json` (device-level UI preferences)
-- **Backups**: `~/.cc-switch/backups/` (auto-rotated, keeps 10 most recent)
-- **Skills**: `~/.cc-switch/skills/` (symlinked to corresponding apps by default)
-- **Skill Backups**: `~/.cc-switch/skill-backups/` (created automatically before uninstall, keeps 20 most recent)
+- **Database**: `~/.puppyrouter-app/puppyrouter-app.db` (SQLite — providers, MCP, prompts, skills)
+- **Local settings**: `~/.puppyrouter-app/settings.json` (device-level UI preferences)
+- **Backups**: `~/.puppyrouter-app/backups/` (auto-rotated, keeps 10 most recent)
+- **Skills**: `~/.puppyrouter-app/skills/` (symlinked to corresponding apps by default)
+- **Skill Backups**: `~/.puppyrouter-app/skill-backups/` (created automatically before uninstall, keeps 20 most recent)
 
 </details>
 
@@ -162,43 +162,43 @@ For detailed guides on every feature, check out the **[User Manual](docs/user-ma
 
 ### Windows Users
 
-Download the latest `CC-Switch-v{version}-Windows.msi` installer or `CC-Switch-v{version}-Windows-Portable.zip` portable version from the [Releases](../../releases) page.
+Download the latest `puppyrouter-app-v{version}-Windows.msi` installer or `puppyrouter-app-v{version}-Windows-Portable.zip` portable version from the [Releases](../../releases) page.
 
 ### macOS Users
 
 **Method 1: Install via Homebrew (Recommended)**
 
 ```bash
-brew install --cask cc-switch
+brew install --cask puppyrouter-app
 ```
 
 Update:
 
 ```bash
-brew upgrade --cask cc-switch
+brew upgrade --cask puppyrouter-app
 ```
 
 **Method 2: Manual Download**
 
-Download `CC-Switch-v{version}-macOS.dmg` (recommended) or `.zip` from the [Releases](../../releases) page.
+Download `puppyrouter-app-v{version}-macOS.dmg` (recommended) or `.zip` from the [Releases](../../releases) page.
 
-> **Note**: CC Switch for macOS is code-signed and notarized by Apple. You can install and open it directly.
+> **Note**: puppyrouter app for macOS is code-signed and notarized by Apple. You can install and open it directly.
 
 ### Arch Linux Users
 
 **Install via paru (Recommended)**
 
 ```bash
-paru -S cc-switch-bin
+paru -S puppyrouter-app-bin
 ```
 
 ### Linux Users
 
 Download the latest Linux build from the [Releases](../../releases) page:
 
-- `CC-Switch-v{version}-Linux.deb` (Debian/Ubuntu)
-- `CC-Switch-v{version}-Linux.rpm` (Fedora/RHEL/openSUSE)
-- `CC-Switch-v{version}-Linux.AppImage` (Universal)
+- `puppyrouter-app-v{version}-Linux.deb` (Debian/Ubuntu)
+- `puppyrouter-app-v{version}-Linux.rpm` (Fedora/RHEL/openSUSE)
+- `puppyrouter-app-v{version}-Linux.AppImage` (Universal)
 
 > **Flatpak**: Not included in official releases. You can build it yourself from the `.deb` — see [`flatpak/README.md`](flatpak/README.md) for instructions.
 
@@ -227,7 +227,7 @@ Download the latest Linux build from the [Releases](../../releases) page:
 
 **Core Design Patterns**
 
-- **SSOT** (Single Source of Truth): All data stored in `~/.cc-switch/cc-switch.db` (SQLite)
+- **SSOT** (Single Source of Truth): All data stored in `~/.puppyrouter-app/puppyrouter-app.db` (SQLite)
 - **Dual-layer Storage**: SQLite for syncable data, JSON for device-level settings
 - **Dual-way Sync**: Write to live files on switch, backfill from live when editing active provider
 - **Atomic Writes**: Temp file + rename pattern prevents config corruption
@@ -393,7 +393,7 @@ For new features, please open an issue for discussion before submitting a PR. PR
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/puppyrouter-app&type=Date)](https://www.star-history.com/#farion1231/puppyrouter-app&Date)
 
 ## License
 

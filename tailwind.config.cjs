@@ -39,9 +39,17 @@ module.exports = {
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
         blue: {
-          400: "#409CFF",
-          500: "#0A84FF",
-          600: "#0060DF",
+          50: "#fff8e6",
+          100: "#f7e7b2",
+          200: "#ecd285",
+          300: "#e2bd5f",
+          400: "#d6aa4a",
+          500: "#c89532",
+          600: "#a97724",
+          700: "#76521a",
+          800: "#4a3411",
+          900: "#2a1d0a",
+          950: "#160f05",
         },
         gray: {
           50: "#fafafa",
@@ -170,4 +178,3 @@ module.exports = {
   },
   plugins: [],
 };
-

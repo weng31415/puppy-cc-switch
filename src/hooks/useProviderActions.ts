@@ -33,6 +33,7 @@ export function useProviderActions(
   activeApp: AppId,
   isProxyRunning?: boolean,
   isProxyTakeover?: boolean,
+  onProviderSwitched?: (provider: Provider, appId: AppId) => void,
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -256,7 +257,7 @@ export function useProviderActions(
             if (provider.meta?.claudeDesktopMode === "proxy") {
               messageKey = "notifications.claudeDesktopProxyRestartRequired";
               defaultMessage =
-                "切换成功，请保持 CC Switch 运行，并重启 Claude Desktop 后生效";
+                "切换成功，请保持 puppyrouter app 运行，并重启 Claude Desktop 后生效";
             } else {
               messageKey = "notifications.claudeDesktopRestartRequired";
               defaultMessage = "切换成功，重启 Claude Desktop 后生效";
@@ -269,6 +270,7 @@ export function useProviderActions(
             closeButton: true,
           });
         }
+        onProviderSwitched?.(provider, activeApp);
       } catch {
         // 错误提示由 mutation 处理
       }
@@ -279,6 +281,7 @@ export function useProviderActions(
       activeApp,
       isProxyRunning,
       isProxyTakeover,
+      onProviderSwitched,
       t,
     ],
   );

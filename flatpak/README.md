@@ -1,6 +1,6 @@
 # Flatpak Build Guide
 
-This directory contains the Flatpak manifest (`com.ccswitch.desktop`) for CC Switch, used to convert the generated `.deb` artifact into an installable `.flatpak` package via CI or local builds.
+This directory contains the Flatpak manifest (`com.ccswitch.desktop`) for puppyrouter app, used to convert the generated `.deb` artifact into an installable `.flatpak` package via CI or local builds.
 
 ## Dependencies
 
@@ -27,20 +27,20 @@ pnpm tauri build -- --bundles deb
 2) Copy the generated deb to this directory:
 
 ```bash
-cp "$(find src-tauri/target/release/bundle -name '*.deb' | head -n 1)" flatpak/cc-switch.deb
+cp "$(find src-tauri/target/release/bundle -name '*.deb' | head -n 1)" flatpak/puppyrouter-app.deb
 ```
 
 3) Build the local Flatpak repository and export the `.flatpak`:
 
 ```bash
 flatpak-builder --force-clean --user --disable-cache --repo flatpak-repo flatpak-build flatpak/com.ccswitch.desktop.yml
-flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo flatpak-repo CC-Switch-Linux.flatpak com.ccswitch.desktop
+flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo flatpak-repo puppyrouter-app-Linux.flatpak com.ccswitch.desktop
 ```
 
 4) Install and run:
 
 ```bash
-flatpak install --user ./CC-Switch-Linux.flatpak
+flatpak install --user ./puppyrouter-app-Linux.flatpak
 flatpak run com.ccswitch.desktop
 ```
 
@@ -51,7 +51,7 @@ The current manifest uses `--filesystem=home` by default for "download and run" 
 If you prefer minimal permissions (e.g., for Flathub submission or security concerns), you can replace `--filesystem=home` in `flatpak/com.ccswitch.desktop.yml` with more precise grants:
 
 ```yaml
-  - --filesystem=~/.cc-switch:create
+  - --filesystem=~/.puppyrouter-app:create
   - --filesystem=~/.claude:create
   - --filesystem=~/.claude.json
   - --filesystem=~/.codex:create

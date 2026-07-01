@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "CC Switch",
+    "title": "puppyrouter app",
     "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
   },
   "common": {
@@ -43,9 +43,9 @@
     "notSet": "Not Set"
   },
   "firstRunNotice": {
-    "title": "Welcome to CC Switch",
-    "bodyDefault": "CC Switch lets you switch between multiple Claude Code / Codex / Gemini CLI providers with a single click. If you already had these tools configured, CC Switch has saved your existing setup as a provider named “default” so none of your previous configuration is lost.",
-    "bodyOfficial": "An “Official” preset is also included in the list — click it any time you want to switch back to the official default. CC Switch automatically backs up your current config to “default” before switching, so you can move back and forth freely. That's how CC Switch works 😊",
+    "title": "Welcome to puppyrouter app",
+    "bodyDefault": "puppyrouter app lets you switch between multiple Claude Code / Codex / Gemini CLI providers with a single click. If you already had these tools configured, puppyrouter app has saved your existing setup as a provider named “default” so none of your previous configuration is lost.",
+    "bodyOfficial": "An “Official” preset is also included in the list — click it any time you want to switch back to the official default. puppyrouter app automatically backs up your current config to “default” before switching, so you can move back and forth freely. That's how puppyrouter app works 😊",
     "confirm": "Got it"
   },
   "apiKeyInput": {
@@ -190,7 +190,7 @@
     "modeProxy": "Requires routing",
     "modelMappingToggle": "Needs model mapping",
     "modelMappingOffHint": "Direct mode works only when the provider accepts Claude Desktop's three role IDs (claude-sonnet-* / claude-opus-* / claude-haiku-*); for any other model name (including legacy IDs like claude-3-5-sonnet-…), enable this switch to use mapping.",
-    "modelMappingOnHint": "Claude Desktop only accepts the three role IDs claude-sonnet-* / claude-opus-* / claude-haiku-*. When enabled, CC Switch maps these three roles to your provider's actual models and keeps local routing running while in use.",
+    "modelMappingOnHint": "Claude Desktop only accepts the three role IDs claude-sonnet-* / claude-opus-* / claude-haiku-*. When enabled, puppyrouter app maps these three roles to your provider's actual models and keeps local routing running while in use.",
     "routeMapTitle": "Model mapping",
     "routeMapHint": "Fill in the actual request model for each of the Sonnet, Opus, and Haiku tiers. Use the menu display name for branded models such as DeepSeek or Kimi. Any tier left blank inherits the Sonnet tier's model (or the first tier you filled in), so the Haiku that sub-agents call is always available.",
     "routeModelLabel": "Model role",
@@ -230,7 +230,7 @@
     "switchSuccess": "Switch successful!",
     "codexRestartRequired": "Switched successfully. Restart the client to apply changes.",
     "claudeDesktopRestartRequired": "Switched successfully. Restart Claude Desktop to apply changes.",
-    "claudeDesktopProxyRestartRequired": "Switched successfully. Keep CC Switch running and restart Claude Desktop to apply changes.",
+    "claudeDesktopProxyRestartRequired": "Switched successfully. Keep puppyrouter app running and restart Claude Desktop to apply changes.",
     "addToConfigSuccess": "Added to config",
     "removeFromConfigSuccess": "Removed from config",
     "switchFailedTitle": "Switch failed",
@@ -271,7 +271,7 @@
     "deleteProvider": "Delete Provider",
     "deleteProviderMessage": "Are you sure you want to delete provider \"{{name}}\"? This action cannot be undone.",
     "removeProvider": "Remove Provider",
-    "removeProviderMessage": "Are you sure you want to remove provider \"{{name}}\" from the configuration?\n\nAfter removal, this provider will no longer be active, but the configuration data will be retained in CC Switch. You can re-add it at any time.",
+    "removeProviderMessage": "Are you sure you want to remove provider \"{{name}}\" from the configuration?\n\nAfter removal, this provider will no longer be active, but the configuration data will be retained in puppyrouter app. You can re-add it at any time.",
     "proxy": {
       "title": "Enable Local Routing",
       "message": "Local routing is an advanced feature. Please make sure you understand how it works before enabling.\n\nWe recommend consulting the relevant documentation or your provider for proper configuration.",
@@ -284,7 +284,7 @@
     },
     "unifyCodexHistory": {
       "title": "Unified Codex session history",
-      "message": "When enabled, the official subscription and third-party providers share one session history list. Note: resuming an old session across providers may fail because its encrypted_content reasoning cannot be decrypted by another backend.\n\nYou can also migrate your existing official session history into the shared list (originals are backed up to ~/.cc-switch/backups first and can be restored when you turn this off).",
+      "message": "When enabled, the official subscription and third-party providers share one session history list. Note: resuming an old session across providers may fail because its encrypted_content reasoning cannot be decrypted by another backend.\n\nYou can also migrate your existing official session history into the shared list (originals are backed up to ~/.puppyrouter-app/backups first and can be restored when you turn this off).",
       "migrateExisting": "Also migrate existing official session history",
       "confirm": "I understand, enable"
     },
@@ -314,6 +314,14 @@
       "message": "The \"Common Config Snippet\" lets you share plugins, environment variables, and other settings across different providers — so they won't be lost when you switch.\n\nHow to use:\n① Edit a provider → click \"Edit Common Config\" → \"Extract from Editor\"\n② When creating a new provider, check \"Write Common Config\" (enabled by default)\n\nIf you've newly installed plugins or hooks, re-extract the common config to keep them in sync.",
       "confirm": "Got it"
     }
+  },
+  "providerRestartNotice": {
+    "title": "Fully restart the app",
+    "message": "Switched to {{provider}}.\n\nOpen {{manager}}, fully quit {{appName}}, then open it again. This switch only takes effect after the app is reopened.",
+    "confirm": "I have restarted the app",
+    "taskManager": "Task Manager",
+    "activityMonitor": "Activity Monitor",
+    "processManager": "the system process manager"
   },
   "settings": {
     "title": "Settings",
@@ -358,7 +366,7 @@
       },
       "globalProxy": {
         "title": "Global Outbound Proxy",
-        "description": "Configure proxy for CC Switch to access external APIs"
+        "description": "Configure proxy for puppyrouter app to access external APIs"
       },
       "data": {
         "title": "Data Management",
@@ -432,7 +440,7 @@
     "themeDark": "Dark",
     "themeSystem": "System",
     "importExport": "SQL Import/Export",
-    "importExportHint": "Import or export database SQL backups for migration or restore (import supports only backups exported by CC Switch).",
+    "importExportHint": "Import or export database SQL backups for migration or restore (import supports only backups exported by puppyrouter app).",
     "exportConfig": "Export SQL Backup",
     "selectConfigFile": "Select SQL File",
     "noFileSelected": "No configuration file selected.",
@@ -522,7 +530,7 @@
         "synologyHint": "Install and enable the WebDAV Server package in Synology Package Center first.",
         "custom": "Custom"
       },
-      "remoteRootDefault": "Default: cc-switch-sync",
+      "remoteRootDefault": "Default: puppyrouter-app-sync",
       "profileDefault": "Default: default",
       "saveAndTestSuccess": "Config saved, connection OK",
       "saveAndTestFailed": "Config saved, but connection test failed: {{error}}",
@@ -587,7 +595,7 @@
       "region": "Region",
       "regionPlaceholder": "e.g. us-east-1",
       "bucket": "Bucket",
-      "bucketPlaceholder": "e.g. my-cc-switch-bucket",
+      "bucketPlaceholder": "e.g. my-puppyrouter-app-bucket",
       "accessKeyId": "Access Key ID",
       "accessKeyIdPlaceholder": "e.g. AKIA...",
       "secretAccessKey": "Secret Access Key",
@@ -596,7 +604,7 @@
       "endpointHint": "Required for most S3-compatible services",
       "endpointPlaceholder": "e.g. https://s3-compatible.example.com",
       "remoteRoot": "Remote Root Directory",
-      "remoteRootDefault": "Default: cc-switch-sync",
+      "remoteRootDefault": "Default: puppyrouter-app-sync",
       "profile": "Sync Profile Name",
       "profileDefault": "Default: default",
       "autoSync": "Auto Sync",
@@ -670,7 +678,7 @@
     "windowBehavior": "Window Behavior",
     "windowBehaviorHint": "Configure window minimize and Claude plugin integration policies.",
     "launchOnStartup": "Launch on Startup",
-    "launchOnStartupDescription": "Automatically run CC Switch when system starts",
+    "launchOnStartupDescription": "Automatically run puppyrouter app when system starts",
     "silentStartup": "Silent Startup",
     "silentStartupDescription": "Start in background mode without showing main window",
     "autoLaunchFailed": "Failed to set auto-launch",
@@ -701,10 +709,10 @@
     },
     "skillStorage": {
       "title": "Skill Storage Location",
-      "description": "Choose where CC Switch stores the master copies of your skills",
-      "ccSwitch": "CC Switch",
+      "description": "Choose where puppyrouter app stores the master copies of your skills",
+      "ccSwitch": "puppyrouter app",
       "unified": "~/.agents/skills",
-      "ccSwitchHint": "Skills are stored in ~/.cc-switch/skills/ and synced to each app via symlink or copy.",
+      "ccSwitchHint": "Skills are stored in ~/.puppyrouter-app/skills/ and synced to each app via symlink or copy.",
       "unifiedHint": "Skills are stored in ~/.agents/skills/, the Agent Skills open standard. Compatible tools (Claude Code, Codex, Gemini CLI, etc.) discover skills here natively.",
       "confirmTitle": "Migrate Skill Storage",
       "confirmMessage": "{{count}} skill(s) will be moved to the new location. Continue?",
@@ -750,9 +758,9 @@
     },
     "configDirectoryOverride": "Configuration Directory Override (Advanced)",
     "configDirectoryDescription": "When using Claude Code or Codex in environments like WSL, you can manually specify the configuration directory to the one in WSL to keep provider data consistent with the main environment.",
-    "appConfigDir": "CC Switch Configuration Directory",
-    "appConfigDirDescription": "Customize the storage location for CC Switch configuration (point to cloud sync folder to enable config sync)",
-    "browsePlaceholderApp": "e.g., C:\\Users\\Administrator\\.cc-switch",
+    "appConfigDir": "puppyrouter app Configuration Directory",
+    "appConfigDirDescription": "Customize the storage location for puppyrouter app configuration (point to cloud sync folder to enable config sync)",
+    "browsePlaceholderApp": "e.g., C:\\Users\\Administrator\\.puppyrouter-app",
     "claudeConfigDir": "Claude Code Configuration Directory",
     "claudeConfigDirDescription": "Override Claude configuration directory (settings.json). Custom directories store .claude.json (MCP) inside the directory; the default ~/.claude directory keeps Claude Code's split ~/.claude.json path.",
     "codexConfigDir": "Codex Configuration Directory",
@@ -791,6 +799,7 @@
     "officialWebsite": "Official Website",
     "github": "GitHub",
     "manualInstallCommands": "Manual Install Commands",
+    "oneClickInstall": "One-click Install",
     "oneClickInstallHint": "Install or upgrade Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes",
     "localEnvCheck": "Local environment check",
     "updateAllTools": "Update All ({{count}})",
@@ -835,7 +844,7 @@
     "importFailedError": "Import config failed: {{message}}",
     "exportFailedError": "Export config failed:",
     "restartRequired": "Restart Required",
-    "restartRequiredMessage": "Modifying the CC Switch configuration directory requires restarting the application to take effect. Restart now?",
+    "restartRequiredMessage": "Modifying the puppyrouter app configuration directory requires restarting the application to take effect. Restart now?",
     "restartNow": "Restart Now",
     "restartLater": "Restart Later",
     "restartFailed": "Application restart failed, please manually close and reopen.",
@@ -1619,7 +1628,7 @@
       "deleteConfirm": "Are you sure you want to delete server \"{{id}}\"? This action cannot be undone.",
       "noServers": "No servers yet",
       "enabledApps": "Enabled Apps",
-      "noImportFound": "No MCP servers to import found. All servers are already managed by CC Switch.",
+      "noImportFound": "No MCP servers to import found. All servers are already managed by puppyrouter app.",
       "importSuccess": "Successfully imported {{count}} MCP servers",
       "apps": {
         "claude": "Claude",
@@ -2164,10 +2173,10 @@
     "noInstalledDescription": "Discover and install skills from repositories, or import existing skills",
     "discover": "Discover Skills",
     "import": "Import Existing",
-    "importDescription": "Select skills to import into CC Switch unified management",
+    "importDescription": "Select skills to import into puppyrouter app unified management",
     "importSuccess": "Successfully imported {{count}} skills",
     "importSelected": "Import Selected ({{count}})",
-    "noUnmanagedFound": "No skills to import found. All skills are already managed by CC Switch.",
+    "noUnmanagedFound": "No skills to import found. All skills are already managed by puppyrouter app.",
     "foundIn": "Found in",
     "local": "Local",
     "uninstallConfirm": "Are you sure you want to uninstall \"{{name}}\"? This will remove the skill from all apps and create a local backup first.",
@@ -2212,7 +2221,7 @@
   },
   "deeplink": {
     "confirmImport": "Confirm Import Provider",
-    "confirmImportDescription": "The following configuration will be imported from deep link into CC Switch",
+    "confirmImportDescription": "The following configuration will be imported from deep link into puppyrouter app",
     "importPrompt": "Import Prompt",
     "importPromptDescription": "Please confirm whether to import this system prompt",
     "importMcp": "Import MCP Servers",
@@ -2855,13 +2864,13 @@
   },
   "dbUpgrade": {
     "title": "Database version is too new",
-    "description": "This database was created by a newer version of CC Switch. Upgrade the app to continue. Upgrading will not delete your data.",
+    "description": "This client is not compatible with this database version. Your data will not be deleted; use a client that supports this database version.",
     "versionInfo": "Database v{{db}} · App supports v{{supported}}",
     "dbPath": "Database file",
-    "checking": "Checking for available updates…",
+    "checking": "Checking database compatibility…",
     "updateAvailable": "Version v{{version}} is available; upgrading will let you continue.",
-    "incompatibleTitle": "Upgrading won't fix this",
-    "incompatibleDescription": "You are already on the latest version, but the database (v{{db}}) is still newer than this app supports (v{{supported}}). It was likely created by a third-party client or a newer build, so upgrading the official app cannot make it compatible.",
+    "incompatibleTitle": "Client is not compatible",
+    "incompatibleDescription": "The database version (v{{db}}) is newer than this app supports (v{{supported}}). In-app updates are disabled; use a client that supports this database version, or back up the data file before handling it.",
     "preparing": "Preparing update…",
     "downloading": "Downloading update…",
     "upgradeNow": "Upgrade app",

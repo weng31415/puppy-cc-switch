@@ -1,6 +1,12 @@
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { Monitor, Terminal } from "lucide-react";
 
@@ -27,7 +33,7 @@ const ALL_APPS: AppId[] = [
   "openclaw",
   "hermes",
 ];
-const STORAGE_KEY = "cc-switch-last-app";
+const STORAGE_KEY = "puppyrouter-app-last-app";
 
 export function AppSwitcher({
   activeApp,
@@ -67,64 +73,75 @@ export function AppSwitcher({
   });
 
   return (
-    <div className="inline-flex bg-muted rounded-xl p-1 gap-1">
-      {appsToShow.map((app) => {
-        const badgeConfig = APP_BADGE_ICON[app];
-        const BadgeIcon = badgeConfig?.icon;
-        const isActive = activeApp === app;
-        return (
-          <button
-            key={app}
-            type="button"
-            onClick={() => handleSwitch(app)}
-            className={cn(
-              "group inline-flex items-center px-3 h-8 rounded-md text-sm font-medium transition-all duration-200",
-              isActive
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-background/50",
-            )}
-          >
-            <span className="relative inline-flex shrink-0">
-              <ProviderIcon
-                icon={appIconName[app]}
-                name={appDisplayName[app]}
-                size={iconSize}
-              />
-              {BadgeIcon && (
-                <span
+    <TooltipProvider delayDuration={180}>
+      <div className="inline-flex gap-1 rounded-xl border border-border bg-muted/80 p-1">
+        {appsToShow.map((app) => {
+          const badgeConfig = APP_BADGE_ICON[app];
+          const BadgeIcon = badgeConfig?.icon;
+          const isActive = activeApp === app;
+          const appName = appDisplayName[app];
+          return (
+            <Tooltip key={app}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={appName}
+                  aria-current={isActive ? "page" : undefined}
+                  onClick={() => handleSwitch(app)}
                   className={cn(
-                    "absolute -bottom-0.5 -right-0.5 flex items-center justify-center rounded-[3px] border h-[11px] w-[11px]",
+                    "group inline-flex h-8 items-center rounded-md px-3 text-sm font-medium transition-all duration-200",
                     isActive
-                      ? "bg-background border-border text-foreground"
-                      : "bg-muted border-background text-muted-foreground group-hover:bg-background group-hover:text-foreground",
+                      ? "bg-primary text-primary-foreground shadow-sm shadow-primary/25"
+                      : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
                   )}
-                  aria-hidden="true"
                 >
-                  <BadgeIcon
-                    className="h-[8px] w-[8px]"
-                    strokeWidth={2.5}
-                    style={
-                      badgeConfig?.offsetY
-                        ? { transform: `translateY(${badgeConfig.offsetY}px)` }
-                        : undefined
-                    }
-                  />
-                </span>
-              )}
-            </span>
-            <span
-              className={cn(
-                "transition-all duration-200 whitespace-nowrap overflow-hidden",
-                compact
-                  ? "max-w-0 opacity-0 ml-0"
-                  : "max-w-[120px] opacity-100 ml-2",
-              )}
-            >
-              {appDisplayName[app]}
-            </span>
-          </button>
-        );
-      })}
-    </div>
+                  <span className="relative inline-flex shrink-0">
+                    <ProviderIcon
+                      icon={appIconName[app]}
+                      name={appName}
+                      size={iconSize}
+                    />
+                    {BadgeIcon && (
+                      <span
+                        className={cn(
+                          "absolute -bottom-0.5 -right-0.5 flex h-[11px] w-[11px] items-center justify-center rounded-[3px] border",
+                          isActive
+                            ? "border-primary-foreground/25 bg-primary-foreground/10 text-primary-foreground"
+                            : "border-border bg-muted text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary",
+                        )}
+                        aria-hidden="true"
+                      >
+                        <BadgeIcon
+                          className="h-[8px] w-[8px]"
+                          strokeWidth={2.5}
+                          style={
+                            badgeConfig?.offsetY
+                              ? {
+                                  transform: `translateY(${badgeConfig.offsetY}px)`,
+                                }
+                              : undefined
+                          }
+                        />
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    className={cn(
+                      "overflow-hidden whitespace-nowrap transition-all duration-200",
+                      compact
+                        ? "ml-0 max-w-0 opacity-0"
+                        : "ml-2 max-w-[120px] opacity-100",
+                    )}
+                  >
+                    {appName}
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{appName}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </TooltipProvider>
   );
 }

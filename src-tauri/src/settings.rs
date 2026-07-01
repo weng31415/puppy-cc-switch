@@ -95,7 +95,7 @@ pub struct WebDavSyncStatus {
 }
 
 fn default_remote_root() -> String {
-    "cc-switch-sync".to_string()
+    "puppyrouter-app-sync".to_string()
 }
 fn default_profile() -> String {
     "default".to_string()
@@ -333,7 +333,7 @@ pub struct CodexOfficialHistoryUnifyMigration {
 
 /// 应用设置结构
 ///
-/// 存储设备级别设置，保存在本地 `~/.cc-switch/settings.json`，不随数据库同步。
+/// 存储设备级别设置，保存在本地 `~/.puppyrouter-app/settings.json`，不随数据库同步。
 /// 这确保了云同步场景下多设备可以独立运作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -373,13 +373,14 @@ pub struct AppSettings {
     #[serde(default)]
     pub enable_failover_toggle: bool,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
-    /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
-    #[serde(default)]
+    /// PuppyRouter defaults this on so Codex app official plugins and remote control remain usable.
+    #[serde(default = "default_true")]
     pub preserve_codex_official_auth_on_switch: bool,
     /// Run official Codex providers under the shared "custom" model_provider id
     /// so official sessions share one resume-history bucket with third-party
-    /// providers. Opt-in: defaults to false.
-    #[serde(default)]
+    /// providers. PuppyRouter defaults this on so switching API/official login
+    /// keeps Codex history in one bucket for future sessions.
+    #[serde(default = "default_true")]
     pub unify_codex_session_history: bool,
     /// User opted in (via the enable dialog checkbox) to migrate existing
     /// official sessions ("openai" bucket) into the shared bucket. Persisted so
@@ -503,8 +504,8 @@ impl Default for AppSettings {
             usage_confirmed: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
-            preserve_codex_official_auth_on_switch: false,
-            unify_codex_session_history: false,
+            preserve_codex_official_auth_on_switch: true,
+            unify_codex_session_history: true,
             unify_codex_migrate_existing: None,
             failover_confirmed: None,
             first_run_notice_confirmed: None,
@@ -542,7 +543,7 @@ impl AppSettings {
         // settings.json 保留用于旧版本迁移和无数据库场景
         Some(
             crate::config::get_home_dir()
-                .join(".cc-switch")
+                .join(".puppyrouter-app")
                 .join("settings.json"),
         )
     }

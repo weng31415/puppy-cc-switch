@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
+const RELEASES_URL = "https://github.com/farion1231/puppyrouter-app/releases";
 
 interface DatabaseUpgradeProps {
   payload: {
@@ -41,10 +41,8 @@ interface DownloadProgress {
 /**
  * 数据库版本过新（应用过旧）时的应用内恢复界面。
  *
- * 启动时先检查是否有可用更新：
- * - 有 → 提供「升级应用」一键下载+安装+重启，并展示下载进度条。
- * - 无 → 说明当前已是最新版本但数据库仍不兼容（通常由第三方客户端或更高版本创建），
- *   升级无法解决，及时提醒用户备份后改用兼容客户端或等待官方支持。
+ * 应用更新已禁用。数据库版本过新时直接提示当前客户端不兼容，
+ * 避免提供无法执行的应用内更新入口。
  */
 export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const { t } = useTranslation();
@@ -57,7 +55,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const dbVersion = payload.db_version;
   const supportedVersion = payload.supported_version;
 
-  // 启动时检查可用更新，决定 upgradable / incompatible
+  // 应用更新已禁用；保留后端检查调用的兼容性，但不提供更新入口。
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -73,8 +71,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           setPhase("incompatible");
         }
       } catch {
-        // 检查失败（如离线）：仍允许尝试升级，避免完全卡死
-        if (!cancelled) setPhase("upgradable");
+        if (!cancelled) setPhase("incompatible");
       }
     })();
     return () => {
@@ -149,7 +146,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "dbUpgrade.description",
-                "当前数据库由更新版本的 CC Switch 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
+                "当前客户端不兼容该数据库版本。你的数据不会被删除，请使用支持该数据库版本的客户端。",
               )}
             </p>
             {dbVersion != null && supportedVersion != null && (
@@ -179,7 +176,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         {phase === "checking" && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            {t("dbUpgrade.checking", "正在检查可用更新…")}
+            {t("dbUpgrade.checking", "正在检查数据库兼容性…")}
           </p>
         )}
 
@@ -202,7 +199,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
                 db: dbVersion,
                 supported: supportedVersion,
                 defaultValue:
-                  "你已是最新版本，但数据库版本（v{{db}}）仍高于本应用支持的版本（v{{supported}}）。该数据库可能由第三方客户端或更高版本创建，升级当前官方应用也无法兼容。",
+                  "数据库版本（v{{db}}）高于本应用支持的版本（v{{supported}}）。应用内更新已禁用，请换用支持该数据库版本的客户端，或先备份后处理数据文件。",
               })}
             </p>
           </div>

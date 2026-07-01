@@ -3,6 +3,7 @@ import { Edit2, Trash2, RefreshCw, Globe, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import type { UniversalProvider } from "@/types";
+import { PUPPYROUTER_UNIVERSAL_ID } from "@/utils/lockedProviders";
 
 interface UniversalProviderCardProps {
   provider: UniversalProvider;
@@ -20,6 +21,10 @@ export function UniversalProviderCard({
   onDuplicate,
 }: UniversalProviderCardProps) {
   const { t } = useTranslation();
+  const isLocked = provider.id === PUPPYROUTER_UNIVERSAL_ID;
+  const lockedHint = t("provider.lockedProviderHint", {
+    defaultValue: "Official 和 PuppyRouter 供应商不可删除或复制",
+  });
 
   // 获取启用的应用列表
   const enabledApps: string[] = [
@@ -59,8 +64,13 @@ export function UniversalProviderCard({
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => onDuplicate(provider)}
-            title={t("universalProvider.duplicate", { defaultValue: "复制" })}
+            onClick={isLocked ? undefined : () => onDuplicate(provider)}
+            disabled={isLocked}
+            title={
+              isLocked
+                ? lockedHint
+                : t("universalProvider.duplicate", { defaultValue: "复制" })
+            }
           >
             <Copy className="h-4 w-4" />
           </Button>
@@ -77,8 +87,9 @@ export function UniversalProviderCard({
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-destructive hover:text-destructive"
-            onClick={() => onDelete(provider.id)}
-            title={t("common.delete", { defaultValue: "删除" })}
+            onClick={isLocked ? undefined : () => onDelete(provider.id)}
+            disabled={isLocked}
+            title={isLocked ? lockedHint : t("common.delete", { defaultValue: "删除" })}
           >
             <Trash2 className="h-4 w-4" />
           </Button>

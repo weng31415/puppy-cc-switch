@@ -42,6 +42,7 @@ interface ProviderActionsProps {
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
+  isLocked?: boolean;
 }
 
 // 主按钮的呈现状态。title 用于 disabled 态向用户解释为何不可点击；
@@ -80,6 +81,7 @@ export function ProviderActions({
   // OpenClaw: default model
   isDefaultModel = false,
   onSetAsDefault,
+  isLocked = false,
 }: ProviderActionsProps) {
   const { t } = useTranslation();
   const iconButtonClass = "h-8 w-8 p-1";
@@ -147,7 +149,7 @@ export function ProviderActions({
           disabled: isDefaultModel === true,
           variant: "secondary" as const,
           className: cn(
-            "bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-400 dark:hover:bg-orange-900/70",
+            "bg-primary/10 text-primary hover:bg-primary/20",
             isDefaultModel && "opacity-40 cursor-not-allowed",
           ),
           icon: <Minus className="h-4 w-4" />,
@@ -169,8 +171,7 @@ export function ProviderActions({
         return {
           disabled: false,
           variant: "secondary" as const,
-          className:
-            "bg-blue-100 text-blue-600 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-400 dark:hover:bg-blue-900/70",
+          className: "bg-primary/10 text-primary hover:bg-primary/20",
           icon: <Check className="h-4 w-4" />,
           text: t("failover.inQueue", { defaultValue: "已加入" }),
         };
@@ -179,7 +180,7 @@ export function ProviderActions({
         disabled: false,
         variant: "default" as const,
         className:
-          "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
+          "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm shadow-primary/20",
         icon: <Plus className="h-4 w-4" />,
         text: t("failover.addQueue", { defaultValue: "加入" }),
       };
@@ -221,7 +222,10 @@ export function ProviderActions({
   const buttonState = getMainButtonState();
 
   const canDelete =
-    !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
+    !isLocked && !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
+  const lockedHint = t("provider.lockedProviderHint", {
+    defaultValue: "Official 和 PuppyRouter 供应商不可删除或复制",
+  });
   const readOnlyHint = t("provider.managedByHermesHint", {
     defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
   });
@@ -250,7 +254,7 @@ export function ProviderActions({
                 "w-fit px-2.5",
                 isDefaultModel
                   ? "bg-gray-200 text-muted-foreground dark:bg-gray-700 opacity-60 cursor-not-allowed"
-                  : "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
+                  : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm shadow-primary/20",
               )}
             >
               <Zap className="h-4 w-4" />
@@ -298,9 +302,13 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={onDuplicate}
-          title={t("provider.duplicate")}
-          className={iconButtonClass}
+          onClick={isLocked ? undefined : onDuplicate}
+          disabled={isLocked}
+          title={isLocked ? lockedHint : t("provider.duplicate")}
+          className={cn(
+            iconButtonClass,
+            isLocked && "opacity-40 cursor-not-allowed text-muted-foreground",
+          )}
         >
           <Copy className="h-4 w-4" />
         </Button>
@@ -356,7 +364,13 @@ export function ProviderActions({
           size="icon"
           variant="ghost"
           onClick={canDelete ? onDelete : undefined}
-          title={isReadOnly ? readOnlyHint : t("common.delete")}
+          title={
+            isLocked
+              ? lockedHint
+              : isReadOnly
+                ? readOnlyHint
+                : t("common.delete")
+          }
           className={cn(
             iconButtonClass,
             canDelete && "hover:text-red-500 dark:hover:text-red-400",

@@ -8,7 +8,7 @@ import zhTW from "./locales/zh-TW.json";
 
 type Language = "zh" | "zh-TW" | "en" | "ja";
 
-const DEFAULT_LANGUAGE: Language = "zh";
+const DEFAULT_LANGUAGE: Language = "en";
 
 const getInitialLanguage = (): Language => {
   if (typeof window !== "undefined") {
@@ -29,8 +29,8 @@ const getInitialLanguage = (): Language => {
 
   const navigatorLang =
     typeof navigator !== "undefined"
-      ? (navigator.language?.toLowerCase() ??
-        navigator.languages?.[0]?.toLowerCase())
+      ? (navigator.languages?.[0]?.toLowerCase() ??
+        navigator.language?.toLowerCase())
       : undefined;
 
   if (navigatorLang === "zh") {

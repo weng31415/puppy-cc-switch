@@ -1,27 +1,27 @@
 <div align="center">
 
-# CC Switch
+# puppyrouter app
 
 ### Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes Agent のオールインワン管理ツール
 
-[![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Version](https://img.shields.io/github/v/release/farion1231/puppyrouter-app?color=blue&label=version)](https://github.com/farion1231/puppyrouter-app/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/puppyrouter-app/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/farion1231/puppyrouter-app/total)](https://github.com/farion1231/puppyrouter-app/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fpuppyrouter-app | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-### 🌐 唯一の公式サイト：**[ccswitch.io](https://ccswitch.io)**
+### 🌐 唯一の公式サイト：**[puppyrouter.com](https://puppyrouter.com)**
 
 [English](README.md) | [中文](README_ZH.md) | 日本語 | [Deutsch](README_DE.md) | [Changelog](CHANGELOG.md)
 
 </div>
 
-## CC Switch を選ぶ理由
+## puppyrouter app を選ぶ理由
 
 最新の AI コーディングは Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes などのツールに依存していますが、各ツールの設定形式はバラバラです。API プロバイダを切り替えるたびに JSON、TOML、`.env` ファイルを手動で編集する必要があり、複数ツール間で MCP や Skills を統一的に管理する手段もありません。
 
-**CC Switch** は、対応する AI ツールを 1 つのデスクトップアプリで一元管理できます。設定ファイルを手作業で編集する代わりに、ワンクリックでプロバイダをインポートし、瞬時に切り替えられるビジュアルインターフェースを提供します。公式プロバイダーのショートカット、カスタムゲートウェイ設定、統一 MCP・Skills 管理、システムトレイからの即時切り替え機能を搭載。すべてはアトミック書き込みによる信頼性の高い SQLite データベースに支えられており、設定の破損を防ぎます。
+**puppyrouter app** は、対応する AI ツールを 1 つのデスクトップアプリで一元管理できます。設定ファイルを手作業で編集する代わりに、ワンクリックでプロバイダをインポートし、瞬時に切り替えられるビジュアルインターフェースを提供します。公式プロバイダーのショートカット、カスタムゲートウェイ設定、統一 MCP・Skills 管理、システムトレイからの即時切り替え機能を搭載。すべてはアトミック書き込みによる信頼性の高い SQLite データベースに支えられており、設定の破損を防ぎます。
 
 - **1 つのアプリで 7 つのツール** -- Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes を単一インターフェースで管理
 - **手動編集は不要** -- 公式プロバイダーまたはプライベートゲートウェイを一度追加すれば、設定ファイルを直接編集せずに切り替え可能
@@ -70,15 +70,15 @@
 ### システム & プラットフォーム
 
 - **クラウド同期** -- カスタム設定ディレクトリ（Dropbox、OneDrive、iCloud、NAS）および WebDAV サーバー同期
-- **Deep Link** (`ccswitch://`) -- URL 経由でプロバイダ、MCP サーバー、Prompts、Skills をワンクリックインポート
+- **Deep Link** (`puppyrouter://`) -- URL 経由でプロバイダ、MCP サーバー、Prompts、Skills をワンクリックインポート
 - ダーク / ライト / システムテーマ、自動起動、自動アップデーター、アトミック書き込み、自動バックアップ、多言語対応（簡体中文/繁體中文/英/日）
 
 ## よくある質問
 
 <details>
-<summary><strong>CC Switch はどの AI ツールに対応していますか？</strong></summary>
+<summary><strong>puppyrouter app はどの AI ツールに対応していますか？</strong></summary>
 
-CC Switch は **Claude Code**、**Claude Desktop**、**Codex**、**Gemini CLI**、**OpenCode**、**OpenClaw**、**Hermes** の 7 つのツールに対応しています。各ツールに専用のプロバイダプリセットと設定管理が用意されています。
+puppyrouter app は **Claude Code**、**Claude Desktop**、**Codex**、**Gemini CLI**、**OpenCode**、**OpenClaw**、**Hermes** の 7 つのツールに対応しています。各ツールに専用のプロバイダプリセットと設定管理が用意されています。
 
 </details>
 
@@ -92,21 +92,21 @@ CC Switch は **Claude Code**、**Claude Desktop**、**Codex**、**Gemini CLI**�
 <details>
 <summary><strong>プロバイダを切り替えた後、プラグイン設定が消えてしまいました。どうすればよいですか？</strong></summary>
 
-CC Switch には「共有設定スニペット」機能があり、APIキーやエンドポイント以外の共通データをプロバイダ間で引き継ぐことができます。「プロバイダ編集」→「共有設定パネル」→「現在のプロバイダから抽出」をクリックして、すべての共通データを保存してください。新しいプロバイダを作成する際に「共有設定を書き込む」にチェック（デフォルトで有効）を入れれば、プラグインなどのデータが新しいプロバイダ設定に含まれます。すべての設定項目は、アプリ初回起動時にインポートされたデフォルトプロバイダに保存されており、失われることはありません。
+puppyrouter app には「共有設定スニペット」機能があり、APIキーやエンドポイント以外の共通データをプロバイダ間で引き継ぐことができます。「プロバイダ編集」→「共有設定パネル」→「現在のプロバイダから抽出」をクリックして、すべての共通データを保存してください。新しいプロバイダを作成する際に「共有設定を書き込む」にチェック（デフォルトで有効）を入れれば、プラグインなどのデータが新しいプロバイダ設定に含まれます。すべての設定項目は、アプリ初回起動時にインポートされたデフォルトプロバイダに保存されており、失われることはありません。
 
 </details>
 
 <details>
 <summary><strong>macOS のインストールについて</strong></summary>
 
-CC Switch の macOS 版は Apple によるコード署名と公証が完了しています。直接ダウンロードしてインストールできます — 追加の手順は不要です。`.dmg` インストーラの使用を推奨します。
+puppyrouter app の macOS 版は Apple によるコード署名と公証が完了しています。直接ダウンロードしてインストールできます — 追加の手順は不要です。`.dmg` インストーラの使用を推奨します。
 
 </details>
 
 <details>
 <summary><strong>現在アクティブなプロバイダを削除できないのはなぜですか？</strong></summary>
 
-CC Switch は「最小限の介入」という設計原則に従っています。アプリをアンインストールしても、CLI ツールは正常に動作し続けます。すべての設定を削除すると対応する CLI ツールが使用できなくなるため、システムは常にアクティブな設定を 1 つ保持します。特定の CLI ツールをあまり使用しない場合は、設定で非表示にできます。公式ログインに戻す方法は、次の質問をご覧ください。
+puppyrouter app は「最小限の介入」という設計原則に従っています。アプリをアンインストールしても、CLI ツールは正常に動作し続けます。すべての設定を削除すると対応する CLI ツールが使用できなくなるため、システムは常にアクティブな設定を 1 つ保持します。特定の CLI ツールをあまり使用しない場合は、設定で非表示にできます。公式ログインに戻す方法は、次の質問をご覧ください。
 
 </details>
 
@@ -120,11 +120,11 @@ CC Switch は「最小限の介入」という設計原則に従っています�
 <details>
 <summary><strong>データはどこに保存されますか？</strong></summary>
 
-- **データベース**: `~/.cc-switch/cc-switch.db`（SQLite -- プロバイダ、MCP、Prompts、Skills）
-- **ローカル設定**: `~/.cc-switch/settings.json`（デバイスレベルの UI 設定）
-- **バックアップ**: `~/.cc-switch/backups/`（自動ローテーション、最新 10 件を保持）
-- **Skills**: `~/.cc-switch/skills/`（デフォルトでシンボリックリンクにより対応アプリに接続）
-- **Skill バックアップ**: `~/.cc-switch/skill-backups/`（アンインストール前に自動作成、最新 20 件を保持）
+- **データベース**: `~/.puppyrouter-app/puppyrouter-app.db`（SQLite -- プロバイダ、MCP、Prompts、Skills）
+- **ローカル設定**: `~/.puppyrouter-app/settings.json`（デバイスレベルの UI 設定）
+- **バックアップ**: `~/.puppyrouter-app/backups/`（自動ローテーション、最新 10 件を保持）
+- **Skills**: `~/.puppyrouter-app/skills/`（デフォルトでシンボリックリンクにより対応アプリに接続）
+- **Skill バックアップ**: `~/.puppyrouter-app/skill-backups/`（アンインストール前に自動作成、最新 20 件を保持）
 
 </details>
 
@@ -162,25 +162,25 @@ CC Switch は「最小限の介入」という設計原則に従っています�
 
 ### Windows ユーザー
 
-[Releases](../../releases) ページから最新版の `CC-Switch-v{version}-Windows.msi` インストーラー、またはポータブル版 `CC-Switch-v{version}-Windows-Portable.zip` をダウンロード。
+[Releases](../../releases) ページから最新版の `puppyrouter-app-v{version}-Windows.msi` インストーラー、またはポータブル版 `puppyrouter-app-v{version}-Windows-Portable.zip` をダウンロード。
 
 ### macOS ユーザー
 
 **方法 1: Homebrew でインストール（推奨）**
 
 ```bash
-brew install --cask cc-switch
+brew install --cask puppyrouter-app
 ```
 
 アップデート:
 
 ```bash
-brew upgrade --cask cc-switch
+brew upgrade --cask puppyrouter-app
 ```
 
 **方法 2: 手動ダウンロード**
 
-[Releases](../../releases) から `CC-Switch-v{version}-macOS.zip` をダウンロードして展開。
+[Releases](../../releases) から `puppyrouter-app-v{version}-macOS.zip` をダウンロードして展開。
 
 > **注意**: 開発者アカウント未登録のため、初回起動時に「開発元を確認できません」と表示される場合があります。一度閉じてから「システム設定」→「プライバシーとセキュリティ」→「このまま開く」をクリックしてください。以降は通常通り起動できます。
 
@@ -189,16 +189,16 @@ brew upgrade --cask cc-switch
 **paru でインストール（推奨）**
 
 ```bash
-paru -S cc-switch-bin
+paru -S puppyrouter-app-bin
 ```
 
 ### Linux ユーザー
 
 [Releases](../../releases) から最新版の Linux ビルドをダウンロード：
 
-- `CC-Switch-v{version}-Linux.deb`（Debian/Ubuntu）
-- `CC-Switch-v{version}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `CC-Switch-v{version}-Linux.AppImage`（汎用）
+- `puppyrouter-app-v{version}-Linux.deb`（Debian/Ubuntu）
+- `puppyrouter-app-v{version}-Linux.rpm`（Fedora/RHEL/openSUSE）
+- `puppyrouter-app-v{version}-Linux.AppImage`（汎用）
 
 > **Flatpak**：公式リリースには含まれていません。`.deb` から自分でビルドできます — 手順は [`flatpak/README.md`](flatpak/README.md) を参照してください。
 
@@ -227,7 +227,7 @@ paru -S cc-switch-bin
 
 **コア設計パターン**
 
-- **SSOT** (Single Source of Truth): すべてのデータを `~/.cc-switch/cc-switch.db`（SQLite）に集約
+- **SSOT** (Single Source of Truth): すべてのデータを `~/.puppyrouter-app/puppyrouter-app.db`（SQLite）に集約
 - **二層ストレージ**: 同期データは SQLite、デバイスデータは JSON
 - **双方向同期**: 切り替え時はライブファイルへ書き込み、編集時はアクティブプロバイダから逆同期
 - **アトミック書き込み**: 一時ファイル + rename パターンで設定破損を防止
@@ -393,7 +393,7 @@ PR を送る前に以下をご確認ください：
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/puppyrouter-app&type=Date)](https://www.star-history.com/#farion1231/puppyrouter-app&Date)
 
 ## ライセンス
 

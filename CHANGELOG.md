@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to CC Switch will be documented in this file.
+All notable changes to puppyrouter app will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -57,9 +57,9 @@ Development since v3.16.3 focuses on tightening the Codex proxy path — native 
 
 ### Docs
 
-- **Kimi Pinned Sponsor Banner**: The pinned sponsor banner at the top of all four README locales (en/zh/ja/de) now features Kimi K2.7 Code in place of the previous MiniMax M2.7 banner. The copy reflects the K2.7 Code release (a coding-focused agentic model that reduces thinking-token usage roughly 30% versus K2.6), the banner is served from in-repo assets (`assets/partners/banners/kimi-banner-en.png` / `kimi-banner-zh.png`) instead of the Moonshot CDN, and a clickable call-to-action links to the `aff=cc-switch` Moonshot console.
+- **Kimi Pinned Sponsor Banner**: The pinned sponsor banner at the top of all four README locales (en/zh/ja/de) now features Kimi K2.7 Code in place of the previous MiniMax M2.7 banner. The copy reflects the K2.7 Code release (a coding-focused agentic model that reduces thinking-token usage roughly 30% versus K2.6), the banner is served from in-repo assets (`assets/partners/banners/kimi-banner-en.png` / `kimi-banner-zh.png`) instead of the Moonshot CDN, and a clickable call-to-action links to the `aff=puppyrouter-app` Moonshot console.
 - **Codex Unified Session-History Guide**: New trilingual (zh/en/ja) guide for the unified Codex session-history toggle, explaining what opt-in migration (on enable) and ledger-based restore (on disable) actually do, why session data is never truly deleted (tag-only rewrite plus automatic backups), and how to verify files on disk versus merely being filed under another provider drawer. It includes a symptom reference table for the common "my sessions are gone" misunderstanding plus on-disk verification commands for macOS/Linux/Windows, and is linked as the lead item in the v3.16.3 "Usage Guides" release notes.
-- **Simplified Homebrew Install Instructions**: The installation guide no longer instructs users to run `brew tap farion1231/ccswitch` before `brew install --cask cc-switch`; the deprecated tap step was removed from the en/ja/zh user manuals so the cask installs directly. (#4319)
+- **Simplified Homebrew Install Instructions**: The installation guide no longer instructs users to run `brew tap farion1231/ccswitch` before `brew install --cask puppyrouter-app`; the deprecated tap step was removed from the en/ja/zh user manuals so the cask installs directly. (#4319)
 - **Star-History Global Rank Badge**: Added a star-history global rank badge next to the existing Trendshift badge in all four README locales, with light/dark theme variants.
 - **Volcengine Coding Plan Campaign Link**: The "中国大陆地区的开发者请点击这里" link in the ByteDance/Volcengine sponsor entry now points to the Volcengine `ai618` campaign page instead of the previous `codingplan` referral URL, updated across all four README locales.
 - **CCSub Sponsor Banner Vector Asset**: Replaced the low-res `ccsub.jpg` sponsor logo with a vector `ccsub.svg`, letterboxed from 2046x648 to 2046x850 (~2.406:1) so it matches the other sponsor-table banners and renders at the same 62px height. All four README locales point at the new asset.
@@ -73,7 +73,7 @@ Development since v3.16.2 focuses on getting usage accounting right end-to-end �
 ### Added
 
 - **Custom User-Agent Override**: Provider configs can now set a custom User-Agent that the proxy applies consistently across request forwarding, stream check, and model listing (`GET /v1/models`), so coding-plan upstreams that gate on UA no longer fail detection or return 403 while the proxy itself works. The Claude and Codex forms expose it in advanced settings with a curated presets dropdown (Claude Code / Kilo Code families that pass UA whitelists) and live non-blocking validation; stale custom UAs are dropped when switching to an official preset to avoid silently altering headers (#3671).
-- **Unified Codex Session History**: Official Codex sessions can now share a single resume-history bucket with cc-switch third-party sessions via an opt-in toggle under Settings → Codex App Enhancements, so the resume picker no longer hides them from each other. When enabled, the live `config.toml` routes official runs through a shared `custom` model_provider that mirrors the built-in OpenAI provider (`auth.json` is untouched); the toggle is forward-only by default but the enable dialog offers a checkbox to migrate existing official sessions (with per-generation backups), and the disable dialog offers a precise ledger-based restore that only reverts sessions originally recorded as `openai` while leaving sessions created during the toggle untouched.
+- **Unified Codex Session History**: Official Codex sessions can now share a single resume-history bucket with puppyrouter-app third-party sessions via an opt-in toggle under Settings → Codex App Enhancements, so the resume picker no longer hides them from each other. When enabled, the live `config.toml` routes official runs through a shared `custom` model_provider that mirrors the built-in OpenAI provider (`auth.json` is untouched); the toggle is forward-only by default but the enable dialog offers a checkbox to migrate existing official sessions (with per-generation backups), and the disable dialog offers a precise ledger-based restore that only reverts sessions originally recorded as `openai` while leaving sessions created during the toggle untouched.
 - **Dashboard-Wide Provider/Model Filters**: The provider and model filters move from inside the request-log table up to the top bar, applying globally to the hero summary, trend chart, request logs, and both stats tabs so you can scope the whole dashboard to a given source and model. Sources match by exact display name (so session placeholder rows like "Claude (Session)" are selectable) and models match by effective pricing model, with the model dropdown cascading from the selected source and both lists showing only options that have data in the current range.
 - **Refreshed Model Pricing Seed**: Added pricing for 9 models including Claude Fable 5, Grok 4.3, Mistral Medium 3.5 / Small 4, and Qwen 3.7 Max/Plus, and corrected 28 existing prices against current official vendor list pricing (GLM, Grok, MiMo, Doubao, Kimi, MiniMax, Mistral, Qwen) so usage cost estimates are accurate. Each change updates the seed for fresh installs and adds a guarded repair for existing databases without clobbering user-edited rows.
 - **Claude Fable 5 Model Tier**: Provider forms now expose `claude-fable-5` as a fourth model-mapping tier on both the Claude Code and Claude Desktop proxy paths, with a fable → opus → default fallback mirroring the official downgrade and the `fable-` prefix whitelisted for the Desktop 1.12603.1+ validator. A clarified four-language fallback hint warns that leaving a tier blank on third-party endpoints forwards the literal model name and 404s (#3980, #4026, #4049).
@@ -136,7 +136,7 @@ Development since v3.16.1 focuses on broadening data portability and usage obser
 - **ZenMux Token Plan Provider**: Added ZenMux as a Token Plan coding-plan provider that accepts a manually entered API key and base URL in the usage-script modal and renders its quota with USD-denominated used / limit values (#2709).
 - **CherryIN Preset**: Added the CherryIN aggregator gateway as a quick-config preset across all seven supported apps — Anthropic-format endpoint for Claude Code / Claude Desktop / OpenClaw / Hermes, `@ai-sdk/anthropic` for OpenCode, the OpenAI-compatible endpoint for Codex, and the Gemini-compatible endpoint for Gemini CLI — with the official brand icon, placed next to AiHubMix (#3643).
 - **CCSub Preset**: Added CCSub, a multi-model aggregator partner, as a quick-config preset across six apps — Claude Code, Claude Desktop, Codex, OpenCode, OpenClaw, and Hermes — with the official brand icon and the partner referral link prefilled as the API-key signup URL (`gpt-5.5` for the OpenAI-compatible Codex and OpenCode endpoints).
-- **Codex CLI Models Endpoint**: The local proxy now answers `GET /v1/models`, which Codex CLI probes at startup, returning the cc-switch-managed Codex model catalog. A stale-catalog guard parses the live `config.toml` and only serves the catalog when `model_catalog_json` still references the cc-switch-owned file, so a leftover catalog from a previous provider is not advertised (#3818).
+- **Codex CLI Models Endpoint**: The local proxy now answers `GET /v1/models`, which Codex CLI probes at startup, returning the puppyrouter-app-managed Codex model catalog. A stale-catalog guard parses the live `config.toml` and only serves the catalog when `model_catalog_json` still references the puppyrouter-app-owned file, so a leftover catalog from a previous provider is not advertised (#3818).
 - **Codex Chat File and Audio Attachments**: The Codex Responses-to-Chat converter now maps `input_file` parts (carrying `file_id` or inline `file_data`) and `input_audio` parts into their Chat Completions equivalents, and emits top-level `input_*` items that were previously dropped, so file and audio attachments reach Chat-only Codex upstreams.
 
 ### Changed
@@ -146,7 +146,7 @@ Development since v3.16.1 focuses on broadening data portability and usage obser
 
 ### Fixed
 
-- **Codex Chat Truncated Stream Detection**: When a Chat Completions upstream ends a stream without a `finish_reason` or `[DONE]`, CC Switch no longer reports it as a normal completion — it finalizes normally only when the stream truly finished, emits an incomplete (`max_output_tokens`) response when partial output was produced, and emits a failed `stream_truncated` event when nothing was produced. Late-arriving reasoning is also attached to still-active streamed tool calls.
+- **Codex Chat Truncated Stream Detection**: When a Chat Completions upstream ends a stream without a `finish_reason` or `[DONE]`, puppyrouter app no longer reports it as a normal completion — it finalizes normally only when the stream truly finished, emits an incomplete (`max_output_tokens`) response when partial output was produced, and emits a failed `stream_truncated` event when nothing was produced. Late-arriving reasoning is also attached to still-active streamed tool calls.
 - **Codex Chat `tool_choice` Without Tools**: The Responses-to-Chat converter now drops `tool_choice` and `parallel_tool_calls` whenever the resulting tools array is absent or empty, so strict OpenAI-compatible upstreams (vLLM, enterprise gateways) no longer reject the request with "When using `tool_choice`, `tools` must be set." (#3640).
 - **Codex Custom Tool Metadata Over Chat Routing**: Custom Codex tools (such as the freeform `apply_patch` tool) now preserve their full original definition — including format and grammar metadata — as a compact, order-stable JSON block in the generated Chat function description instead of a generic placeholder, keeping them usable on Chat Completions upstreams (#3644).
 - **Codex Chat `reasoning_tokens` in Usage**: The Chat-to-Responses usage conversion now always includes `output_tokens_details.reasoning_tokens` (defaulting to 0), even when a provider omits `completion_tokens_details` or returns it as a non-object, satisfying the Codex CLI's strict requirement and avoiding repeated parse failures and retries (#3514).
@@ -157,7 +157,7 @@ Development since v3.16.1 focuses on broadening data portability and usage obser
 - **Localhost Listen Address Normalization**: Saving the proxy with a listen address of `localhost` now normalizes it to `127.0.0.1` before persisting, avoiding binding inconsistencies (#3016).
 - **Anthropic System Message Normalization**: For Anthropic-format providers, system-role entries inside the `messages` array are collapsed and merged into the top-level `system` field (preserving order and any existing top-level system), preventing strict upstreams from rejecting non-leading system messages; OpenAI Chat routing is untouched (#3775).
 - **Claude Desktop 1M-Context Model Routing**: Claude Desktop appends a `[1m]` marker to the model name when the 1M-context beta is active (e.g. `claude-opus-4-8[1m]`). The proxy now strips that suffix before route lookup so exact, alias, legacy, and role-keyword matching resolve correctly, fixing `route_unknown` (HTTP 400) failures when switching to a 1M-capable model mid-conversation.
-- **Codex 413 Error Clarity**: When a Codex upstream gateway rejects an oversized request with HTTP 413, the proxy now returns a dedicated message identifying it as the provider's server-side body-size limit (not a CC Switch limit) with recovery steps (run `/compact`, drop large logs or inline images, or ask the provider to raise its limit), instead of echoing the raw upstream HTML page.
+- **Codex 413 Error Clarity**: When a Codex upstream gateway rejects an oversized request with HTTP 413, the proxy now returns a dedicated message identifying it as the provider's server-side body-size limit (not a puppyrouter app limit) with recovery steps (run `/compact`, drop large logs or inline images, or ask the provider to raise its limit), instead of echoing the raw upstream HTML page.
 - **Proxy Panel Error Detail**: When toggling proxy takeover fails, the proxy panel toast now includes the underlying backend error detail instead of only a generic failure message (#3656).
 - **Copilot Infinite-Whitespace Threshold**: Raised the streaming infinite-whitespace abort threshold from 20 to 500 consecutive whitespace characters, so legitimate tool calls with deeply indented code arguments are no longer falsely aborted while still catching the real Copilot infinite-whitespace bug (#2647).
 - **Subscription Tier Tray Rendering**: Fixed tray and quota rendering for official subscription tiers via a unified tier-to-label mapping: Claude/Codex no longer drop the seven-day window, Gemini Pro/Flash/Flash-Lite tiers no longer leak raw machine names, and multi-window plans (e.g. Opus + Sonnet) now display the worst utilization instead of the first match.
@@ -165,10 +165,10 @@ Development since v3.16.1 focuses on broadening data portability and usage obser
 - **Zhipu Quota Query Endpoint Routing**: The Zhipu coding-plan quota lookup was hard-coded to `api.z.ai`, so users on the mainland China preset (`open.bigmodel.cn`) could not retrieve usage when the international endpoint was unreachable. The quota request now routes to the host matching the user's configured base URL (#3702).
 - **MiniMax Balance API and Pricing**: Adapted MiniMax coding-plan quota to its new balance API (which returns remaining-percent fields instead of usage counts that broke the old parser and left the tray blank), filtered out non-coding models (e.g. video), handled plans without a weekly limit, and seeded default pricing for MiniMax M3 (#3518).
 - **GLM Coding Plan Endpoints and Model Fetch**: Corrected the ZhiPu / Z.AI GLM Coding Plan presets to the `/api/coding/paas/v4` endpoints across Codex, OpenCode, OpenClaw, and Hermes, and taught the model-list probe to query `{base}/models` for base URLs that already end in a `/v{N}` segment (keeping `/v1/models` as a fallback), so the Fetch Models button no longer 404s on versioned endpoints (#3524).
-- **Codex Model Catalog Path Portability**: Codex now writes only the relative filename `cc-switch-model-catalog.json` to `config.toml` instead of an absolute path (Codex CLI resolves it from the config directory), fixing the model catalog breaking on WSL and symlinked setups where the absolute path could not be translated (#3614).
+- **Codex Model Catalog Path Portability**: Codex now writes only the relative filename `puppyrouter-app-model-catalog.json` to `config.toml` instead of an absolute path (Codex CLI resolves it from the config directory), fixing the model catalog breaking on WSL and symlinked setups where the absolute path could not be translated (#3614).
 - **APINebula OpenCode SDK**: The APINebula OpenCode preset now loads `@ai-sdk/openai-compatible` instead of `@ai-sdk/openai`, so requests use the OpenAI Chat Completions format the relay expects rather than the Responses API.
-- **Windows Tray Icon Residue on Exit**: Quitting CC Switch on Windows could leave a dead tray icon until hovered; the app now removes the tray icon before exiting so it disappears cleanly (#3797).
-- **Windows Taskbar Icon**: Set an explicit Windows AppUserModelID at runtime and stamped the installer's desktop and start-menu shortcuts with the same ID and product icon, so CC Switch shows the correct icon and groups properly in the taskbar (#3457).
+- **Windows Tray Icon Residue on Exit**: Quitting puppyrouter app on Windows could leave a dead tray icon until hovered; the app now removes the tray icon before exiting so it disappears cleanly (#3797).
+- **Windows Taskbar Icon**: Set an explicit Windows AppUserModelID at runtime and stamped the installer's desktop and start-menu shortcuts with the same ID and product icon, so puppyrouter app shows the correct icon and groups properly in the taskbar (#3457).
 - **Windows Subdirectory Skill Updates**: Normalized backslash path separators to forward slashes when scanning installed skills on Windows, so skills nested in subdirectories (e.g. `skills/my-skill`) are matched by the update check instead of being silently skipped (#3430).
 - **macOS Input Auto-Capitalization**: Disabled autocomplete, autocorrect, autocapitalize, and spellcheck on the shared text Input component so macOS no longer auto-capitalizes or auto-corrects the first letter typed into configuration fields (#3626).
 - **Codex VS Code Session Previews**: Codex session previews for requests sent from VS Code could show selection or open-file content instead of the prompt when a markdown heading preceded the injected request. Both the backend title and frontend preview now match the last "## My request for Codex:" heading (the IDE injects the real request as the final section) (#3593).
@@ -221,7 +221,7 @@ Development since v3.15.0 focuses on making third-party Codex providers work lik
 
 ### Highlights
 
-- **Codex Chat Completions routing**: Codex providers can now be served by OpenAI-compatible Chat Completions upstreams. CC Switch converts Codex Responses requests into Chat Completions, rebuilds JSON and SSE responses back into Responses shape, preserves reasoning / `<think>` / tool-call state, normalizes error envelopes, and probes Chat-format providers correctly in Stream Check.
+- **Codex Chat Completions routing**: Codex providers can now be served by OpenAI-compatible Chat Completions upstreams. puppyrouter app converts Codex Responses requests into Chat Completions, rebuilds JSON and SSE responses back into Responses shape, preserves reasoning / `<think>` / tool-call state, normalizes error envelopes, and probes Chat-format providers correctly in Stream Check.
 - **Codex third-party provider state is unified and safer**: third-party Codex providers now share the stable `custom` model-provider bucket, with a one-shot migration for historical JSONL sessions and `state_5.sqlite` threads, plus fixes that preserve OAuth login state, user-selected catalog models, and user-authored provider ids during live reads / switches.
 - **Managed CLI tool management**: the About page is now a tool management panel for Claude, Codex, Gemini, OpenCode, OpenClaw, and Hermes, with install / update actions, update-all, conflict diagnostics, source-aware anchored upgrades, WSL handling, and visible "installed but not runnable" states.
 - **Provider ecosystem and model matrix refresh**: added APIKEY.FUN, APINebula, AtlasCloud, SudoCode, Xiaomi MiMo Token Plan, and Claude Desktop Official presets; refreshed partner links and default models / pricing across apps; upgraded the default Claude Opus model line to 4.8 and GPT defaults to 5.5 where applicable.
@@ -230,11 +230,11 @@ Development since v3.15.0 focuses on making third-party Codex providers work lik
 
 ### Added
 
-- **Codex Chat Completions Routing**: Codex providers can now be served by upstreams that only speak the OpenAI Chat Completions API. CC Switch's local proxy converts Codex's outgoing Responses requests into Chat Completions and rebuilds the Chat response (both JSON and SSE) back into Responses shape, preserving `reasoning_content`, inline `<think>` blocks, streamed reasoning summaries, tool calls, and `previous_response_id` follow-ups. A bounded Codex Chat history cache restores tool calls before their tool outputs.
+- **Codex Chat Completions Routing**: Codex providers can now be served by upstreams that only speak the OpenAI Chat Completions API. puppyrouter app's local proxy converts Codex's outgoing Responses requests into Chat Completions and rebuilds the Chat response (both JSON and SSE) back into Responses shape, preserving `reasoning_content`, inline `<think>` blocks, streamed reasoning summaries, tool calls, and `previous_response_id` follow-ups. A bounded Codex Chat history cache restores tool calls before their tool outputs.
 - **22 Codex Third-Party Provider Presets with Chat Routing**: Enabled Chat Completions routing with explicit model catalogs for major Chinese/Asian providers — DeepSeek, Zhipu GLM (+ en), Kimi, MiniMax (+ en), StepFun (+ en), Baidu Qianfan Coding Plan, Bailian, ModelScope, Longcat, BaiLing, Xiaomi MiMo (+ Token Plan), Volcengine Agentplan, BytePlus, DouBao Seed, SiliconFlow (+ en), Novita AI, and Nvidia. Each preset declares its context window so the UI can size the model-mapping rows.
-- **Codex Model Mapping Table**: Codex provider forms now expose a model catalog (model + display name + context window per row) that is the single source of truth for the upstream model list, projected to `~/.codex/cc-switch-model-catalog.json`.
+- **Codex Model Mapping Table**: Codex provider forms now expose a model catalog (model + display name + context window per row) that is the single source of truth for the upstream model list, projected to `~/.codex/puppyrouter-app-model-catalog.json`.
 - **Codex Chat Providers in Stream Check**: Stream Check now probes Chat-format Codex providers against `/chat/completions` with a Chat-shaped body instead of `/v1/responses`, and aligns its URL fallback order with the production `CodexAdapter` (origin-only base URLs hit `/v1/<endpoint>` first) so a non-404 error on the bare path no longer flags a working provider as down.
-- **Codex Chat Reasoning Auto-Detection**: When a Codex provider is served through Chat Completions routing, CC Switch now auto-detects the upstream's reasoning interface from its name, base URL, and model — injecting the correct thinking parameter (`thinking:{type}`, `enable_thinking`, `reasoning_split`, top-level `reasoning_effort`, or OpenRouter's native `reasoning:{effort}` object) with no manual setup. Aggregator/hosting platforms (OpenRouter, SiliconFlow) are matched platform-first, since the same model can expose different reasoning controls on different platforms. Providers that only expose a thinking on/off switch (Kimi, GLM, Qwen, MiniMax, MiMo, SiliconFlow) drop the effort *level* instead of forwarding an unsupported field — so changing Codex's reasoning effort has no effect for them — while providers with real effort tiers (DeepSeek, OpenRouter, and StepFun's `step-3.5-flash-2603` only) pass the level through. OpenRouter specifically uses the native `reasoning:{effort}` object, clamps `max` to `xhigh` (its enum has no `max`), and forwards an explicit `effort:"none"` so reasoning can be turned off.
+- **Codex Chat Reasoning Auto-Detection**: When a Codex provider is served through Chat Completions routing, puppyrouter app now auto-detects the upstream's reasoning interface from its name, base URL, and model — injecting the correct thinking parameter (`thinking:{type}`, `enable_thinking`, `reasoning_split`, top-level `reasoning_effort`, or OpenRouter's native `reasoning:{effort}` object) with no manual setup. Aggregator/hosting platforms (OpenRouter, SiliconFlow) are matched platform-first, since the same model can expose different reasoning controls on different platforms. Providers that only expose a thinking on/off switch (Kimi, GLM, Qwen, MiniMax, MiMo, SiliconFlow) drop the effort *level* instead of forwarding an unsupported field — so changing Codex's reasoning effort has no effect for them — while providers with real effort tiers (DeepSeek, OpenRouter, and StepFun's `step-3.5-flash-2603` only) pass the level through. OpenRouter specifically uses the native `reasoning:{effort}` object, clamps `max` to `xhigh` (its enum has no `max`), and forwards an explicit `effort:"none"` so reasoning can be turned off.
 - **Codex Goal Mode and Remote Compaction Controls**: Codex config editing now exposes a Goal Mode toggle and a Remote Compaction toggle for third-party providers; new Codex templates default to `disable_response_storage = true` while still allowing explicit goal support.
 - **Xiaomi MiMo Token Plan Presets**: Added Xiaomi MiMo Token Plan presets with specs aligned to the official documentation (#2803).
 - **Claude Desktop Official Preset**: Added a Claude Desktop Official preset that restores the native Claude Desktop login, plus a localized Claude Desktop user guide (en / zh / ja).
@@ -247,7 +247,7 @@ Development since v3.15.0 focuses on making third-party Codex providers work lik
 
 ### Changed
 
-- **Codex Third-Party Providers Unified into a "custom" History Bucket**: Codex filters resume history by `model_provider`, so switching between provider-specific ids made past sessions appear to vanish. All third-party providers now normalize to a single stable `custom` bucket (reserved built-in ids like `openai` / `ollama` are preserved), with a one-shot device migration that rewrites historical JSONL sessions and the `state_5.sqlite` threads table and backs up originals under `~/.cc-switch/backups/codex-history-provider-migration-v1/`.
+- **Codex Third-Party Providers Unified into a "custom" History Bucket**: Codex filters resume history by `model_provider`, so switching between provider-specific ids made past sessions appear to vanish. All third-party providers now normalize to a single stable `custom` bucket (reserved built-in ids like `openai` / `ollama` are preserved), with a one-shot device migration that rewrites historical JSONL sessions and the `state_5.sqlite` threads table and backs up originals under `~/.puppyrouter-app/backups/codex-history-provider-migration-v1/`.
 - **Codex Provider Form Simplified**: Removed the API Format selector from the Codex form (`wire_api` is always `responses`, so the selector misleadingly implied a protocol change); the model mapping table is now the only source of truth with no hidden default entries, and the form notes that a Codex restart is required after catalog changes since `model_catalog_json` is loaded at startup. Only the "Needs Local Routing" toggle remains.
 - **Codex Local Routing Toggle Hints Rewritten**: Reframed the OFF / ON hints as action guidance (when to enable) rather than scenario descriptions, synced across zh / en / ja.
 - **Codex Live Config Preservation**: Live Codex config reads no longer force-rewrite a user's `model_provider` field, and provider-scoped `experimental_bearer_token` handling now preserves OAuth login state when switching between third-party providers.
@@ -255,7 +255,7 @@ Development since v3.15.0 focuses on making third-party Codex providers work lik
 - **About Page Becomes Tool Management**: The About settings page now presents installed / latest versions, install and update actions, conflict diagnostics, WSL shell preferences, and clearer status for broken or unrunnable tools.
 - **Default Models and Pricing Refreshed**: Upgraded the default Claude Opus model to 4.8, moved GPT-based presets and templates to GPT-5.5 where applicable, refreshed pricing seeds, aligned Claude Desktop model mapping with Claude Code's three-role tiers, and renamed the OpenCode Go preset to drop a stale model suffix.
 - **Partner Links Refreshed**: Updated ShengSuanYun referral links, Atlas Cloud UTM links, and partner copy across README locales and provider metadata.
-- **Homebrew Official Cask Installation**: Installation simplified to `brew install --cask cc-switch` now that CC Switch is in the official Homebrew repository; the personal-tap requirement was removed from all READMEs.
+- **Homebrew Official Cask Installation**: Installation simplified to `brew install --cask puppyrouter-app` now that puppyrouter app is in the official Homebrew repository; the personal-tap requirement was removed from all READMEs.
 - **Shared Frontend Utilities**: Replaced JSON stringify / parse deep-copy patterns with a shared `deepClone` helper and extracted a shared `useTauriEvent` hook (#3140).
 
 ### Fixed
@@ -325,7 +325,7 @@ Development since v3.14.1 focuses on a dedicated Claude Desktop surface with thi
 
 ### Added
 
-- **Claude Desktop Third-Party Provider Switching via Proxy Gateway**: Added a dedicated Claude Desktop surface that brokers third-party Claude providers through CC Switch's in-app proxy, with a routing-support badge for providers that need it, role-based model route mapping locked to `sonnet` / `opus` / `haiku`, Copilot/Codex OAuth provider reuse, a redesigned Claude Code import flow, app-switcher differentiation between "Claude Code" and "Claude Desktop", and 44 provider presets translated from the Claude Code catalog.
+- **Claude Desktop Third-Party Provider Switching via Proxy Gateway**: Added a dedicated Claude Desktop surface that brokers third-party Claude providers through puppyrouter app's in-app proxy, with a routing-support badge for providers that need it, role-based model route mapping locked to `sonnet` / `opus` / `haiku`, Copilot/Codex OAuth provider reuse, a redesigned Claude Code import flow, app-switcher differentiation between "Claude Code" and "Claude Desktop", and 44 provider presets translated from the Claude Code catalog.
 - **Routing Support Badges on Provider Cards**: Provider cards in both Claude Code and Codex panels now show a routing-support badge so users can tell at a glance which providers can be served through Local Routing.
 - **Codex OAuth Live Model List**: ChatGPT Codex providers now fetch the current model list from the ChatGPT backend on demand, replacing the previously hardcoded selection.
 - **Role-Based Model Mapping with 1M Flag**: Claude Code model mapping is now role-based (`sonnet` / `opus` / `haiku`) with display names and a `supports1m` flag, replacing the legacy `[1M]` suffix to decouple routing from raw model IDs.
@@ -344,12 +344,12 @@ Development since v3.14.1 focuses on a dedicated Claude Desktop surface with thi
 ### Changed
 
 - **20 Claude Desktop Presets Switched from Proxy to Direct Mode**: 20 Claude Desktop presets now ship in direct mode instead of routing through the proxy by default, reducing setup friction for users who don't need proxy-specific compatibility shims. Verify connectivity if you previously relied on proxy routing for these presets.
-- **Claude Desktop Operational Notes**: Switching a Claude Desktop provider now writes CC Switch's managed 3P profile and requires restarting Claude Desktop to take effect; proxy-mode providers require CC Switch Local Routing to stay running.
+- **Claude Desktop Operational Notes**: Switching a Claude Desktop provider now writes puppyrouter app's managed 3P profile and requires restarting Claude Desktop to take effect; proxy-mode providers require puppyrouter app Local Routing to stay running.
 - **Failover / Local Routing Guardrails**: Failover controls now require the target app's Local Routing takeover to be enabled, and stopping only the proxy service is blocked while any app still depends on takeover state.
 - **Usage Accounting Semantics**: Usage summaries now report cache-normalized real total tokens and cache hit rate; historical token and cost totals may shift after deduplication and pricing recalculation, but should be more accurate.
 - **Provider Preset Rendering Order**: Provider preset lists now render in author-defined array order with partners prioritized at the top, replacing the previous implicit sort.
 - **Model Mapping Hint Copy Simplified**: `modelMappingOffHint` was rewritten as action-oriented copy across zh / en / ja.
-- **CC Switch Brand Surface Unified to ccswitch.io**: All in-app and README references now point at ccswitch.io as the sole official website; the release notes template also surfaces ccswitch.io.
+- **puppyrouter app Brand Surface Unified to puppyrouter.com**: All in-app and README references now point at puppyrouter.com as the sole official website; the release notes template also surfaces puppyrouter.com.
 - **Theme Switch Simplified**: Removed the circular reveal animation; theme changes are now an instant cross-fade.
 - **Claude Code App Switcher Differentiation**: The app switcher now visually distinguishes "Claude Code" from "Claude Desktop" and uses the "Claude Code" label in the app visibility settings.
 - **CI: Claude Review on Opus 4.7**: Upgraded the Claude review GitHub Action to Opus 4.7, tuned the prompt to reduce nitpick noise, added an `@claude` review-only Code Action, pinned PR head SHA for checkout, and dropped a `--max-turns 5` limit.
@@ -420,8 +420,8 @@ Development since v3.14.1 focuses on a dedicated Claude Desktop surface with thi
 ### Docs
 
 - **README Sponsor Refresh (zh / en / ja)**: Added BytePlus, ClaudeCN, RunAPI, and PatewayAI sponsor entries; cross-linked BytePlus and Volcengine entries; refreshed the Crazyrouter $2 credit claim flow, the Compshare blurb, the Right Code blurb, and other sponsor logos and listings; flattened the LionCC logo onto a white background; switched the Chinese README's sponsor logo to the Volcengine artwork; added Hermes Agent to the README subtitles.
-- **Release Notes Template**: Surfaces `ccswitch.io` in the release notes template.
-- **Brand Surface**: Documented `ccswitch.io` as the sole official website across READMEs and in-app references.
+- **Release Notes Template**: Surfaces `puppyrouter.com` in the release notes template.
+- **Brand Surface**: Documented `puppyrouter.com` as the sole official website across READMEs and in-app references.
 
 ## [3.14.1] - 2026-04-23
 
@@ -441,12 +441,12 @@ Development since v3.14.0 focuses on Codex OAuth stability, tray usage visibilit
 
 ### Removed
 
-- **Hermes Config Health Scanner**: Removed the in-app Hermes config health scanner, warning banner, `scan_hermes_config_health` command, `HermesHealthWarning` type, and `HermesWriteOutcome.warnings` payload. CC Switch now keeps the Hermes surface focused on active provider display, provider switching defaults, memory editing, and launching the Hermes Web UI for deep configuration.
+- **Hermes Config Health Scanner**: Removed the in-app Hermes config health scanner, warning banner, `scan_hermes_config_health` command, `HermesHealthWarning` type, and `HermesWriteOutcome.warnings` payload. puppyrouter app now keeps the Hermes surface focused on active provider display, provider switching defaults, memory editing, and launching the Hermes Web UI for deep configuration.
 
 ### Fixed
 
 - **Codex OAuth Cache Routing**: Stabilized ChatGPT Codex reverse-proxy cache identity by using client-provided session IDs for `prompt_cache_key` and Codex session headers, preserving explicit cache keys, and avoiding generated UUID cache churn (#2218).
-- **Codex OAuth Responses SSE Aggregation**: Non-streaming Anthropic clients now receive JSON even when the ChatGPT Codex upstream forces OpenAI Responses SSE; CC Switch aggregates the upstream SSE events before running the non-streaming transform (#2235).
+- **Codex OAuth Responses SSE Aggregation**: Non-streaming Anthropic clients now receive JSON even when the ChatGPT Codex upstream forces OpenAI Responses SSE; puppyrouter app aggregates the upstream SSE events before running the non-streaming transform (#2235).
 - **Codex OAuth Stream Check Parity**: Stream checks now build Codex OAuth test requests with the same `store: false`, encrypted reasoning include, and provider FAST mode setting as production proxy requests (#2210).
 - **Codex Model Extraction**: Replaced first-line regex matching with TOML parsing when reading Codex config models, so multiline TOML is handled correctly (#2227).
 - **Model Quick-Set / One-Click Config**: Model quick-set updates now apply against the latest provider form config, preventing stale state from making one-click configuration fail (#2249).
@@ -464,7 +464,7 @@ Development since v3.13.0 focuses on onboarding Hermes Agent as a first-class ma
 ### Added
 
 - **Hermes Agent Support (6th Managed App)**: Added Hermes Agent as a first-class managed app with database migration v9→v10, full Rust command surface, YAML-backed `~/.hermes/config.yaml` read/write with atomic backups, MCP sync, Skills sync, session manager with SQLite + JSONL support, and dedicated frontend panels. Supports four API protocols (`chat_completions`, `anthropic_messages`, `codex_responses`, `bedrock_converse`) aligned with Hermes Agent 0.10.0 schema. Read-only rendering for providers owned by the user-authored `providers:` dict, with deep configuration delegated to the Hermes Web UI.
-- **Hermes Memory Panel**: Added a Memory panel for editing `MEMORY.md` and `USER.md` directly from CC Switch, with an enable switch, character-count limits, and a live save flow. Replaces the Prompts entry for Hermes.
+- **Hermes Memory Panel**: Added a Memory panel for editing `MEMORY.md` and `USER.md` directly from puppyrouter app, with an enable switch, character-count limits, and a live save flow. Replaces the Prompts entry for Hermes.
 - **Hermes Provider Presets**: Added ~50 Hermes provider presets spanning Nous Research, Shengsuanyun, OpenRouter, DeepSeek, Together AI, StepFun, Zhipu GLM, Bailian, Kimi, MiniMax, DouBao, BaiLing, ModelScope, KAT-Coder, PackyCode, Cubence, AIGoCode, RightCode, AICodeMirror, AICoding, CrazyRouter, SSSAiCode, Micu, CTok.ai, DDSHub, E-FlowCode, LionCCAPI, PIPELLM, Compshare, SiliconFlow, AiHubMix, DMXAPI, TheRouter, Novita, Nvidia, and Xiaomi MiMo.
 - **Claude Opus 4.7 Support**: Added Claude Opus 4.7 with adaptive thinking whitelisting, per-million pricing seed, and Bedrock SKU (`anthropic.claude-opus-4-7` / `global.anthropic.claude-opus-4-7`, dropping the legacy `-v1` suffix). Migrated all aggregator and Bedrock presets to Opus 4.7 as the default Opus model.
 - **Claude `max` Effort Tier**: Upgraded the Claude effort dropdown from `high` to `max` for extended reasoning capacity.
@@ -477,10 +477,10 @@ Development since v3.13.0 focuses on onboarding Hermes Agent as a first-class ma
 - **Stream Check Error Classification**: Classified Stream Check errors and surfaced them as color-coded toasts; refreshed default probe models and added explicit detection for "model not found" responses.
 - **Block Official Provider Switching During Local Routing**: Blocks switching to official providers while Local Routing is active, since routing official API traffic through the local proxy carries account-suspension risk. A warning toast surfaces the block.
 - **Pricing Database Refresh (v8 → v9)**: Added ~50 new model pricing entries and corrected stale prices via a reseed-on-migration step, including Claude 4.7, Opus 4.7 Adaptive Thinking, Grok 4, Qwen 3.5/3.6, MiniMax M2.5/M2.7, Doubao Seed 2.0 series, and GLM-5/5.1. DeepSeek and Kimi K2.5 prices updated.
-- **Application-Level Window Controls**: Added an opt-in setting to render CC Switch's own minimize / toggle-maximize / close buttons instead of the system decorations, materially improving the experience on Linux Wayland where compositor-drawn buttons can become inert.
+- **Application-Level Window Controls**: Added an opt-in setting to render puppyrouter app's own minimize / toggle-maximize / close buttons instead of the system decorations, materially improving the experience on Linux Wayland where compositor-drawn buttons can become inert.
 - **Hermes in Unified Skills Management**: Added Hermes to the unified Skills surface; skill install, enable, and filter now cover the Hermes app alongside Claude / Codex / Gemini / OpenCode / OpenClaw.
-- **OpenClaw Config Directory Override**: Added a settings option to point CC Switch at a custom `openclaw.json` location.
-- **Hermes Config Directory Override**: Added a settings option to point CC Switch at a custom `~/.hermes/config.yaml` location, backed by data-driven dispatch.
+- **OpenClaw Config Directory Override**: Added a settings option to point puppyrouter app at a custom `openclaw.json` location.
+- **Hermes Config Directory Override**: Added a settings option to point puppyrouter app at a custom `~/.hermes/config.yaml` location, backed by data-driven dispatch.
 - **StepFun Step Plan Preset**: Added StepFun Step Plan (EN/ZH) provider presets.
 - **New API Usage Script Template**: Added a User-Agent header to the New API usage script template for better upstream compatibility.
 - **Launch Hermes Dashboard from Toolbar**: When the Hermes Web UI probe fails, the toolbar entry now offers to run `hermes dashboard` in the user's preferred terminal via a temp bash/batch script. `hermes dashboard` opens the browser itself once ready, so no polling is required. Also corrects the stale `hermes web` hint in the offline toast (the real command is `hermes dashboard`) and reorders Linux terminal detection to try `which` before stat'ing `/usr/bin`, `/bin`, `/usr/local/bin`.
@@ -492,12 +492,12 @@ Development since v3.13.0 focuses on onboarding Hermes Agent as a first-class ma
 - **"Local Proxy Takeover" → "Local Routing"**: Unified terminology across UI copy, README, and docs in all three locales. Functional behavior is unchanged.
 - **Hermes `Auto` api_mode Removed**: Users must now pick an explicit protocol; new deeplinks default to `chat_completions`. Eliminates URL-based heuristic surprises.
 - **Hermes Provider Form**: Added an API mode dropdown and per-provider model editor; bound per-provider models to the top-level `model:` when switching active providers.
-- **Hermes Deep Config Delegation**: Deep YAML knobs are now delegated to the Hermes Web UI via a direct launch action, rather than duplicated in the CC Switch form.
+- **Hermes Deep Config Delegation**: Deep YAML knobs are now delegated to the Hermes Web UI via a direct launch action, rather than duplicated in the puppyrouter app form.
 - **`ANTHROPIC_REASONING_MODEL` Removed from Claude Quick-Set**: Decoupled the reasoning capability from model selection; the legacy field is no longer surfaced in the quick-set form.
 - **Per-Provider Proxy Config Removed**: Consolidated into global Local Routing; the provider-level proxy toggle and associated storage are gone.
 - **Unified Toolbar Icon Button Width**: Normalized icon-button widths across Claude / Codex / Gemini / OpenCode / OpenClaw / Hermes panels for a consistent header look.
 - **Rust Toolchain Pinned to 1.95**: Adopted clippy 1.95 suggestions across the workspace and pinned the toolchain to prevent nightly drift.
-- **Tray Menu ID Constant**: The tray identifier moved from the hardcoded string `"main"` to a `TRAY_ID` constant (`"cc-switch"`) across all call sites.
+- **Tray Menu ID Constant**: The tray identifier moved from the hardcoded string `"main"` to a `TRAY_ID` constant (`"puppyrouter-app"`) across all call sites.
 - **Copilot Request Classification**: Refined request routing inside the Copilot optimizer to further reduce unnecessary premium interaction consumption.
 - **Usage Script Intranet Support**: Removed private-IP / suspicious-hostname blocking from usage scripts, unblocking enterprise intranet, Docker, and self-hosted API endpoints. Built-in templates still enforce HTTPS (except localhost) and same-origin checks; custom templates remain user-controlled with those request-URL checks skipped.
 - **Failover Queue Notes**: Provider notes now appear in failover queue selectors and queue rows for easier identification across multi-provider queues.
@@ -506,7 +506,7 @@ Development since v3.13.0 focuses on onboarding Hermes Agent as a first-class ma
 ### Fixed
 
 - **Header Auto-Compact Latching After Maximize**: The toolbar no longer stays compacted after maximize/restore; compaction now reevaluates on size changes.
-- **Hermes YAML Pollution & OAuth MCP Auth Drop**: Round-tripping through CC Switch no longer drops OAuth MCP `auth` blocks or pollutes unrelated YAML keys; guard tests added via `tests/hermes_roundtrip.rs`.
+- **Hermes YAML Pollution & OAuth MCP Auth Drop**: Round-tripping through puppyrouter app no longer drops OAuth MCP `auth` blocks or pollutes unrelated YAML keys; guard tests added via `tests/hermes_roundtrip.rs`.
 - **Hermes Active Provider Display**: Hermes UI now correctly surfaces the active provider and wires add / enable / remove actions.
 - **Hermes Provider Persistence**: Providers persist under `custom_providers:` so `api_mode` and `model` survive restarts and config reloads.
 - **Codex `cache_control` Preservation**: Preserve `cache_control` when merging system prompts during Codex format conversion (#1946).
@@ -557,10 +557,10 @@ Development since v3.12.3 focuses on quota visibility, provider workflow upgrade
 
 ### Added
 
-- **Lightweight Mode**: Added a tray-only mode that destroys the main window and keeps CC Switch running from the system tray, with the window recreated when users reopen it.
+- **Lightweight Mode**: Added a tray-only mode that destroys the main window and keeps puppyrouter app running from the system tray, with the window recreated when users reopen it.
 - **Provider Model Auto-Fetch**: Added OpenAI-compatible `/v1/models` discovery for Claude, Codex, Gemini, OpenCode, and OpenClaw provider forms, including grouped dropdown selection and failure-specific error messages.
 - **Quota & Balance Visibility**: Added inline quota or balance display for official Claude / Codex / Gemini providers, GitHub Copilot premium interactions, Codex OAuth providers, Token Plan providers (Kimi / Zhipu GLM / MiniMax), and official balance queries for DeepSeek, StepFun, SiliconFlow, OpenRouter, and Novita AI. Copilot / ChatGPT OAuth and CLI subscription quota now only auto-poll for the currently active provider, preventing unnecessary API calls and misleading displays on non-current cards.
-- **Skills Discovery & Batch Updates**: Added SHA-256 based skill update detection, per-skill and batch update actions, a storage-location toggle between CC Switch and `~/.agents/skills`, and public `skills.sh` search integration.
+- **Skills Discovery & Batch Updates**: Added SHA-256 based skill update detection, per-skill and batch update actions, a storage-location toggle between puppyrouter app and `~/.agents/skills`, and public `skills.sh` search integration.
 - **Session Workflow Upgrades**: Added batch delete in Session Manager, a directory picker before launching Claude terminal restore commands, usage import from Claude / Codex / Gemini session logs without requiring proxy interception, and per-app usage filtering for Claude / Codex / Gemini dashboards.
 - **Codex OAuth Reverse Proxy**: Added ChatGPT Plus / Pro based Codex OAuth reverse proxy support for Claude provider cards, including managed OAuth login and inline subscription quota display.
 - **OpenCode / OpenClaw Stream Check Coverage**: Added OpenCode npm package mapping plus support for OpenClaw `openai-completions` and the remaining OpenClaw protocol variants in Stream Check.
@@ -638,7 +638,7 @@ Major release adding GitHub Copilot reverse proxy support, macOS code signing & 
 - **Tool Search Toggle**: Added `ENABLE_TOOL_SEARCH` env var support for Claude 2.1.76+; exposed as a checkbox in the provider Common Config editor (#930)
 - **Reasoning Effort Mapping**: Two-tier `resolve_reasoning_effort()` for OpenAI o-series and GPT-5+ models — explicit `output_config.effort` takes priority, falling back to thinking `budget_tokens` thresholds (<4 000→low, 4 000–16 000→medium, ≥16 000→high); covers both Chat Completions and Responses API paths with 17 unit tests
 - **OpenCode SQLite Backend**: Added SQLite session storage support for OpenCode alongside existing JSON backend; dual-backend scan with SQLite priority on ID conflicts, atomic session deletion, and path validation (#1401)
-- **Skill Auto-Backup**: Skill files are automatically backed up to `~/.cc-switch/skill-backups/` before uninstall, with metadata preserved in `meta.json`; old backups pruned to keep at most 20
+- **Skill Auto-Backup**: Skill files are automatically backed up to `~/.puppyrouter-app/skill-backups/` before uninstall, with metadata preserved in `meta.json`; old backups pruned to keep at most 20
 - **Skill Backup Restore & Delete**: Added list/restore/delete commands for skill backups; restore copies files back to SSOT, saves the DB record, and syncs to the current app with rollback on failure
 - **macOS Code Signing & Notarization**: CI now imports an Apple Developer ID certificate, signs the universal binary, submits for Apple notarization, and staples the ticket to both `.app` and `.dmg`; a hard-fail verification step (`codesign --verify` + `spctl -a` + `stapler validate`) gates the release for both artifacts
 - **Codex 1M Context Window Toggle**: One-click checkbox in Codex config editor to set `model_context_window = 1000000` with auto-populated `model_auto_compact_token_limit = 900000`; unchecking removes both fields
@@ -922,7 +922,7 @@ This release introduces **OpenClaw** as the fifth supported application, a full 
 
 #### OpenClaw Support (New Application)
 
-- **OpenClaw Integration**: Full management support for OpenClaw as the fifth application in CC Switch, including provider switching, configuration panels (Env / Tools / Agents Defaults), Workspace file management (HEARTBEAT / BOOTSTRAP / BOOT), daily memory files, and additive overlay mode
+- **OpenClaw Integration**: Full management support for OpenClaw as the fifth application in puppyrouter app, including provider switching, configuration panels (Env / Tools / Agents Defaults), Workspace file management (HEARTBEAT / BOOTSTRAP / BOOT), daily memory files, and additive overlay mode
 - **OpenClaw Provider Presets**: 13+ built-in provider presets with brand icon and complete i18n (zh/en/ja)
 - **OpenClaw Form Fields**: Dedicated provider form with providerKey input, model allowlist auto-registration, and default model button
 - **OpenClaw Config Panels**: Env editor, Tools editor, and Agents Defaults editor backed by JSON5 read/write (`openclaw_config.rs`)
@@ -1239,7 +1239,7 @@ This release focuses on stability improvements and crash prevention.
 
 ### Added
 
-- **Crash Logging** - Panic hook captures crash info to `~/.cc-switch/crash.log` with full stack traces (#562)
+- **Crash Logging** - Panic hook captures crash info to `~/.puppyrouter-app/crash.log` with full stack traces (#562)
 - **Release Logging** - Enable logging for release builds with automatic rotation (keeps 2 most recent files)
 - **AIGoCode Icon** - Added colored icon for AIGoCode provider preset
 
@@ -1248,7 +1248,7 @@ This release focuses on stability improvements and crash prevention.
 - **Proxy Panic Prevention** - Graceful degradation when HTTP client initialization fails due to invalid proxy settings; falls back to no_proxy mode (#560)
 - **UTF-8 Safety** - Fix potential panic when masking API keys or truncating logs containing multi-byte characters (Chinese, emoji, etc.) (#560)
 - **Default Proxy Port** - Change default port from 5000 to 15721 to avoid conflict with macOS AirPlay Receiver (#560)
-- **Windows Title** - Display "CC Switch" instead of default "Tauri app" in window title
+- **Windows Title** - Display "puppyrouter app" instead of default "Tauri app" in window title
 - **Windows/Linux Spacing** - Remove extra 28px blank space below native titlebar introduced in v3.9.0
 - **Flatpak Tray Icon** - Bundle libayatana-appindicator for tray icon support on Flatpak (#556)
 - **Provider Preset** - Correct casing from "AiGoCode" to "AIGoCode" to match official branding
@@ -1301,7 +1301,7 @@ This stable release includes all changes from `3.9.0-1`, `3.9.0-2`, and `3.9.0-3
 - **WebView Compatibility** - Add fallback for crypto.randomUUID() on older WebViews
 - **macOS Autostart** - Use `.app` bundle path to prevent terminal window popups
 - **Database** - Add missing schema migrations; show an error dialog on initialization failure with a retry option
-- **Import/Export** - Restrict SQL import to CC Switch exported backups only; refresh providers immediately after import
+- **Import/Export** - Restrict SQL import to puppyrouter app exported backups only; refresh providers immediately after import
 - **Prompts** - Allow saving prompts with empty content
 - **MCP Sync** - Skip sync when the target CLI app is not installed
 - **Common Config (Codex)** - Preserve MCP server `base_url` during extraction and remove provider-specific `model_providers` blocks
@@ -1387,7 +1387,7 @@ Second beta release focusing on proxy stability, import safety, and provider pre
 
 ### Fixed
 
-- **Import/Export** - Restrict SQL import to CC Switch exported backups only; refresh providers immediately after import
+- **Import/Export** - Restrict SQL import to puppyrouter app exported backups only; refresh providers immediately after import
 - **Proxy** - Respect existing Claude token when syncing; add fallback recovery for orphaned takeover state; remove global auto-start flag
 - **Windows** - Add minimum window size to Windows platform config
 - **UI** - Improve About section UI (#419) and unify header toolbar styling
@@ -1543,7 +1543,7 @@ This beta release introduces the **Local API Proxy** feature, along with Skills 
 ### Added
 
 - **Gemini configuration directory support** (#255) - Added custom configuration directory option for Gemini in settings
-- **ArchLinux installation support** (#259) - Added AUR installation via `paru -S cc-switch-bin`
+- **ArchLinux installation support** (#259) - Added AUR installation via `paru -S puppyrouter-app-bin`
 
 ### Improved
 
@@ -1921,9 +1921,9 @@ v3.7.0 represents a major evolution from "Provider Switcher" to **"All-in-One AI
 - Refined UI/UX with better spacing, icons, and visual feedback
 - Enhanced tray menu functionality and responsiveness
 - **Standardized release artifact naming** - All platform releases now use consistent version-tagged filenames:
-  - macOS: `CC-Switch-v{version}-macOS.tar.gz` / `.zip`
-  - Windows: `CC-Switch-v{version}-Windows.msi` / `-Portable.zip`
-  - Linux: `CC-Switch-v{version}-Linux.AppImage` / `.deb`
+  - macOS: `puppyrouter-app-v{version}-macOS.tar.gz` / `.zip`
+  - Windows: `puppyrouter-app-v{version}-Windows.msi` / `-Portable.zip`
+  - Linux: `puppyrouter-app-v{version}-Linux.AppImage` / `.deb`
 
 ### 🐛 Bug Fixes
 
@@ -2104,11 +2104,11 @@ For users upgrading from v2.x (Electron version):
 - The app will automatically migrate your existing provider configurations
 - Window position and size preferences have been reset to defaults
 
-#### Backup on v1→v2 Migration (cc-switch internal config)
+#### Backup on v1→v2 Migration (puppyrouter-app internal config)
 
-- When the app detects an old v1 config structure at `~/.cc-switch/config.json`, it now creates a timestamped backup before writing the new v2 structure.
-- Backup location: `~/.cc-switch/config.v1.backup.<timestamp>.json`
-- This only concerns cc-switch's own metadata file; your actual provider files under `~/.claude/` and `~/.codex/` are untouched.
+- When the app detects an old v1 config structure at `~/.puppyrouter-app/config.json`, it now creates a timestamped backup before writing the new v2 structure.
+- Backup location: `~/.puppyrouter-app/config.v1.backup.<timestamp>.json`
+- This only concerns puppyrouter-app's own metadata file; your actual provider files under `~/.claude/` and `~/.codex/` are untouched.
 
 ### 🛠️ Development
 

@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import type { Provider } from "@/types";
 import { providersApi, type AppId } from "@/lib/api";
+import { getLockedProviderRank } from "@/utils/lockedProviders";
 
 export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
   const queryClient = useQueryClient();
@@ -25,6 +26,14 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
           ? "zh-TW"
           : "en-US";
     return Object.values(providers).sort((a, b) => {
+      const rankA = getLockedProviderRank(a, appId);
+      const rankB = getLockedProviderRank(b, appId);
+      if (rankA !== null || rankB !== null) {
+        if (rankA === null) return 1;
+        if (rankB === null) return -1;
+        return rankA - rankB;
+      }
+
       if (a.sortIndex !== undefined && b.sortIndex !== undefined) {
         return a.sortIndex - b.sortIndex;
       }
@@ -39,7 +48,7 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
 
       return a.name.localeCompare(b.name, locale);
     });
-  }, [providers, i18n.language]);
+  }, [providers, appId, i18n.language]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -65,6 +74,20 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
       );
 
       if (oldIndex === -1 || newIndex === -1) {
+        return;
+      }
+
+      const activeProvider = sortedProviders[oldIndex];
+      const overProvider = sortedProviders[newIndex];
+      if (
+        getLockedProviderRank(activeProvider, appId) !== null ||
+        getLockedProviderRank(overProvider, appId) !== null
+      ) {
+        toast.info(
+          t("provider.lockedSort", {
+            defaultValue: "PuppyRouter 和 Official 的顺序已锁定",
+          }),
+        );
         return;
       }
 

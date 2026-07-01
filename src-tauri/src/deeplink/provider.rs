@@ -1,16 +1,25 @@
 //! Provider import from deep link
 //!
-//! Handles importing provider configurations via ccswitch:// URLs.
+//! Handles importing provider configurations via puppyrouter:// URLs.
 
 use super::utils::{decode_base64_param, infer_homepage_from_endpoint};
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
-use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta, UsageScript};
+use crate::provider::{
+    ClaudeDesktopMode, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, Provider,
+    ProviderMeta, UniversalProvider, UsageScript,
+};
 use crate::services::ProviderService;
 use crate::store::AppState;
 use crate::AppType;
 use serde_json::json;
 use std::str::FromStr;
+use url::Url;
+
+const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
+const PUPPYROUTER_PROVIDER_TYPE: &str = "puppyrouter";
+const PUPPYROUTER_NAME: &str = "PuppyRouter";
+const PUPPYROUTER_BASE_URL: &str = "https://puppyrouter.com";
 
 /// Import a provider from a deep link request
 ///
@@ -95,6 +104,12 @@ pub fn import_provider_from_deeplink(
     let app_type = AppType::from_str(&app_str)
         .map_err(|_| AppError::InvalidInput(format!("Invalid app type: {app_str}")))?;
 
+    if let Some(provider_id) =
+        import_locked_puppyrouter_provider(state, &app_type, &merged_request)?
+    {
+        return Ok(provider_id);
+    }
+
     // Build provider configuration based on app type
     let mut provider = build_provider_from_request(&app_type, &merged_request)?;
 
@@ -134,6 +149,137 @@ pub fn import_provider_from_deeplink(
     }
 
     Ok(provider_id)
+}
+
+fn import_locked_puppyrouter_provider(
+    state: &AppState,
+    app_type: &AppType,
+    request: &DeepLinkImportRequest,
+) -> Result<Option<String>, AppError> {
+    let Some(provider_id) = locked_puppyrouter_provider_id(app_type) else {
+        return Ok(None);
+    };
+    if !is_puppyrouter_deeplink(request) {
+        return Ok(None);
+    }
+
+    let mut universal = ProviderService::get_universal(state, PUPPYROUTER_UNIVERSAL_ID)?
+        .unwrap_or_else(default_puppyrouter_universal_provider);
+
+    if let Some(api_key) = non_empty_param(&request.api_key) {
+        universal.api_key = api_key;
+    }
+    if let Some(notes) = non_empty_param(&request.notes) {
+        universal.notes = Some(notes);
+    }
+    if let Some(meta) = build_provider_meta(request)? {
+        universal.meta = Some(meta);
+    }
+    apply_puppyrouter_models(app_type, request, &mut universal);
+
+    ProviderService::upsert_universal(state, universal)?;
+    ProviderService::sync_universal_to_apps(state, PUPPYROUTER_UNIVERSAL_ID)?;
+
+    if request.enabled.unwrap_or(false) {
+        ProviderService::switch(state, app_type.clone(), provider_id)?;
+        log::info!("PuppyRouter provider '{provider_id}' set as current for {app_type:?}");
+    }
+
+    Ok(Some(provider_id.to_string()))
+}
+
+fn default_puppyrouter_universal_provider() -> UniversalProvider {
+    UniversalProvider::new(
+        PUPPYROUTER_UNIVERSAL_ID.to_string(),
+        PUPPYROUTER_NAME.to_string(),
+        PUPPYROUTER_PROVIDER_TYPE.to_string(),
+        PUPPYROUTER_BASE_URL.to_string(),
+        String::new(),
+    )
+}
+
+fn locked_puppyrouter_provider_id(app_type: &AppType) -> Option<&'static str> {
+    match app_type {
+        AppType::Claude => Some("universal-claude-puppyrouter"),
+        AppType::Codex => Some("universal-codex-puppyrouter"),
+        AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        _ => None,
+    }
+}
+
+fn is_puppyrouter_deeplink(request: &DeepLinkImportRequest) -> bool {
+    request
+        .endpoint
+        .as_deref()
+        .and_then(|endpoint| endpoint.split(',').next())
+        .is_some_and(is_puppyrouter_url)
+        || request
+            .homepage
+            .as_deref()
+            .is_some_and(is_puppyrouter_url)
+}
+
+fn is_puppyrouter_url(value: &str) -> bool {
+    Url::parse(value.trim()).ok().is_some_and(|url| {
+        url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("puppyrouter.com")
+                || host.eq_ignore_ascii_case("www.puppyrouter.com")
+        })
+    })
+}
+
+fn non_empty_param(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn apply_puppyrouter_models(
+    app_type: &AppType,
+    request: &DeepLinkImportRequest,
+    provider: &mut UniversalProvider,
+) {
+    match app_type {
+        AppType::Claude => {
+            let models = provider
+                .models
+                .claude
+                .get_or_insert_with(ClaudeModelConfig::default);
+            if let Some(model) = non_empty_param(&request.model) {
+                models.model = Some(model);
+            }
+            if let Some(model) = non_empty_param(&request.haiku_model) {
+                models.haiku_model = Some(model);
+            }
+            if let Some(model) = non_empty_param(&request.sonnet_model) {
+                models.sonnet_model = Some(model);
+            }
+            if let Some(model) = non_empty_param(&request.opus_model) {
+                models.opus_model = Some(model);
+            }
+        }
+        AppType::Codex => {
+            let models = provider
+                .models
+                .codex
+                .get_or_insert_with(CodexModelConfig::default);
+            if let Some(model) = non_empty_param(&request.model) {
+                models.model = Some(model);
+            }
+        }
+        AppType::Gemini => {
+            let models = provider
+                .models
+                .gemini
+                .get_or_insert_with(GeminiModelConfig::default);
+            if let Some(model) = non_empty_param(&request.model) {
+                models.model = Some(model);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Build a Provider structure from a deep link request

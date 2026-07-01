@@ -46,6 +46,7 @@ import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
+import { getLockedProviderRank } from "@/utils/lockedProviders";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -603,7 +604,10 @@ function SortableProviderCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: provider.id });
+  } = useSortable({
+    id: provider.id,
+    disabled: getLockedProviderRank(provider, appId) !== null,
+  });
 
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
