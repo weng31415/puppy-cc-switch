@@ -68,6 +68,7 @@ import {
 } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { PuppyRouterAccountBanner } from "@/components/puppyrouter/PuppyRouterAccountBanner";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1039,6 +1040,7 @@ function App() {
                     transition={{ duration: 0.15 }}
                     className="space-y-4"
                   >
+                    <PuppyRouterAccountBanner activeApp={activeApp} />
                     <ProviderList
                       providers={providers}
                       currentProviderId={currentProviderId}

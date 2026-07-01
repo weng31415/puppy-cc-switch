@@ -7,6 +7,7 @@ export { promptsApi } from "./prompts";
 export { skillsApi } from "./skills";
 export { usageApi } from "./usage";
 export { subscriptionApi } from "./subscription";
+export { puppyrouterAccountApi } from "./puppyrouterAccount";
 export { vscodeApi } from "./vscode";
 export { proxyApi } from "./proxy";
 export { openclawApi } from "./openclaw";
@@ -16,6 +17,14 @@ export * as configApi from "./config";
 export * as authApi from "./auth";
 export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
+export type {
+  PuppyRouterAccountStatus,
+  PuppyRouterAccountUser,
+  PuppyRouterApiKey,
+  PuppyRouterApiKeyList,
+  PuppyRouterApplyKeyResult,
+  PuppyRouterLoginResult,
+} from "./puppyrouterAccount";
 export type { Prompt } from "./prompts";
 export type {
   CopilotDeviceCodeResponse,

@@ -1310,6 +1310,12 @@ pub fn run() {
             commands::rename_db_backup,
             commands::delete_db_backup,
             commands::sync_current_providers_live,
+            commands::get_puppyrouter_account_status,
+            commands::login_puppyrouter_account,
+            commands::verify_puppyrouter_account_2fa,
+            commands::logout_puppyrouter_account,
+            commands::list_puppyrouter_api_keys,
+            commands::apply_puppyrouter_api_key,
             // Deep link import
             commands::parse_deeplink,
             commands::merge_deeplink_config,
