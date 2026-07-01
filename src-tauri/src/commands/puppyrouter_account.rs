@@ -14,7 +14,7 @@ use crate::store::AppState;
 const PUPPYROUTER_BASE_URL: &str = "https://puppyrouter.com";
 const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
 const ACCOUNT_SESSION_SETTING: &str = "puppyrouter_account_session";
-const ACCOUNT_PENDING_SESSION_SETTING: &str = "puppyrouter_account_pending_session";
+const LEGACY_ACCOUNT_PENDING_SESSION_SETTING: &str = "puppyrouter_account_pending_session";
 const SELECTED_TOKEN_SETTING: &str = "puppyrouter_account_selected_token";
 const DEFAULT_TOKEN_NAME: &str = "default_api_key";
 
@@ -43,14 +43,6 @@ struct StoredAccountSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredPendingSession {
-    pub username: String,
-    pub cookie_header: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct StoredSelectedToken {
     pub token_id: i64,
     pub name: String,
@@ -72,15 +64,22 @@ pub struct PuppyRouterAccountStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
-pub enum PuppyRouterLoginResult {
-    LoggedIn {
-        account: PuppyRouterAccountStatus,
-    },
-    #[serde(rename = "requires_2fa")]
-    Requires2fa {
-        message: String,
-        username: String,
-    },
+pub enum PuppyRouterLoginPollResult {
+    Pending { message: String, interval: i64 },
+    Approved { account: PuppyRouterAccountStatus },
+    Expired { message: String },
+    Denied { message: String },
+    Invalid { message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PuppyRouterLoginStart {
+    pub device_code: String,
+    pub user_code: String,
+    pub authorize_url: String,
+    pub expires_at: i64,
+    pub interval: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,7 +141,23 @@ struct LoginData {
     role: Option<i64>,
     status: Option<i64>,
     group: Option<String>,
-    require_2fa: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopAuthStartData {
+    device_code: String,
+    user_code: String,
+    authorize_url: String,
+    expires_at: i64,
+    interval: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopAuthPollData {
+    status: String,
+    message: Option<String>,
+    interval: Option<i64>,
+    user: Option<LoginData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -580,115 +595,84 @@ pub fn get_puppyrouter_account_status(
 }
 
 #[tauri::command]
-pub async fn login_puppyrouter_account(
-    state: State<'_, AppState>,
-    username: String,
-    password: String,
-) -> Result<PuppyRouterLoginResult, String> {
-    let username = username.trim().to_string();
-    if username.is_empty() || password.is_empty() {
-        return Err("请输入 PuppyRouter 用户名和密码。".to_string());
-    }
-
+pub async fn begin_puppyrouter_account_login() -> Result<PuppyRouterLoginStart, String> {
     let client = http_client()?;
     let response = client
-        .post(endpoint("/api/user/login?turnstile="))
+        .post(endpoint("/api/desktop-auth/start"))
         .json(&serde_json::json!({
-            "username": username,
-            "password": password,
+            "client_name": "puppyrouter app",
         }))
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
 
-    let (api, set_cookie_header) = parse_api_response::<LoginData>(response).await?;
+    let (api, _) = parse_api_response::<DesktopAuthStartData>(response).await?;
     let data = ensure_api_success(api)?;
-    let cookie_header = set_cookie_header;
-
-    if data.require_2fa.unwrap_or(false) {
-        if cookie_header.is_empty() {
-            return Err("PuppyRouter 要求 2FA，但登录响应没有返回会话 cookie。".to_string());
-        }
-        set_setting_json(
-            state.inner(),
-            ACCOUNT_PENDING_SESSION_SETTING,
-            &StoredPendingSession {
-                username: username.clone(),
-                cookie_header,
-                created_at: now_timestamp(),
-            },
-        )?;
-        return Ok(PuppyRouterLoginResult::Requires2fa {
-            message: "需要 2FA 验证码。".to_string(),
-            username,
-        });
-    }
-
-    if cookie_header.is_empty() {
-        return Err("PuppyRouter 登录成功，但响应没有返回会话 cookie。".to_string());
-    }
-
-    let user = login_data_to_user(data, &username)?;
-    let session = StoredAccountSession {
-        user,
-        cookie_header,
-        logged_in_at: now_timestamp(),
-    };
-    set_setting_json(state.inner(), ACCOUNT_SESSION_SETTING, &session)?;
-    clear_setting(state.inner(), ACCOUNT_PENDING_SESSION_SETTING)?;
-    Ok(PuppyRouterLoginResult::LoggedIn {
-        account: account_status_from_session(Some(session)),
+    Ok(PuppyRouterLoginStart {
+        device_code: data.device_code,
+        user_code: data.user_code,
+        authorize_url: data.authorize_url,
+        expires_at: data.expires_at,
+        interval: data.interval.unwrap_or(2).max(1),
     })
 }
 
 #[tauri::command]
-pub async fn verify_puppyrouter_account_2fa(
+pub async fn poll_puppyrouter_account_login(
     state: State<'_, AppState>,
-    code: String,
-) -> Result<PuppyRouterLoginResult, String> {
-    let code = code.trim().to_string();
-    if code.is_empty() {
-        return Err("请输入 2FA 验证码。".to_string());
+    device_code: String,
+) -> Result<PuppyRouterLoginPollResult, String> {
+    let device_code = device_code.trim().to_string();
+    if device_code.is_empty() {
+        return Err("PuppyRouter 浏览器授权会话缺少 device code。".to_string());
     }
-    let pending: StoredPendingSession =
-        setting_json(state.inner(), ACCOUNT_PENDING_SESSION_SETTING)?
-            .ok_or_else(|| "PuppyRouter 2FA 会话已过期，请重新登录。".to_string())?;
 
     let client = http_client()?;
     let response = client
-        .post(endpoint("/api/user/login/2fa"))
-        .header(COOKIE, pending.cookie_header.as_str())
-        .json(&serde_json::json!({ "code": code }))
+        .post(endpoint("/api/desktop-auth/poll"))
+        .json(&serde_json::json!({ "device_code": device_code }))
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
 
-    let response_headers = response.headers().clone();
-    let (api, _) = parse_api_response::<LoginData>(response).await?;
+    let (api, cookie_header) = parse_api_response::<DesktopAuthPollData>(response).await?;
     let data = ensure_api_success(api)?;
-    let cookie_header = merge_cookie_header(Some(&pending.cookie_header), &response_headers);
+    let message = data.message.unwrap_or_default();
+    let interval = data.interval.unwrap_or(2).max(1);
 
-    if cookie_header.is_empty() {
-        return Err("PuppyRouter 2FA 成功，但响应没有返回会话 cookie。".to_string());
+    match data.status.as_str() {
+        "pending" => Ok(PuppyRouterLoginPollResult::Pending { message, interval }),
+        "approved" => {
+            if cookie_header.is_empty() {
+                return Err("PuppyRouter 授权成功，但响应没有返回会话 cookie。".to_string());
+            }
+            let user = login_data_to_user(
+                data.user
+                    .ok_or_else(|| "PuppyRouter 授权响应缺少用户信息。".to_string())?,
+                "PuppyRouter",
+            )?;
+            let session = StoredAccountSession {
+                user,
+                cookie_header,
+                logged_in_at: now_timestamp(),
+            };
+            set_setting_json(state.inner(), ACCOUNT_SESSION_SETTING, &session)?;
+            clear_setting(state.inner(), LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
+            Ok(PuppyRouterLoginPollResult::Approved {
+                account: account_status_from_session(Some(session)),
+            })
+        }
+        "expired" => Ok(PuppyRouterLoginPollResult::Expired { message }),
+        "denied" => Ok(PuppyRouterLoginPollResult::Denied { message }),
+        "invalid" => Ok(PuppyRouterLoginPollResult::Invalid { message }),
+        other => Err(format!("未知的 PuppyRouter 浏览器授权状态: {other}")),
     }
-
-    let user = login_data_to_user(data, &pending.username)?;
-    let session = StoredAccountSession {
-        user,
-        cookie_header,
-        logged_in_at: now_timestamp(),
-    };
-    set_setting_json(state.inner(), ACCOUNT_SESSION_SETTING, &session)?;
-    clear_setting(state.inner(), ACCOUNT_PENDING_SESSION_SETTING)?;
-    Ok(PuppyRouterLoginResult::LoggedIn {
-        account: account_status_from_session(Some(session)),
-    })
 }
 
 #[tauri::command]
 pub fn logout_puppyrouter_account(state: State<'_, AppState>) -> Result<bool, String> {
     clear_setting(state.inner(), ACCOUNT_SESSION_SETTING)?;
-    clear_setting(state.inner(), ACCOUNT_PENDING_SESSION_SETTING)?;
+    clear_setting(state.inner(), LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
     clear_setting(state.inner(), SELECTED_TOKEN_SETTING)?;
     Ok(true)
 }

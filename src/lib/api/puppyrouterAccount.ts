@@ -15,15 +15,27 @@ export interface PuppyRouterAccountStatus {
   loggedInAt?: number;
 }
 
-export type PuppyRouterLoginResult =
+export interface PuppyRouterLoginStart {
+  deviceCode: string;
+  userCode: string;
+  authorizeUrl: string;
+  expiresAt: number;
+  interval: number;
+}
+
+export type PuppyRouterLoginPollResult =
   | {
-      status: "logged_in";
+      status: "pending";
+      message: string;
+      interval: number;
+    }
+  | {
+      status: "approved";
       account: PuppyRouterAccountStatus;
     }
   | {
-      status: "requires_2fa";
+      status: "expired" | "denied" | "invalid";
       message: string;
-      username: string;
     };
 
 export interface PuppyRouterApiKey {
@@ -65,15 +77,12 @@ export const puppyrouterAccountApi = {
     return await invoke("get_puppyrouter_account_status");
   },
 
-  async login(
-    username: string,
-    password: string,
-  ): Promise<PuppyRouterLoginResult> {
-    return await invoke("login_puppyrouter_account", { username, password });
+  async beginLogin(): Promise<PuppyRouterLoginStart> {
+    return await invoke("begin_puppyrouter_account_login");
   },
 
-  async verify2fa(code: string): Promise<PuppyRouterLoginResult> {
-    return await invoke("verify_puppyrouter_account_2fa", { code });
+  async pollLogin(deviceCode: string): Promise<PuppyRouterLoginPollResult> {
+    return await invoke("poll_puppyrouter_account_login", { deviceCode });
   },
 
   async logout(): Promise<boolean> {

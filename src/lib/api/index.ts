@@ -23,7 +23,8 @@ export type {
   PuppyRouterApiKey,
   PuppyRouterApiKeyList,
   PuppyRouterApplyKeyResult,
-  PuppyRouterLoginResult,
+  PuppyRouterLoginPollResult,
+  PuppyRouterLoginStart,
 } from "./puppyrouterAccount";
 export type { Prompt } from "./prompts";
 export type {

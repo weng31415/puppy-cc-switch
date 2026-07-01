@@ -8,6 +8,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  ExternalLink,
   RefreshCw,
   ShieldAlert,
 } from "lucide-react";
@@ -15,11 +16,12 @@ import { toast } from "sonner";
 
 import {
   puppyrouterAccountApi,
+  settingsApi,
   type AppId,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
   type PuppyRouterApiKeyList,
-  type PuppyRouterLoginResult,
+  type PuppyRouterLoginStart,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { cn } from "@/lib/utils";
@@ -34,8 +36,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
 interface PuppyRouterAccountBannerProps {
   activeApp: AppId;
@@ -83,11 +83,12 @@ export function PuppyRouterAccountBanner({
   const [isLoadingAccount, setIsLoadingAccount] = useState(true);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [twoFaCode, setTwoFaCode] = useState("");
-  const [requires2fa, setRequires2fa] = useState(false);
-  const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
+  const [loginStart, setLoginStart] = useState<PuppyRouterLoginStart | null>(
+    null,
+  );
+  const [isStartingLogin, setIsStartingLogin] = useState(false);
+  const [isPollingLogin, setIsPollingLogin] = useState(false);
+  const [loginPollMessage, setLoginPollMessage] = useState("");
   const [applyingKeyId, setApplyingKeyId] = useState<number | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
@@ -164,49 +165,120 @@ export function PuppyRouterAccountBanner({
     }
   }, [account?.loggedIn, loadKeys]);
 
-  const resetLoginForm = useCallback(() => {
-    setPassword("");
-    setTwoFaCode("");
-    setRequires2fa(false);
+  const resetLoginState = useCallback(() => {
+    setLoginStart(null);
+    setLoginPollMessage("");
+    setIsPollingLogin(false);
   }, []);
 
-  const finishLogin = useCallback(
-    async (result: PuppyRouterLoginResult) => {
-      if (result.status === "requires_2fa") {
-        setRequires2fa(true);
-        setUsername(result.username);
-        toast.info(t("puppyrouterAccount.twoFaRequired"));
-        return;
-      }
-
-      setAccount(result.account);
+  const finishApprovedLogin = useCallback(
+    async (accountStatus: PuppyRouterAccountStatus) => {
+      setAccount(accountStatus);
       setIsLoginOpen(false);
-      resetLoginForm();
+      resetLoginState();
       toast.success(t("puppyrouterAccount.loginSuccess"));
       await loadKeys({ autoApplyDefault: true });
     },
-    [loadKeys, resetLoginForm, t],
+    [loadKeys, resetLoginState, t],
   );
 
-  const handleLoginSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setIsSubmittingLogin(true);
+  const handleStartBrowserLogin = async () => {
+    if (loginStart?.authorizeUrl) {
+      try {
+        await settingsApi.openExternal(loginStart.authorizeUrl);
+      } catch (error) {
+        toast.error(
+          t("puppyrouterAccount.openBrowserFailed", {
+            error: extractErrorMessage(error),
+          }),
+        );
+      }
+      return;
+    }
+
+    setIsStartingLogin(true);
     try {
-      const result = requires2fa
-        ? await puppyrouterAccountApi.verify2fa(twoFaCode)
-        : await puppyrouterAccountApi.login(username, password);
-      await finishLogin(result);
+      const start = await puppyrouterAccountApi.beginLogin();
+      setLoginStart(start);
+      setLoginPollMessage(t("puppyrouterAccount.waitingForBrowser"));
+      await settingsApi.openExternal(start.authorizeUrl);
     } catch (error) {
-      console.error("[PuppyRouterAccountBanner] Login failed", error);
+      console.error(
+        "[PuppyRouterAccountBanner] Failed to start browser login",
+        error,
+      );
       toast.error(
         t("puppyrouterAccount.loginFailed", {
           error: extractErrorMessage(error),
         }),
       );
     } finally {
-      setIsSubmittingLogin(false);
+      setIsStartingLogin(false);
     }
   };
+
+  useEffect(() => {
+    if (!isLoginOpen || !loginStart?.deviceCode) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      setIsPollingLogin(true);
+      try {
+        const result = await puppyrouterAccountApi.pollLogin(
+          loginStart.deviceCode,
+        );
+        if (cancelled) return;
+
+        if (result.status === "approved") {
+          setIsPollingLogin(false);
+          await finishApprovedLogin(result.account);
+          return;
+        }
+
+        if (result.status === "pending") {
+          setLoginPollMessage(
+            result.message || t("puppyrouterAccount.waitingForApproval"),
+          );
+          timer = window.setTimeout(
+            poll,
+            Math.max(1, result.interval || loginStart.interval || 2) * 1000,
+          );
+          return;
+        }
+
+        setIsPollingLogin(false);
+        setLoginPollMessage("");
+        setLoginStart(null);
+        toast.error(
+          t(`puppyrouterAccount.loginStatus.${result.status}`, {
+            defaultValue: result.message || t("puppyrouterAccount.loginExpired"),
+          }),
+        );
+      } catch (error) {
+        if (cancelled) return;
+        console.error("[PuppyRouterAccountBanner] Login polling failed", error);
+        setIsPollingLogin(false);
+        toast.error(
+          t("puppyrouterAccount.loginFailed", {
+            error: extractErrorMessage(error),
+          }),
+        );
+      }
+    };
+
+    timer = window.setTimeout(poll, 800);
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [finishApprovedLogin, isLoginOpen, loginStart, t]);
 
   const handleApplyKey = async (key: PuppyRouterApiKey) => {
     if (!key.usable || applyingKeyId !== null) {
@@ -479,87 +551,69 @@ export function PuppyRouterAccountBanner({
         open={isLoginOpen}
         onOpenChange={(open) => {
           setIsLoginOpen(open);
-          if (!open) resetLoginForm();
+          if (!open) resetLoginState();
         }}
       >
         <DialogContent className="max-w-md">
-          <form onSubmit={handleLoginSubmit}>
-            <DialogHeader>
-              <DialogTitle>{t("puppyrouterAccount.loginTitle")}</DialogTitle>
-              <DialogDescription>
-                {requires2fa
-                  ? t("puppyrouterAccount.twoFaDescription")
-                  : t("puppyrouterAccount.loginDescription")}
-              </DialogDescription>
-            </DialogHeader>
+          <DialogHeader>
+            <DialogTitle>{t("puppyrouterAccount.loginTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("puppyrouterAccount.loginDescription")}
+            </DialogDescription>
+          </DialogHeader>
 
-            <div className="space-y-4 px-6 py-5">
-              {!requires2fa ? (
-                <>
-                  <div className="space-y-2">
-                    <Label htmlFor="puppyrouter-username">
-                      {t("puppyrouterAccount.username")}
-                    </Label>
-                    <Input
-                      id="puppyrouter-username"
-                      value={username}
-                      onChange={(event) => setUsername(event.target.value)}
-                      autoComplete="username"
-                      disabled={isSubmittingLogin}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="puppyrouter-password">
-                      {t("puppyrouterAccount.password")}
-                    </Label>
-                    <Input
-                      id="puppyrouter-password"
-                      type="password"
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      autoComplete="current-password"
-                      disabled={isSubmittingLogin}
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-2">
-                  <Label htmlFor="puppyrouter-2fa">
-                    {t("puppyrouterAccount.twoFaCode")}
-                  </Label>
-                  <Input
-                    id="puppyrouter-2fa"
-                    value={twoFaCode}
-                    onChange={(event) => setTwoFaCode(event.target.value)}
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    disabled={isSubmittingLogin}
-                  />
-                </div>
-              )}
+          <div className="space-y-4 px-6 py-5">
+            <div className="rounded-lg border border-primary/25 bg-primary/8 px-3 py-3 text-sm text-muted-foreground">
+              {t("puppyrouterAccount.browserLoginHint")}
             </div>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setIsLoginOpen(false)}
-                disabled={isSubmittingLogin}
-              >
-                {t("common.cancel")}
-              </Button>
-              <Button type="submit" disabled={isSubmittingLogin}>
-                {isSubmittingLogin ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <LogIn className="mr-2 h-4 w-4" />
-                )}
-                {requires2fa
-                  ? t("puppyrouterAccount.verifyAndLogin")
-                  : t("puppyrouterAccount.login")}
-              </Button>
-            </DialogFooter>
-          </form>
+            {loginStart && (
+              <div className="space-y-3 rounded-lg border border-amber-400/35 bg-amber-400/10 px-3 py-3">
+                <div className="text-xs font-medium uppercase tracking-wide text-amber-200">
+                  {t("puppyrouterAccount.browserAuthCode")}
+                </div>
+                <div className="font-mono text-lg font-semibold text-amber-100">
+                  {loginStart.userCode}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-amber-100/75">
+                  {isPollingLogin && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  <span>
+                    {loginPollMessage ||
+                      t("puppyrouterAccount.waitingForApproval")}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setIsLoginOpen(false)}
+              disabled={isStartingLogin}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleStartBrowserLogin()}
+              disabled={isStartingLogin}
+            >
+              {isStartingLogin ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : loginStart ? (
+                <ExternalLink className="mr-2 h-4 w-4" />
+              ) : (
+                <LogIn className="mr-2 h-4 w-4" />
+              )}
+              {loginStart
+                ? t("puppyrouterAccount.openBrowserAgain")
+                : t("puppyrouterAccount.login")}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
