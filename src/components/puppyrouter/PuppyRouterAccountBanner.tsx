@@ -69,6 +69,18 @@ function keyStatusLabel(t: TFunction, status: number) {
   }
 }
 
+function formatUsdAmount(value: number) {
+  const formatted =
+    Math.abs(value) >= 1 ? value.toFixed(2) : value.toFixed(4);
+  const trimmed = formatted.replace(/\.?0+$/, "");
+  return `$${trimmed === "-0" ? "0" : trimmed}`;
+}
+
+function formatQuotaUsd(quota: number, quotaPerUnit: number) {
+  const safeQuotaPerUnit = quotaPerUnit > 0 ? quotaPerUnit : 500000;
+  return formatUsdAmount(quota / safeQuotaPerUnit);
+}
+
 function chooseAutoApplyKey(keys: PuppyRouterApiKey[]) {
   return (
     keys.find((key) => key.active) ??
@@ -101,6 +113,10 @@ export function PuppyRouterAccountBanner({
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const isManualOnlyApp = MANUAL_ONLY_APP_IDS.includes(activeApp);
+  const quotaPerUnit =
+    balance?.quotaPerUnit && balance.quotaPerUnit > 0
+      ? balance.quotaPerUnit
+      : 500000;
 
   const supportedApps = useMemo(
     () =>
@@ -565,7 +581,7 @@ export function PuppyRouterAccountBanner({
                     disabled={!apiKey.usable || applyingKeyId !== null}
                     onClick={() => void handleApplyKey(apiKey)}
                     className={cn(
-                      "group flex min-h-[104px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
+                      "group flex min-h-[132px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
                       apiKey.active
                         ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(245,158,11,0.16)]"
                         : "border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/8",
@@ -618,6 +634,22 @@ export function PuppyRouterAccountBanner({
                           {t("puppyrouterAccount.activeKey")}
                         </Badge>
                       )}
+                    </div>
+                    <div className="mt-3 grid w-full grid-cols-2 gap-2 border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
+                      <div className="min-w-0">
+                        <div>{t("puppyrouterAccount.keyRemainingQuota")}</div>
+                        <div className="mt-0.5 truncate font-mono font-semibold text-foreground">
+                          {apiKey.unlimitedQuota
+                            ? t("puppyrouterAccount.keyUnlimitedQuota")
+                            : formatQuotaUsd(apiKey.remainQuota, quotaPerUnit)}
+                        </div>
+                      </div>
+                      <div className="min-w-0 text-right">
+                        <div>{t("puppyrouterAccount.keyUsedQuota")}</div>
+                        <div className="mt-0.5 truncate font-mono font-semibold text-foreground">
+                          {formatQuotaUsd(apiKey.usedQuota, quotaPerUnit)}
+                        </div>
+                      </div>
                     </div>
                   </button>
                 ))}
