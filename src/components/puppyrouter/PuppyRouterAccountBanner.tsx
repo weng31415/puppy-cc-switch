@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import { motion } from "framer-motion";
 import {
   CheckCircle2,
+  Copy,
   KeyRound,
   Loader2,
   LogIn,
@@ -24,6 +25,7 @@ import {
   type PuppyRouterLoginStart,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +89,7 @@ export function PuppyRouterAccountBanner({
     null,
   );
   const [isStartingLogin, setIsStartingLogin] = useState(false);
+  const [isCopyingLoginLink, setIsCopyingLoginLink] = useState(false);
   const [isPollingLogin, setIsPollingLogin] = useState(false);
   const [loginPollMessage, setLoginPollMessage] = useState("");
   const [applyingKeyId, setApplyingKeyId] = useState<number | null>(null);
@@ -214,6 +217,34 @@ export function PuppyRouterAccountBanner({
       );
     } finally {
       setIsStartingLogin(false);
+    }
+  };
+
+  const handleCopyLoginLink = async () => {
+    setIsCopyingLoginLink(true);
+    try {
+      let authorizeUrl = loginStart?.authorizeUrl;
+      if (!authorizeUrl) {
+        const start = await puppyrouterAccountApi.beginLogin();
+        setLoginStart(start);
+        setLoginPollMessage(t("puppyrouterAccount.waitingForBrowser"));
+        authorizeUrl = start.authorizeUrl;
+      }
+
+      await copyText(authorizeUrl);
+      toast.success(t("puppyrouterAccount.copyLoginLinkSuccess"));
+    } catch (error) {
+      console.error(
+        "[PuppyRouterAccountBanner] Failed to copy login link",
+        error,
+      );
+      toast.error(
+        t("puppyrouterAccount.copyLoginLinkFailed", {
+          error: extractErrorMessage(error),
+        }),
+      );
+    } finally {
+      setIsCopyingLoginLink(false);
     }
   };
 
@@ -593,14 +624,27 @@ export function PuppyRouterAccountBanner({
               type="button"
               variant="ghost"
               onClick={() => setIsLoginOpen(false)}
-              disabled={isStartingLogin}
+              disabled={isStartingLogin || isCopyingLoginLink}
             >
               {t("common.cancel")}
             </Button>
             <Button
               type="button"
+              variant="outline"
+              onClick={() => void handleCopyLoginLink()}
+              disabled={isStartingLogin || isCopyingLoginLink}
+            >
+              {isCopyingLoginLink ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Copy className="mr-2 h-4 w-4" />
+              )}
+              {t("puppyrouterAccount.copyLoginLink")}
+            </Button>
+            <Button
+              type="button"
               onClick={() => void handleStartBrowserLogin()}
-              disabled={isStartingLogin}
+              disabled={isStartingLogin || isCopyingLoginLink}
             >
               {isStartingLogin ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
