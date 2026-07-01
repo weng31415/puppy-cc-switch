@@ -428,7 +428,7 @@ mod tests {
     fn add_clears_usage_credentials_that_match_provider_config() {
         with_test_home(|state, _| {
             let provider = codex_provider_with_usage(
-                "codex-a",
+                "universal-codex-puppyrouter",
                 "https://api.a.example/v1/",
                 "sk-a",
                 Some(" sk-a "),
@@ -440,7 +440,7 @@ mod tests {
 
             let saved = state
                 .db
-                .get_provider_by_id("codex-a", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query saved provider")
                 .expect("saved provider should exist");
             let script = saved
@@ -459,7 +459,7 @@ mod tests {
     fn update_preserves_usage_credentials_that_only_match_previous_config() {
         with_test_home(|state, _| {
             let provider = codex_provider_with_usage(
-                "codex-usage-old",
+                "universal-codex-puppyrouter",
                 "https://api.a.example/v1/",
                 "sk-a",
                 Some("sk-a"),
@@ -479,7 +479,7 @@ mod tests {
 
             let saved = state
                 .db
-                .get_provider_by_id("codex-usage-old", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query updated provider")
                 .expect("updated provider should exist");
             let script = saved
@@ -505,7 +505,7 @@ mod tests {
     fn copied_provider_uses_edited_credentials_after_add_clears_mirrored_usage_credentials() {
         with_test_home(|state, _| {
             let copied_provider = codex_provider_with_usage(
-                "codex-copy",
+                "universal-codex-puppyrouter",
                 "https://api.a.example/v1/",
                 "sk-a",
                 Some("sk-a"),
@@ -518,7 +518,7 @@ mod tests {
 
             let saved_after_add = state
                 .db
-                .get_provider_by_id("codex-copy", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query copied provider")
                 .expect("copied provider should exist");
             let script_after_add = saved_after_add
@@ -537,7 +537,7 @@ mod tests {
 
             let saved_after_update = state
                 .db
-                .get_provider_by_id("codex-copy", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query edited provider")
                 .expect("edited provider should exist");
             let script_after_update = saved_after_update
@@ -560,7 +560,7 @@ mod tests {
     fn update_clears_usage_credentials_that_match_current_config() {
         with_test_home(|state, _| {
             let provider = codex_provider_with_usage(
-                "codex-current",
+                "universal-codex-puppyrouter",
                 "https://api.a.example/v1",
                 "sk-a",
                 Some("sk-usage"),
@@ -588,7 +588,7 @@ mod tests {
 
             let saved = state
                 .db
-                .get_provider_by_id("codex-current", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query updated provider")
                 .expect("updated provider should exist");
             let script = saved
@@ -607,7 +607,7 @@ mod tests {
     fn add_preserves_distinct_usage_credentials() {
         with_test_home(|state, _| {
             let provider = codex_provider_with_usage(
-                "codex-distinct",
+                "universal-codex-puppyrouter",
                 "https://api.main.example/v1",
                 "sk-main",
                 Some("sk-usage"),
@@ -619,7 +619,7 @@ mod tests {
 
             let saved = state
                 .db
-                .get_provider_by_id("codex-distinct", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query saved provider")
                 .expect("saved provider should exist");
             let script = saved
@@ -641,7 +641,7 @@ mod tests {
     fn add_does_not_clear_token_plan_credentials() {
         with_test_home(|state, _| {
             let provider = codex_provider_with_usage(
-                "codex-token-plan",
+                "universal-codex-puppyrouter",
                 "https://api.plan.example/v1",
                 "sk-plan",
                 Some("sk-plan"),
@@ -653,7 +653,7 @@ mod tests {
 
             let saved = state
                 .db
-                .get_provider_by_id("codex-token-plan", AppType::Codex.as_str())
+                .get_provider_by_id("universal-codex-puppyrouter", AppType::Codex.as_str())
                 .expect("query saved provider")
                 .expect("saved provider should exist");
             let script = saved
@@ -788,7 +788,7 @@ base_url = "http://localhost:8080"
         let state = AppState::new(db.clone());
 
         let original = Provider::with_id(
-            "p1".into(),
+            "universal-claude-puppyrouter".into(),
             "Claude A".into(),
             json!({
                 "env": {
@@ -802,10 +802,13 @@ base_url = "http://localhost:8080"
         );
         db.save_provider("claude", &original)
             .expect("save provider");
-        db.set_current_provider("claude", "p1")
+        db.set_current_provider("claude", "universal-claude-puppyrouter")
             .expect("set current provider");
-        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
-            .expect("set local current provider");
+        crate::settings::set_current_provider(
+            &AppType::Claude,
+            Some("universal-claude-puppyrouter"),
+        )
+        .expect("set local current provider");
 
         db.update_proxy_config(ProxyConfig {
             live_takeover_active: true,
@@ -845,7 +848,7 @@ base_url = "http://localhost:8080"
             .expect("start proxy service");
 
         let updated = Provider::with_id(
-            "p1".into(),
+            "universal-claude-puppyrouter".into(),
             "Claude A".into(),
             json!({
                 "env": {
@@ -867,7 +870,7 @@ base_url = "http://localhost:8080"
             .expect("get live backup")
             .expect("backup exists");
         let stored_provider = db
-            .get_provider_by_id("p1", "claude")
+            .get_provider_by_id("universal-claude-puppyrouter", "claude")
             .expect("get stored provider")
             .expect("stored provider exists");
         let expected_backup =
@@ -913,7 +916,7 @@ base_url = "http://localhost:8080"
         let state = AppState::new(db.clone());
 
         let mut original = Provider::with_id(
-            "p1".into(),
+            "universal-claude-desktop-puppyrouter".into(),
             "Desktop A".into(),
             json!({
                 "env": {
@@ -938,10 +941,13 @@ base_url = "http://localhost:8080"
         });
         db.save_provider("claude-desktop", &original)
             .expect("save provider");
-        db.set_current_provider("claude-desktop", "p1")
+        db.set_current_provider("claude-desktop", "universal-claude-desktop-puppyrouter")
             .expect("set current provider");
-        crate::settings::set_current_provider(&AppType::ClaudeDesktop, Some("p1"))
-            .expect("set local current provider");
+        crate::settings::set_current_provider(
+            &AppType::ClaudeDesktop,
+            Some("universal-claude-desktop-puppyrouter"),
+        )
+        .expect("set local current provider");
 
         // Claude Desktop keeps backup state from takeover startup; this sentinel only
         // marks takeover as active so provider updates rewrite the 3P profile.
@@ -966,7 +972,7 @@ base_url = "http://localhost:8080"
             .expect("start proxy service");
 
         let mut updated = Provider::with_id(
-            "p1".into(),
+            "universal-claude-desktop-puppyrouter".into(),
             "Desktop A".into(),
             json!({
                 "env": {
@@ -1654,11 +1660,10 @@ impl ProviderService {
         for mut provider in providers.into_values() {
             let previous_sort = provider.sort_index;
             Self::normalize_locked_provider_for_app(app_type, &mut provider);
-            if provider.sort_index != previous_sort {
-                state.db.save_provider(app_type.as_str(), &provider)?;
-            } else if Self::is_puppyrouter_provider_for_app(app_type, &provider)
-                || crate::database::is_official_seed_id(&provider.id)
-            {
+            let should_save = provider.sort_index != previous_sort
+                || Self::is_puppyrouter_provider_for_app(app_type, &provider)
+                || crate::database::is_official_seed_id(&provider.id);
+            if should_save {
                 state.db.save_provider(app_type.as_str(), &provider)?;
             }
         }
@@ -1673,7 +1678,9 @@ impl ProviderService {
             AppType::Gemini,
         ] {
             if let Some(seed_id) = official_seed_id_for_app(&app_type) {
-                state.db.ensure_official_seed_by_id(seed_id, app_type.clone())?;
+                state
+                    .db
+                    .ensure_official_seed_by_id(seed_id, app_type.clone())?;
             }
         }
 

@@ -70,8 +70,7 @@ function keyStatusLabel(t: TFunction, status: number) {
 }
 
 function formatUsdAmount(value: number) {
-  const formatted =
-    Math.abs(value) >= 1 ? value.toFixed(2) : value.toFixed(4);
+  const formatted = Math.abs(value) >= 1 ? value.toFixed(2) : value.toFixed(4);
   const trimmed = formatted.replace(/\.?0+$/, "");
   return `$${trimmed === "-0" ? "0" : trimmed}`;
 }
@@ -170,10 +169,7 @@ export function PuppyRouterAccountBanner({
       const result = await puppyrouterAccountApi.getBalance();
       setBalance(result);
     } catch (error) {
-      console.error(
-        "[PuppyRouterAccountBanner] Failed to load balance",
-        error,
-      );
+      console.error("[PuppyRouterAccountBanner] Failed to load balance", error);
       toast.error(
         t("puppyrouterAccount.loadBalanceFailed", {
           error: extractErrorMessage(error),
@@ -329,7 +325,8 @@ export function PuppyRouterAccountBanner({
         setLoginStart(null);
         toast.error(
           t(`puppyrouterAccount.loginStatus.${result.status}`, {
-            defaultValue: result.message || t("puppyrouterAccount.loginExpired"),
+            defaultValue:
+              result.message || t("puppyrouterAccount.loginExpired"),
           }),
         );
       } catch (error) {

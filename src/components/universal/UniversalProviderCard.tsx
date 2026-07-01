@@ -89,7 +89,11 @@ export function UniversalProviderCard({
             className="h-8 w-8 text-destructive hover:text-destructive"
             onClick={isLocked ? undefined : () => onDelete(provider.id)}
             disabled={isLocked}
-            title={isLocked ? lockedHint : t("common.delete", { defaultValue: "删除" })}
+            title={
+              isLocked
+                ? lockedHint
+                : t("common.delete", { defaultValue: "删除" })
+            }
           >
             <Trash2 className="h-4 w-4" />
           </Button>

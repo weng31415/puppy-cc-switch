@@ -213,10 +213,7 @@ fn is_puppyrouter_deeplink(request: &DeepLinkImportRequest) -> bool {
         .as_deref()
         .and_then(|endpoint| endpoint.split(',').next())
         .is_some_and(is_puppyrouter_url)
-        || request
-            .homepage
-            .as_deref()
-            .is_some_and(is_puppyrouter_url)
+        || request.homepage.as_deref().is_some_and(is_puppyrouter_url)
 }
 
 fn is_puppyrouter_url(value: &str) -> bool {

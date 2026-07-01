@@ -489,7 +489,10 @@ mod tests {
             url,
             "https://dav.example.com/remote.php/dav/files/demo/puppyrouter-app-sync/v2/db-v6/default%20profile/manifest.json"
         );
-        assert!(!url.contains("//puppyrouter"), "should not have double-slash");
+        assert!(
+            !url.contains("//puppyrouter"),
+            "should not have double-slash"
+        );
     }
 
     #[test]

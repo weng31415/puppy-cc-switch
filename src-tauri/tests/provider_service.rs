@@ -705,13 +705,11 @@ wire_api = "responses"
 }
 
 #[test]
-fn provider_service_switch_codex_default_overwrites_official_auth_when_preservation_off() {
+fn provider_service_switch_codex_default_preserves_official_auth() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
-    // Intentionally do NOT enable preservation: this locks the default opt-out
-    // behavior where switching to a third-party provider rewrites auth.json,
-    // discarding the user's ChatGPT OAuth login. It is the dual of
-    // `provider_service_switch_codex_preserves_oauth_and_backfills_api_key_from_live_token`.
+    // PuppyRouter defaults official auth preservation on, so switching API
+    // providers keeps ChatGPT OAuth for official plugins/remote operation.
     let _home = ensure_test_home();
 
     let live_auth = json!({
@@ -782,13 +780,23 @@ requires_openai_auth = true
     let auth_value: serde_json::Value =
         read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
-        auth_value.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
-        Some("third-party-key"),
-        "default (preservation off) should overwrite auth.json with the third-party API key"
+        auth_value.get("auth_mode").and_then(|v| v.as_str()),
+        Some("chatgpt"),
+        "default provider switch should preserve ChatGPT auth mode"
     );
+    assert_eq!(
+        auth_value
+            .pointer("/tokens/access_token")
+            .and_then(|v| v.as_str()),
+        Some("official-oauth-token"),
+        "default provider switch should preserve the official ChatGPT OAuth token"
+    );
+
+    let live_config =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(
-        auth_value.pointer("/tokens/access_token").is_none(),
-        "default switch must clear the official ChatGPT OAuth token from live auth.json"
+        live_config.contains("third-party-key"),
+        "selected third-party key should be injected into config.toml while OAuth auth.json is preserved"
     );
 }
 

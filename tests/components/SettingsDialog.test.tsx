@@ -326,7 +326,7 @@ describe("SettingsPage Component", () => {
     renderSettingsPage({ onOpenChange });
 
     expect(screen.getByText("language:zh")).toBeInTheDocument();
-    expect(screen.getByText("theme-settings")).toBeInTheDocument();
+    expect(screen.queryByText("theme-settings")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText("change-language"));
     expect(settingsMock.updateSettings).toHaveBeenCalledWith({

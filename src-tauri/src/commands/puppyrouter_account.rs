@@ -234,7 +234,9 @@ fn format_usd_balance(value: f64) -> String {
 }
 
 fn normalize_quota_per_unit(value: Option<i64>) -> i64 {
-    value.filter(|quota_per_unit| *quota_per_unit > 0).unwrap_or(500_000)
+    value
+        .filter(|quota_per_unit| *quota_per_unit > 0)
+        .unwrap_or(500_000)
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
