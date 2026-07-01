@@ -15,6 +15,15 @@ export interface PuppyRouterAccountStatus {
   loggedInAt?: number;
 }
 
+export interface PuppyRouterAccountBalance {
+  quota: number;
+  usedQuota: number;
+  quotaPerUnit: number;
+  balanceUsd: number;
+  formattedBalance: string;
+  updatedAt: number;
+}
+
 export interface PuppyRouterLoginStart {
   deviceCode: string;
   userCode: string;
@@ -75,6 +84,10 @@ export interface PuppyRouterApplyKeyResult {
 export const puppyrouterAccountApi = {
   async getStatus(): Promise<PuppyRouterAccountStatus> {
     return await invoke("get_puppyrouter_account_status");
+  },
+
+  async getBalance(): Promise<PuppyRouterAccountBalance> {
+    return await invoke("get_puppyrouter_account_balance");
   },
 
   async beginLogin(): Promise<PuppyRouterLoginStart> {

@@ -12,6 +12,7 @@ import {
   ExternalLink,
   RefreshCw,
   ShieldAlert,
+  WalletCards,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,6 +20,7 @@ import {
   puppyrouterAccountApi,
   settingsApi,
   type AppId,
+  type PuppyRouterAccountBalance,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
   type PuppyRouterApiKeyList,
@@ -80,8 +82,12 @@ export function PuppyRouterAccountBanner({
 }: PuppyRouterAccountBannerProps) {
   const { t } = useTranslation();
   const [account, setAccount] = useState<PuppyRouterAccountStatus | null>(null);
+  const [balance, setBalance] = useState<PuppyRouterAccountBalance | null>(
+    null,
+  );
   const [keyList, setKeyList] = useState<PuppyRouterApiKeyList | null>(null);
   const [isLoadingAccount, setIsLoadingAccount] = useState(true);
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginStart, setLoginStart] = useState<PuppyRouterLoginStart | null>(
@@ -142,6 +148,26 @@ export function PuppyRouterAccountBanner({
     [t],
   );
 
+  const loadBalance = useCallback(async () => {
+    setIsLoadingBalance(true);
+    try {
+      const result = await puppyrouterAccountApi.getBalance();
+      setBalance(result);
+    } catch (error) {
+      console.error(
+        "[PuppyRouterAccountBanner] Failed to load balance",
+        error,
+      );
+      toast.error(
+        t("puppyrouterAccount.loadBalanceFailed", {
+          error: extractErrorMessage(error),
+        }),
+      );
+    } finally {
+      setIsLoadingBalance(false);
+    }
+  }, [t]);
+
   const loadAccount = useCallback(async () => {
     setIsLoadingAccount(true);
     try {
@@ -162,10 +188,12 @@ export function PuppyRouterAccountBanner({
   useEffect(() => {
     if (account?.loggedIn) {
       void loadKeys();
+      void loadBalance();
     } else {
       setKeyList(null);
+      setBalance(null);
     }
-  }, [account?.loggedIn, loadKeys]);
+  }, [account?.loggedIn, loadBalance, loadKeys]);
 
   const resetLoginState = useCallback(() => {
     setLoginStart(null);
@@ -439,7 +467,33 @@ export function PuppyRouterAccountBanner({
                 ))}
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <div className="flex min-h-8 max-w-full items-center gap-2 rounded-md border border-primary/25 bg-primary/10 px-2.5 text-xs text-muted-foreground">
+                <WalletCards className="h-4 w-4 text-primary" />
+                <span>{t("puppyrouterAccount.balance")}</span>
+                <span className="font-mono font-semibold text-foreground">
+                  {isLoadingBalance && !balance
+                    ? t("puppyrouterAccount.balanceLoading")
+                    : balance?.formattedBalance || "--"}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => void loadBalance()}
+                  disabled={isLoadingBalance}
+                  title={t("puppyrouterAccount.refreshBalance")}
+                  aria-label={t("puppyrouterAccount.refreshBalance")}
+                  className="h-6 w-6 rounded-md"
+                >
+                  <RefreshCw
+                    className={cn(
+                      "h-3.5 w-3.5",
+                      isLoadingBalance && "animate-spin",
+                    )}
+                  />
+                </Button>
+              </div>
               <Button
                 type="button"
                 variant="outline"

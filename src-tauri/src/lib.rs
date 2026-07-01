@@ -1311,6 +1311,7 @@ pub fn run() {
             commands::delete_db_backup,
             commands::sync_current_providers_live,
             commands::get_puppyrouter_account_status,
+            commands::get_puppyrouter_account_balance,
             commands::begin_puppyrouter_account_login,
             commands::poll_puppyrouter_account_login,
             commands::logout_puppyrouter_account,

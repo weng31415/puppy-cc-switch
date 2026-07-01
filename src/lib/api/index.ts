@@ -20,6 +20,7 @@ export type { ProviderSwitchEvent } from "./providers";
 export type {
   PuppyRouterAccountStatus,
   PuppyRouterAccountUser,
+  PuppyRouterAccountBalance,
   PuppyRouterApiKey,
   PuppyRouterApiKeyList,
   PuppyRouterApplyKeyResult,

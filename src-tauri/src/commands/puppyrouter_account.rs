@@ -63,6 +63,17 @@ pub struct PuppyRouterAccountStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PuppyRouterAccountBalance {
+    pub quota: i64,
+    pub used_quota: i64,
+    pub quota_per_unit: i64,
+    pub balance_usd: f64,
+    pub formatted_balance: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum PuppyRouterLoginPollResult {
     Pending { message: String, interval: i64 },
@@ -144,6 +155,17 @@ struct LoginData {
 }
 
 #[derive(Debug, Deserialize)]
+struct SelfData {
+    quota: Option<i64>,
+    used_quota: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatusData {
+    quota_per_unit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DesktopAuthStartData {
     device_code: String,
     user_code: String,
@@ -196,6 +218,23 @@ struct TokenKeysBatchData {
 
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+fn format_usd_balance(value: f64) -> String {
+    let formatted = if value.abs() >= 1.0 {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.4}")
+    };
+    let trimmed = formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string();
+    format!("${}", if trimmed == "-0" { "0" } else { &trimmed })
+}
+
+fn normalize_quota_per_unit(value: Option<i64>) -> i64 {
+    value.filter(|quota_per_unit| *quota_per_unit > 0).unwrap_or(500_000)
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -592,6 +631,30 @@ pub fn get_puppyrouter_account_status(
     state: State<'_, AppState>,
 ) -> Result<PuppyRouterAccountStatus, String> {
     Ok(account_status_from_session(read_session(state.inner())?))
+}
+
+#[tauri::command]
+pub async fn get_puppyrouter_account_balance(
+    state: State<'_, AppState>,
+) -> Result<PuppyRouterAccountBalance, String> {
+    let session =
+        read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
+    let client = http_client()?;
+    let data: SelfData = auth_get(&client, &session, "/api/user/self").await?;
+    let status: StatusData = auth_get(&client, &session, "/api/status").await?;
+    let quota = data.quota.unwrap_or_default();
+    let used_quota = data.used_quota.unwrap_or_default();
+    let quota_per_unit = normalize_quota_per_unit(status.quota_per_unit);
+    let balance_usd = quota as f64 / quota_per_unit as f64;
+
+    Ok(PuppyRouterAccountBalance {
+        quota,
+        used_quota,
+        quota_per_unit,
+        balance_usd,
+        formatted_balance: format_usd_balance(balance_usd),
+        updated_at: now_timestamp(),
+    })
 }
 
 #[tauri::command]
