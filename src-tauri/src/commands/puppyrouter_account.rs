@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 
 use reqwest::header::{COOKIE, SET_COOKIE};
@@ -7,7 +8,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_config::AppType;
-use crate::provider::{Provider, ProviderMeta};
+use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta};
 use crate::services::ProviderService;
 use crate::store::AppState;
 
@@ -16,6 +17,7 @@ const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
 const ACCOUNT_SESSION_SETTING: &str = "puppyrouter_account_session";
 const LEGACY_ACCOUNT_PENDING_SESSION_SETTING: &str = "puppyrouter_account_pending_session";
 const SELECTED_TOKEN_SETTING: &str = "puppyrouter_account_selected_token";
+const SELECTED_TOKEN_BY_APP_SETTING: &str = "puppyrouter_account_selected_tokens_by_app";
 const DEFAULT_TOKEN_NAME: &str = "default_api_key";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,6 +549,187 @@ fn sort_api_keys(keys: &mut [PuppyRouterApiKey]) {
     });
 }
 
+fn parse_target_app(target_app: Option<String>) -> Result<AppType, String> {
+    let raw = target_app
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "缺少要应用 API key 的目标客户端。".to_string())?;
+    AppType::from_str(&raw).map_err(|e| e.to_string())
+}
+
+fn is_auto_apply_app(app_type: &AppType) -> bool {
+    matches!(
+        app_type,
+        AppType::Claude
+            | AppType::ClaudeDesktop
+            | AppType::Codex
+            | AppType::Gemini
+            | AppType::OpenCode
+    )
+}
+
+fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
+    match app_type {
+        AppType::Claude => Some("universal-claude-puppyrouter"),
+        AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
+        AppType::Codex => Some("universal-codex-puppyrouter"),
+        AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        AppType::OpenCode => Some(PUPPYROUTER_UNIVERSAL_ID),
+        AppType::OpenClaw | AppType::Hermes => None,
+    }
+}
+
+fn selected_tokens_by_app(state: &AppState) -> Result<HashMap<String, StoredSelectedToken>, String> {
+    Ok(
+        setting_json::<HashMap<String, StoredSelectedToken>>(
+            state,
+            SELECTED_TOKEN_BY_APP_SETTING,
+        )?
+        .unwrap_or_default(),
+    )
+}
+
+fn selected_token_for_app(
+    state: &AppState,
+    app_type: &AppType,
+) -> Result<Option<StoredSelectedToken>, String> {
+    let selected_by_app = selected_tokens_by_app(state)?;
+    if !selected_by_app.is_empty() {
+        return Ok(selected_by_app.get(app_type.as_str()).cloned());
+    }
+
+    // Backward compatibility for users who selected a global key before
+    // per-client key application existed.
+    setting_json(state, SELECTED_TOKEN_SETTING)
+}
+
+fn set_selected_token_for_app(
+    state: &AppState,
+    app_type: &AppType,
+    selected: StoredSelectedToken,
+) -> Result<(), String> {
+    let mut selected_by_app = selected_tokens_by_app(state)?;
+    selected_by_app.insert(app_type.as_str().to_string(), selected);
+    set_setting_json(state, SELECTED_TOKEN_BY_APP_SETTING, &selected_by_app)
+}
+
+fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
+    match (base, patch) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                match base_map.get_mut(key) {
+                    Some(base_value) => merge_json(base_value, patch_value),
+                    None => {
+                        base_map.insert(key.clone(), patch_value.clone());
+                    }
+                }
+            }
+        }
+        (base_value, patch_value) => {
+            *base_value = patch_value.clone();
+        }
+    }
+}
+
+fn puppyrouter_provider_for_app(
+    state: &AppState,
+    app_type: &AppType,
+    api_key: &str,
+) -> Result<Provider, String> {
+    if matches!(app_type, AppType::OpenCode) {
+        return Ok(puppyrouter_opencode_provider(api_key));
+    }
+
+    let mut universal = ProviderService::get_universal(state, PUPPYROUTER_UNIVERSAL_ID)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "PuppyRouter universal provider 不存在。".to_string())?;
+    universal.api_key = api_key.to_string();
+
+    match app_type {
+        AppType::Claude => universal
+            .to_claude_provider()
+            .ok_or_else(|| "PuppyRouter 未启用 Claude Code 配置。".to_string()),
+        AppType::ClaudeDesktop => {
+            let mut provider = universal
+                .to_claude_provider()
+                .ok_or_else(|| "PuppyRouter 未启用 Claude Desktop 配置。".to_string())?;
+            provider.id = "universal-claude-desktop-puppyrouter".to_string();
+            provider.name = "PuppyRouter".to_string();
+            provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
+            provider.category = Some("aggregator".to_string());
+            provider.sort_index = Some(0);
+            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+            meta.claude_desktop_mode.get_or_insert(ClaudeDesktopMode::Direct);
+            Ok(provider)
+        }
+        AppType::Codex => universal
+            .to_codex_provider()
+            .ok_or_else(|| "PuppyRouter 未启用 Codex 配置。".to_string()),
+        AppType::Gemini => universal
+            .to_gemini_provider()
+            .ok_or_else(|| "PuppyRouter 未启用 Gemini 配置。".to_string()),
+        AppType::OpenCode => unreachable!("OpenCode handled above"),
+        AppType::OpenClaw | AppType::Hermes => Err(
+            "该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string(),
+        ),
+    }
+}
+
+fn save_puppyrouter_provider_for_app(
+    state: &AppState,
+    app_type: &AppType,
+    api_key: &str,
+) -> Result<(), String> {
+    if !is_auto_apply_app(app_type) {
+        return Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string());
+    }
+
+    let mut provider = puppyrouter_provider_for_app(state, app_type, api_key)?;
+    if let Some(existing) = state
+        .db
+        .get_provider_by_id(&provider.id, app_type.as_str())
+        .map_err(|e| e.to_string())?
+    {
+        let mut merged_settings = existing.settings_config.clone();
+        merge_json(&mut merged_settings, &provider.settings_config);
+        provider.settings_config = merged_settings;
+        provider.created_at = existing.created_at.or(provider.created_at);
+        provider.notes = existing.notes.or(provider.notes);
+        provider.meta = existing.meta.or(provider.meta);
+        provider.in_failover_queue = existing.in_failover_queue;
+    }
+
+    if matches!(app_type, AppType::OpenCode) {
+        provider
+            .meta
+            .get_or_insert_with(ProviderMeta::default)
+            .live_config_managed = Some(false);
+    }
+
+    state
+        .db
+        .save_provider(app_type.as_str(), &provider)
+        .map_err(|e| e.to_string())
+}
+
+fn puppyrouter_provider_api_key_for_app(
+    state: &AppState,
+    app_type: &AppType,
+) -> Result<Option<String>, String> {
+    let Some(provider_id) = puppyrouter_provider_id_for_app(app_type) else {
+        return Ok(None);
+    };
+    let Some(provider) = state
+        .db
+        .get_provider_by_id(provider_id, app_type.as_str())
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let (_, api_key) = provider.resolve_usage_credentials(app_type);
+    Ok((!api_key.trim().is_empty()).then_some(api_key))
+}
+
 fn emit_universal_provider_synced(app: &AppHandle) {
     let _ = app.emit(
         "universal-provider-synced",
@@ -598,7 +781,7 @@ fn puppyrouter_opencode_provider(api_key: &str) -> Provider {
         sort_index: Some(0),
         notes: None,
         meta: Some(ProviderMeta {
-            live_config_managed: Some(true),
+            live_config_managed: Some(false),
             provider_type: Some("puppyrouter".to_string()),
             ..ProviderMeta::default()
         }),
@@ -606,26 +789,6 @@ fn puppyrouter_opencode_provider(api_key: &str) -> Provider {
         icon_color: Some("#F59E0B".to_string()),
         in_failover_queue: false,
     }
-}
-
-fn sync_puppyrouter_opencode_provider(state: &AppState, api_key: &str) -> Result<(), String> {
-    let mut provider = puppyrouter_opencode_provider(api_key);
-    if let Some(existing) = state
-        .db
-        .get_provider_by_id(PUPPYROUTER_UNIVERSAL_ID, AppType::OpenCode.as_str())
-        .map_err(|e| e.to_string())?
-    {
-        provider.created_at = existing.created_at.or(provider.created_at);
-        provider.notes = existing.notes;
-    }
-
-    state
-        .db
-        .save_provider(AppType::OpenCode.as_str(), &provider)
-        .map_err(|e| e.to_string())?;
-    crate::opencode_config::set_provider(&provider.id, provider.settings_config)
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -739,27 +902,34 @@ pub fn logout_puppyrouter_account(state: State<'_, AppState>) -> Result<bool, St
     clear_setting(state.inner(), ACCOUNT_SESSION_SETTING)?;
     clear_setting(state.inner(), LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
     clear_setting(state.inner(), SELECTED_TOKEN_SETTING)?;
+    clear_setting(state.inner(), SELECTED_TOKEN_BY_APP_SETTING)?;
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn list_puppyrouter_api_keys(
     state: State<'_, AppState>,
+    target_app: Option<String>,
 ) -> Result<PuppyRouterApiKeyList, String> {
+    let target_app = parse_target_app(target_app)?;
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client()?;
     let (tokens, total) = fetch_all_tokens(&client, &session).await?;
 
-    let selected: Option<StoredSelectedToken> =
-        setting_json(state.inner(), SELECTED_TOKEN_SETTING)?;
-    let provider_api_key = ProviderService::get_universal(state.inner(), PUPPYROUTER_UNIVERSAL_ID)
-        .map_err(|e| e.to_string())?
-        .map(|provider| provider.api_key);
+    let selected = selected_token_for_app(state.inner(), &target_app)?;
+    let provider_api_key = puppyrouter_provider_api_key_for_app(state.inner(), &target_app)?;
     let token_ids: Vec<i64> = tokens.iter().map(|token| token.id).collect();
-    let full_key_map = fetch_token_key_map(&client, &session, &token_ids)
-        .await
-        .unwrap_or_default();
+    let full_key_map = if provider_api_key
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        fetch_token_key_map(&client, &session, &token_ids)
+            .await
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
 
     let selected_token_id = selected.map(|token| token.token_id);
     let mut keys: Vec<PuppyRouterApiKey> = tokens
@@ -788,7 +958,13 @@ pub async fn apply_puppyrouter_api_key(
     app: AppHandle,
     state: State<'_, AppState>,
     token_id: i64,
+    target_app: Option<String>,
 ) -> Result<PuppyRouterApplyKeyResult, String> {
+    let target_app = parse_target_app(target_app)?;
+    if !is_auto_apply_app(&target_app) {
+        return Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string());
+    }
+
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client()?;
@@ -807,18 +983,7 @@ pub async fn apply_puppyrouter_api_key(
         return Err("PuppyRouter 返回了空 API key。".to_string());
     }
 
-    let mut provider = ProviderService::get_universal(state.inner(), PUPPYROUTER_UNIVERSAL_ID)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "PuppyRouter universal provider 不存在。".to_string())?;
-    provider.api_key = full_key;
-    ProviderService::upsert_universal(state.inner(), provider).map_err(|e| e.to_string())?;
-    let synced = ProviderService::sync_universal_to_apps(state.inner(), PUPPYROUTER_UNIVERSAL_ID)
-        .map_err(|e| e.to_string())?;
-    let provider_api_key = ProviderService::get_universal(state.inner(), PUPPYROUTER_UNIVERSAL_ID)
-        .map_err(|e| e.to_string())?
-        .map(|provider| provider.api_key)
-        .ok_or_else(|| "PuppyRouter universal provider 不存在。".to_string())?;
-    sync_puppyrouter_opencode_provider(state.inner(), &provider_api_key)?;
+    save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key)?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
@@ -828,11 +993,11 @@ pub async fn apply_puppyrouter_api_key(
         group: group.clone(),
         applied_at: now_timestamp(),
     };
-    set_setting_json(state.inner(), SELECTED_TOKEN_SETTING, &selected)?;
+    set_selected_token_for_app(state.inner(), &target_app, selected)?;
     emit_universal_provider_synced(&app);
 
     Ok(PuppyRouterApplyKeyResult {
-        synced,
+        synced: true,
         token_id,
         name: token.name,
         masked_key: token.key,

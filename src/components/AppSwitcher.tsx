@@ -25,9 +25,9 @@ interface AppSwitcherProps {
 }
 
 const ALL_APPS: AppId[] = [
+  "codex",
   "claude",
   "claude-desktop",
-  "codex",
   "gemini",
   "opencode",
   "openclaw",

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { motion } from "framer-motion";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   Copy,
+  CreditCard,
   KeyRound,
   Loader2,
   LogIn,
@@ -20,12 +22,18 @@ import {
   puppyrouterAccountApi,
   settingsApi,
   type AppId,
-  type PuppyRouterAccountBalance,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
-  type PuppyRouterApiKeyList,
   type PuppyRouterLoginStart,
 } from "@/lib/api";
+import {
+  clearPuppyRouterAccountCache,
+  markPuppyRouterApiKeyActive,
+  puppyrouterAccountKeys,
+  usePuppyRouterAccountBalance,
+  usePuppyRouterAccountStatus,
+  usePuppyRouterApiKeys,
+} from "@/lib/query/puppyrouterAccount";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
@@ -53,6 +61,7 @@ const AUTO_APPLY_APP_IDS: AppId[] = [
 ];
 
 const MANUAL_ONLY_APP_IDS: AppId[] = ["openclaw", "hermes"];
+const PUPPYROUTER_WALLET_URL = "https://www.puppyrouter.com/console/topup";
 
 function keyStatusLabel(t: TFunction, status: number) {
   switch (status) {
@@ -92,14 +101,21 @@ export function PuppyRouterAccountBanner({
   activeApp,
 }: PuppyRouterAccountBannerProps) {
   const { t } = useTranslation();
-  const [account, setAccount] = useState<PuppyRouterAccountStatus | null>(null);
-  const [balance, setBalance] = useState<PuppyRouterAccountBalance | null>(
-    null,
-  );
-  const [keyList, setKeyList] = useState<PuppyRouterApiKeyList | null>(null);
-  const [isLoadingAccount, setIsLoadingAccount] = useState(true);
-  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
-  const [isLoadingKeys, setIsLoadingKeys] = useState(false);
+  const queryClient = useQueryClient();
+  const {
+    data: account,
+    isLoading: isLoadingAccount,
+    isError: isAccountError,
+  } = usePuppyRouterAccountStatus();
+  const effectiveAccount =
+    account ?? (isAccountError ? { loggedIn: false } : null);
+  const isLoggedIn = effectiveAccount?.loggedIn ?? false;
+  const { data: balance, isFetching: isBalanceFetching } =
+    usePuppyRouterAccountBalance(isLoggedIn);
+  const { data: keyList, isFetching: isKeysFetching } =
+    usePuppyRouterApiKeys(isLoggedIn, activeApp);
+  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
+  const [isRefreshingKeys, setIsRefreshingKeys] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginStart, setLoginStart] = useState<PuppyRouterLoginStart | null>(
     null,
@@ -110,6 +126,8 @@ export function PuppyRouterAccountBanner({
   const [loginPollMessage, setLoginPollMessage] = useState("");
   const [applyingKeyId, setApplyingKeyId] = useState<number | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const isLoadingBalance = isBalanceFetching || isRefreshingBalance;
+  const isLoadingKeys = isKeysFetching || isRefreshingKeys;
 
   const isManualOnlyApp = MANUAL_ONLY_APP_IDS.includes(activeApp);
   const quotaPerUnit =
@@ -129,21 +147,33 @@ export function PuppyRouterAccountBanner({
 
   const loadKeys = useCallback(
     async (options?: { autoApplyDefault?: boolean }) => {
-      setIsLoadingKeys(true);
+      setIsRefreshingKeys(true);
       try {
-        const result = await puppyrouterAccountApi.listApiKeys();
-        setKeyList(result);
+        const result = await puppyrouterAccountApi.listApiKeys(activeApp);
+        queryClient.setQueryData(
+          puppyrouterAccountKeys.apiKeys(activeApp),
+          result,
+        );
 
-        if (options?.autoApplyDefault) {
+        if (options?.autoApplyDefault && !isManualOnlyApp) {
           const target = chooseAutoApplyKey(result.keys);
           if (target && !target.active && target.usable) {
             setApplyingKeyId(target.id);
-            const applied = await puppyrouterAccountApi.applyApiKey(target.id);
-            const refreshed = await puppyrouterAccountApi.listApiKeys();
-            setKeyList(refreshed);
+            const applied = await puppyrouterAccountApi.applyApiKey(
+              target.id,
+              activeApp,
+            );
+            queryClient.setQueryData(
+              puppyrouterAccountKeys.apiKeys(activeApp),
+              markPuppyRouterApiKeyActive(result, target.id),
+            );
+            void queryClient.invalidateQueries({
+              queryKey: ["providers"],
+            });
             toast.success(
               t("puppyrouterAccount.autoSyncSuccess", {
                 name: applied.name,
+                app: APP_ICON_MAP[activeApp].label,
               }),
             );
           }
@@ -156,18 +186,18 @@ export function PuppyRouterAccountBanner({
           }),
         );
       } finally {
-        setIsLoadingKeys(false);
+        setIsRefreshingKeys(false);
         setApplyingKeyId(null);
       }
     },
-    [t],
+    [activeApp, isManualOnlyApp, queryClient, t],
   );
 
   const loadBalance = useCallback(async () => {
-    setIsLoadingBalance(true);
+    setIsRefreshingBalance(true);
     try {
       const result = await puppyrouterAccountApi.getBalance();
-      setBalance(result);
+      queryClient.setQueryData(puppyrouterAccountKeys.balance(), result);
     } catch (error) {
       console.error("[PuppyRouterAccountBanner] Failed to load balance", error);
       toast.error(
@@ -176,36 +206,21 @@ export function PuppyRouterAccountBanner({
         }),
       );
     } finally {
-      setIsLoadingBalance(false);
+      setIsRefreshingBalance(false);
     }
-  }, [t]);
+  }, [queryClient, t]);
 
-  const loadAccount = useCallback(async () => {
-    setIsLoadingAccount(true);
+  const handleOpenWallet = async () => {
     try {
-      const status = await puppyrouterAccountApi.getStatus();
-      setAccount(status);
+      await settingsApi.openExternal(PUPPYROUTER_WALLET_URL);
     } catch (error) {
-      console.error("[PuppyRouterAccountBanner] Failed to load account", error);
-      setAccount({ loggedIn: false });
-    } finally {
-      setIsLoadingAccount(false);
+      toast.error(
+        t("puppyrouterAccount.openWalletFailed", {
+          error: extractErrorMessage(error),
+        }),
+      );
     }
-  }, []);
-
-  useEffect(() => {
-    void loadAccount();
-  }, [loadAccount]);
-
-  useEffect(() => {
-    if (account?.loggedIn) {
-      void loadKeys();
-      void loadBalance();
-    } else {
-      setKeyList(null);
-      setBalance(null);
-    }
-  }, [account?.loggedIn, loadBalance, loadKeys]);
+  };
 
   const resetLoginState = useCallback(() => {
     setLoginStart(null);
@@ -215,13 +230,20 @@ export function PuppyRouterAccountBanner({
 
   const finishApprovedLogin = useCallback(
     async (accountStatus: PuppyRouterAccountStatus) => {
-      setAccount(accountStatus);
       setIsLoginOpen(false);
       resetLoginState();
       toast.success(t("puppyrouterAccount.loginSuccess"));
-      await loadKeys({ autoApplyDefault: true });
+      try {
+        await loadKeys({ autoApplyDefault: true });
+        await loadBalance();
+      } finally {
+        queryClient.setQueryData(
+          puppyrouterAccountKeys.status(),
+          accountStatus,
+        );
+      }
     },
-    [loadKeys, resetLoginState, t],
+    [loadBalance, loadKeys, queryClient, resetLoginState, t],
   );
 
   const handleStartBrowserLogin = async () => {
@@ -352,19 +374,26 @@ export function PuppyRouterAccountBanner({
   }, [finishApprovedLogin, isLoginOpen, loginStart, t]);
 
   const handleApplyKey = async (key: PuppyRouterApiKey) => {
-    if (!key.usable || applyingKeyId !== null) {
+    if (isManualOnlyApp || !key.usable || applyingKeyId !== null) {
       return;
     }
 
     setApplyingKeyId(key.id);
     try {
-      const result = await puppyrouterAccountApi.applyApiKey(key.id);
+      const result = await puppyrouterAccountApi.applyApiKey(key.id, activeApp);
+      queryClient.setQueryData(
+        puppyrouterAccountKeys.apiKeys(activeApp),
+        markPuppyRouterApiKeyActive(keyList, key.id),
+      );
       toast.success(
         t("puppyrouterAccount.syncSuccess", {
           name: result.name,
+          app: APP_ICON_MAP[activeApp].label,
         }),
       );
-      await loadKeys();
+      void queryClient.invalidateQueries({
+        queryKey: ["providers"],
+      });
     } catch (error) {
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
       toast.error(
@@ -381,8 +410,7 @@ export function PuppyRouterAccountBanner({
     setIsLoggingOut(true);
     try {
       await puppyrouterAccountApi.logout();
-      setAccount({ loggedIn: false });
-      setKeyList(null);
+      clearPuppyRouterAccountCache(queryClient);
       toast.success(t("puppyrouterAccount.logoutSuccess"));
     } catch (error) {
       toast.error(
@@ -406,7 +434,7 @@ export function PuppyRouterAccountBanner({
 
   return (
     <section className="space-y-3">
-      {!account?.loggedIn ? (
+      {!effectiveAccount?.loggedIn ? (
         <motion.div
           className="relative overflow-hidden rounded-lg border border-amber-400/40 bg-[linear-gradient(110deg,#080808,#15120a_52%,#2a1d06)] px-4 py-4 text-amber-50 shadow-[0_0_28px_rgba(245,158,11,0.16)]"
           animate={{
@@ -457,12 +485,13 @@ export function PuppyRouterAccountBanner({
                   {t("puppyrouterAccount.loggedIn")}
                 </Badge>
                 <span className="truncate text-sm font-medium text-foreground">
-                  {account.user?.displayName || account.user?.username}
+                  {effectiveAccount.user?.displayName ||
+                    effectiveAccount.user?.username}
                 </span>
-                {account.user?.group && (
+                {effectiveAccount.user?.group && (
                   <Badge variant="outline" className="border-primary/30">
                     {t("puppyrouterAccount.group", {
-                      group: account.user.group,
+                      group: effectiveAccount.user.group,
                     })}
                   </Badge>
                 )}
@@ -507,6 +536,18 @@ export function PuppyRouterAccountBanner({
                   />
                 </Button>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleOpenWallet()}
+                title={t("puppyrouterAccount.openWallet")}
+                aria-label={t("puppyrouterAccount.openWallet")}
+                className="border-primary/35 bg-primary/12 text-primary hover:bg-primary/20"
+              >
+                <CreditCard className="mr-2 h-4 w-4" />
+                {t("puppyrouterAccount.topUp")}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -575,14 +616,17 @@ export function PuppyRouterAccountBanner({
                   <button
                     key={apiKey.id}
                     type="button"
-                    disabled={!apiKey.usable || applyingKeyId !== null}
+                    disabled={
+                      isManualOnlyApp || !apiKey.usable || applyingKeyId !== null
+                    }
                     onClick={() => void handleApplyKey(apiKey)}
                     className={cn(
                       "group flex min-h-[132px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
                       apiKey.active
                         ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(245,158,11,0.16)]"
                         : "border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/8",
-                      !apiKey.usable && "cursor-not-allowed opacity-55",
+                      (isManualOnlyApp || !apiKey.usable) &&
+                        "cursor-not-allowed opacity-55",
                     )}
                   >
                     <div className="flex w-full min-w-0 items-start justify-between gap-2">

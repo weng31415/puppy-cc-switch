@@ -3420,6 +3420,11 @@ impl ProviderService {
             if let Some(existing) = state.db.get_provider_by_id(&claude_provider.id, "claude")? {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &claude_provider.settings_config);
+                Self::preserve_existing_puppyrouter_api_key(
+                    &AppType::Claude,
+                    &existing,
+                    &mut merged,
+                );
                 claude_provider.settings_config = merged;
             }
             state.db.save_provider("claude", &claude_provider)?;
@@ -3435,6 +3440,11 @@ impl ProviderService {
             if let Some(existing) = state.db.get_provider_by_id(&codex_provider.id, "codex")? {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &codex_provider.settings_config);
+                Self::preserve_existing_puppyrouter_api_key(
+                    &AppType::Codex,
+                    &existing,
+                    &mut merged,
+                );
                 codex_provider.settings_config = merged;
             }
             state.db.save_provider("codex", &codex_provider)?;
@@ -3449,6 +3459,11 @@ impl ProviderService {
             if let Some(existing) = state.db.get_provider_by_id(&gemini_provider.id, "gemini")? {
                 let mut merged = existing.settings_config.clone();
                 Self::merge_json(&mut merged, &gemini_provider.settings_config);
+                Self::preserve_existing_puppyrouter_api_key(
+                    &AppType::Gemini,
+                    &existing,
+                    &mut merged,
+                );
                 gemini_provider.settings_config = merged;
             }
             state.db.save_provider("gemini", &gemini_provider)?;
@@ -3457,7 +3472,21 @@ impl ProviderService {
             let _ = state.db.delete_provider("gemini", &gemini_id);
         }
 
-        if let Some(desktop_provider) = Self::puppyrouter_claude_desktop_provider(&provider) {
+        if let Some(mut desktop_provider) = Self::puppyrouter_claude_desktop_provider(&provider) {
+            if let Some(existing) = state
+                .db
+                .get_provider_by_id(&desktop_provider.id, AppType::ClaudeDesktop.as_str())?
+            {
+                let mut merged = existing.settings_config.clone();
+                Self::merge_json(&mut merged, &desktop_provider.settings_config);
+                Self::preserve_existing_puppyrouter_api_key(
+                    &AppType::ClaudeDesktop,
+                    &existing,
+                    &mut merged,
+                );
+                desktop_provider.settings_config = merged;
+                desktop_provider.meta = existing.meta.or(desktop_provider.meta);
+            }
             state
                 .db
                 .save_provider(AppType::ClaudeDesktop.as_str(), &desktop_provider)?;
@@ -3495,5 +3524,47 @@ impl ProviderService {
                 *base_val = patch_val.clone();
             }
         }
+    }
+
+    fn preserve_existing_puppyrouter_api_key(
+        app_type: &AppType,
+        existing: &Provider,
+        settings: &mut Value,
+    ) {
+        let (_, api_key) = existing.resolve_usage_credentials(app_type);
+        if api_key.trim().is_empty() {
+            return;
+        }
+
+        match app_type {
+            AppType::Claude | AppType::ClaudeDesktop => {
+                Self::set_nested_string(
+                    settings,
+                    "env",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    api_key,
+                );
+            }
+            AppType::Codex => {
+                Self::set_nested_string(settings, "auth", "OPENAI_API_KEY", api_key);
+            }
+            AppType::Gemini => {
+                Self::set_nested_string(settings, "env", "GEMINI_API_KEY", api_key);
+            }
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {}
+        }
+    }
+
+    fn set_nested_string(settings: &mut Value, section: &str, key: &str, value: String) {
+        let Value::Object(root) = settings else {
+            return;
+        };
+        let section_value = root
+            .entry(section.to_string())
+            .or_insert_with(|| Value::Object(Default::default()));
+        let Some(section_object) = section_value.as_object_mut() else {
+            return;
+        };
+        section_object.insert(key.to_string(), Value::String(value));
     }
 }

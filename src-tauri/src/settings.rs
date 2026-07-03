@@ -373,8 +373,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub enable_failover_toggle: bool,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
-    /// PuppyRouter defaults this on so Codex app official plugins and remote control remain usable.
-    #[serde(default = "default_true")]
+    /// Defaults off so first-time PuppyRouter users can use Codex with only a PuppyRouter API key.
+    #[serde(default)]
     pub preserve_codex_official_auth_on_switch: bool,
     /// Run official Codex providers under the shared "custom" model_provider id
     /// so official sessions share one resume-history bucket with third-party
@@ -504,7 +504,7 @@ impl Default for AppSettings {
             usage_confirmed: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
-            preserve_codex_official_auth_on_switch: true,
+            preserve_codex_official_auth_on_switch: false,
             unify_codex_session_history: true,
             unify_codex_migrate_existing: None,
             failover_confirmed: None,

@@ -65,8 +65,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = ${tomlString(providerName)}
 base_url = ${tomlString(baseUrl)}
-wire_api = "responses"
-requires_openai_auth = true`;
+wire_api = "responses"`;
 }
 
 export const codexProviderPresets: CodexProviderPreset[] = [

@@ -102,11 +102,14 @@ export const puppyrouterAccountApi = {
     return await invoke("logout_puppyrouter_account");
   },
 
-  async listApiKeys(): Promise<PuppyRouterApiKeyList> {
-    return await invoke("list_puppyrouter_api_keys");
+  async listApiKeys(targetApp: string): Promise<PuppyRouterApiKeyList> {
+    return await invoke("list_puppyrouter_api_keys", { targetApp });
   },
 
-  async applyApiKey(tokenId: number): Promise<PuppyRouterApplyKeyResult> {
-    return await invoke("apply_puppyrouter_api_key", { tokenId });
+  async applyApiKey(
+    tokenId: number,
+    targetApp: string,
+  ): Promise<PuppyRouterApplyKeyResult> {
+    return await invoke("apply_puppyrouter_api_key", { tokenId, targetApp });
   },
 };

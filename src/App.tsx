@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
   Settings,
@@ -41,6 +41,7 @@ import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import {
   providersApi,
   settingsApi,
+  vscodeApi,
   type AppId,
   type ProviderSwitchEvent,
 } from "@/lib/api";
@@ -124,6 +125,7 @@ import {
   isOfficialProviderId,
   isPuppyRouterProviderId,
 } from "@/utils/lockedProviders";
+import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 
 type View =
   | "providers"
@@ -187,6 +189,15 @@ const VALID_VIEWS: View[] = [
   "hermesMemory",
 ];
 
+const PUPPYROUTER_HOST = "puppyrouter.com";
+const PUPPYROUTER_CONFIG_STATUS_APPS: AppId[] = [
+  "claude",
+  "claude-desktop",
+  "codex",
+  "gemini",
+  "opencode",
+];
+
 const getInitialView = (): View => {
   const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
   if (saved && VALID_VIEWS.includes(saved)) {
@@ -194,6 +205,64 @@ const getInitialView = (): View => {
   }
   return "providers";
 };
+
+const isPuppyRouterUrl = (value: unknown): boolean => {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  try {
+    const host = new URL(normalized).hostname.replace(/^www\./, "");
+    return host === PUPPYROUTER_HOST;
+  } catch {
+    return normalized.includes(PUPPYROUTER_HOST);
+  }
+};
+
+const isRecord = (value: unknown): value is Record<string, any> =>
+  typeof value === "object" && value !== null;
+
+const readStringPath = (value: unknown, path: string[]): string | undefined => {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return typeof current === "string" ? current : undefined;
+};
+
+const isSupportedPuppyRouterConfigStatusApp = (appId: AppId): boolean =>
+  PUPPYROUTER_CONFIG_STATUS_APPS.includes(appId);
+
+async function readPuppyRouterLiveConfigured(appId: AppId): Promise<boolean> {
+  if (appId === "claude-desktop") {
+    const status = await providersApi.getClaudeDesktopStatus();
+    return isPuppyRouterUrl(status.actualBaseUrl);
+  }
+
+  if (appId === "opencode") {
+    const liveProviderIds = await providersApi.getOpenCodeLiveProviderIds();
+    return liveProviderIds.includes("puppyrouter");
+  }
+
+  const settings = await vscodeApi.getLiveProviderSettings(appId);
+  if (appId === "claude") {
+    return isPuppyRouterUrl(
+      readStringPath(settings, ["env", "ANTHROPIC_BASE_URL"]),
+    );
+  }
+  if (appId === "codex") {
+    return isPuppyRouterUrl(
+      extractCodexBaseUrl(readStringPath(settings, ["config"])),
+    );
+  }
+  if (appId === "gemini") {
+    return isPuppyRouterUrl(
+      readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]),
+    );
+  }
+
+  return true;
+}
 
 function App() {
   const { t } = useTranslation();
@@ -325,6 +394,36 @@ function App() {
   });
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
+  const puppyRouterConfigStatusEnabled =
+    currentView === "providers" &&
+    isSupportedPuppyRouterConfigStatusApp(activeApp);
+  const { data: isPuppyRouterLiveConfigured } = useQuery({
+    queryKey: ["puppyrouterLiveConfigStatus", activeApp],
+    queryFn: async () => {
+      try {
+        return await readPuppyRouterLiveConfigured(activeApp);
+      } catch (error) {
+        console.warn(
+          "[App] Failed to read live PuppyRouter config status",
+          activeApp,
+          error,
+        );
+        return false;
+      }
+    },
+    enabled: puppyRouterConfigStatusEnabled,
+    staleTime: 0,
+    retry: false,
+  });
+  const showPuppyRouterConfigWarning =
+    puppyRouterConfigStatusEnabled &&
+    isPuppyRouterLiveConfigured === false &&
+    !(
+      isProxyRunning &&
+      isCurrentAppTakeoverActive &&
+      activeProviderId !== undefined &&
+      isPuppyRouterProviderId(activeProviderId, activeApp)
+    );
   const isOpenClawView =
     activeApp === "openclaw" &&
     (currentView === "providers" ||
@@ -432,6 +531,9 @@ function App() {
             if (event.appType === activeApp) {
               await refetch();
             }
+            await queryClient.invalidateQueries({
+              queryKey: ["puppyrouterLiveConfigStatus", event.appType],
+            });
           },
         );
         if (!active) {
@@ -453,6 +555,9 @@ function App() {
 
   useTauriEvent("universal-provider-synced", async () => {
     await queryClient.invalidateQueries({ queryKey: ["providers"] });
+    await queryClient.invalidateQueries({
+      queryKey: ["puppyrouterLiveConfigStatus"],
+    });
     try {
       await providersApi.updateTrayMenu();
     } catch (error) {
@@ -1031,66 +1136,94 @@ function App() {
           return (
             <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
               <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeApp}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <PuppyRouterAccountBanner activeApp={activeApp} />
-                    <ProviderList
-                      providers={providers}
-                      currentProviderId={currentProviderId}
-                      appId={activeApp}
-                      isLoading={isLoading}
-                      isProxyRunning={isProxyRunning}
-                      isProxyTakeover={
-                        isProxyRunning && isCurrentAppTakeoverActive
-                      }
-                      activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
-                      onDelete={(provider) =>
-                        setConfirmAction({ provider, action: "delete" })
-                      }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" ||
-                        activeApp === "openclaw" ||
-                        activeApp === "hermes"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
-                      onDuplicate={handleDuplicateProvider}
-                      onConfigureUsage={setUsageProvider}
-                      onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
-                      onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw"
-                          ? setAsDefaultModel
-                          : activeApp === "hermes"
-                            ? switchProvider
+                <div className="space-y-4">
+                  <PuppyRouterAccountBanner activeApp={activeApp} />
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={activeApp}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                    >
+                      <ProviderList
+                        providers={providers}
+                        currentProviderId={currentProviderId}
+                        appId={activeApp}
+                        isLoading={isLoading}
+                        isProxyRunning={isProxyRunning}
+                        isProxyTakeover={
+                          isProxyRunning && isCurrentAppTakeoverActive
+                        }
+                        activeProviderId={activeProviderId}
+                        onSwitch={switchProvider}
+                        onEdit={(provider) => {
+                          setEditingProvider(provider);
+                        }}
+                        onDelete={(provider) =>
+                          setConfirmAction({ provider, action: "delete" })
+                        }
+                        onRemoveFromConfig={
+                          activeApp === "opencode" ||
+                          activeApp === "openclaw" ||
+                          activeApp === "hermes"
+                            ? (provider) =>
+                                setConfirmAction({ provider, action: "remove" })
                             : undefined
-                      }
-                    />
-                  </motion.div>
-                </AnimatePresence>
+                        }
+                        onDisableOmo={
+                          activeApp === "opencode"
+                            ? handleDisableOmo
+                            : undefined
+                        }
+                        onDisableOmoSlim={
+                          activeApp === "opencode"
+                            ? handleDisableOmoSlim
+                            : undefined
+                        }
+                        onDuplicate={handleDuplicateProvider}
+                        onConfigureUsage={setUsageProvider}
+                        onOpenWebsite={handleOpenWebsite}
+                        onOpenTerminal={
+                          activeApp === "claude"
+                            ? handleOpenTerminal
+                            : undefined
+                        }
+                        onCreate={() => setIsAddOpen(true)}
+                        onSetAsDefault={
+                          activeApp === "openclaw"
+                            ? setAsDefaultModel
+                            : activeApp === "hermes"
+                              ? switchProvider
+                              : undefined
+                        }
+                      />
+                    </motion.div>
+                  </AnimatePresence>
+                  <AnimatePresence>
+                    {showPuppyRouterConfigWarning && (
+                      <motion.div
+                        key={`puppyrouter-config-warning-${activeApp}`}
+                        initial={{ opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 12 }}
+                        transition={{ duration: 0.18, ease: "easeOut" }}
+                        className="sticky bottom-3 z-20 rounded-lg border border-red-400/70 bg-red-950/95 px-4 py-3 text-sm font-semibold text-red-50 shadow-2xl shadow-red-950/40 backdrop-blur"
+                      >
+                        <div className="flex items-center gap-3">
+                          <AlertTriangle className="h-5 w-5 shrink-0 text-red-200" />
+                          <span>
+                            {t("puppyrouterAccount.clientNotConfiguredWarning", {
+                              app: t(`apps.${activeApp}`),
+                              defaultValue:
+                                "{{app}} 暂未配置到 PuppyRouter，你正在使用官方或其他渠道。",
+                            })}
+                          </span>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
             </div>
           );
