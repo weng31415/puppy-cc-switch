@@ -108,6 +108,8 @@ pub struct ClaudeDesktopStatus {
     pub stale_raw_models: bool,
     pub missing_route_mappings: bool,
     pub gateway_token_configured: bool,
+    pub profile_gateway_key_configured: bool,
+    pub gateway_token_matches_provider: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +147,8 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
             stale_raw_models: false,
             missing_route_mappings: false,
             gateway_token_configured: false,
+            profile_gateway_key_configured: false,
+            gateway_token_matches_provider: false,
         });
     }
 
@@ -155,6 +159,12 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
     let actual_base_url = profile
         .get("inferenceGatewayBaseUrl")
         .and_then(Value::as_str)
+        .map(str::to_string);
+    let actual_api_key = profile
+        .get("inferenceGatewayApiKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_string);
     let stale_raw_models = profile
         .get("inferenceModels")
@@ -188,6 +198,18 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
             .map(|credentials| credentials.base_url),
         None => None,
     };
+    let expected_api_key = match mode {
+        Some(ClaudeDesktopMode::Proxy) => db.get_setting(GATEWAY_TOKEN_SETTING_KEY).ok().flatten(),
+        Some(ClaudeDesktopMode::Direct) => current_provider
+            .as_ref()
+            .and_then(|provider| direct_gateway_credentials(provider).ok())
+            .map(|credentials| credentials.api_key),
+        None => None,
+    };
+    let gateway_token_matches_provider = actual_api_key
+        .as_deref()
+        .zip(expected_api_key.as_deref())
+        .is_some_and(|(actual, expected)| actual.trim() == expected.trim());
     let missing_route_mappings = current_provider.as_ref().is_some_and(|provider| {
         matches!(provider_mode(provider), ClaudeDesktopMode::Proxy)
             && proxy_model_routes(provider).is_err()
@@ -206,6 +228,8 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
         stale_raw_models,
         missing_route_mappings,
         gateway_token_configured,
+        profile_gateway_key_configured: actual_api_key.is_some(),
+        gateway_token_matches_provider,
     })
 }
 

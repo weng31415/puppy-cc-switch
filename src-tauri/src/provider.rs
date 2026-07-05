@@ -1390,6 +1390,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_credentials_codex_prefers_bearer_token_over_preserved_auth() {
+        let p = provider_with(json!({
+            "auth": { "OPENAI_API_KEY": "preserved-official-key" },
+            "config": "model_provider = \"custom\"\n\
+                       [model_providers.custom]\n\
+                       base_url = \"https://puppyrouter.com/v1\"\n\
+                       experimental_bearer_token = \"active-puppyrouter-key\"\n",
+        }));
+
+        assert_eq!(
+            p.resolve_usage_credentials(&AppType::Codex),
+            (
+                "https://puppyrouter.com/v1".to_string(),
+                "active-puppyrouter-key".to_string()
+            )
+        );
+    }
+
+    #[test]
     fn resolve_credentials_gemini_env_with_google_fallback() {
         let p = provider_with(json!({
             "env": {

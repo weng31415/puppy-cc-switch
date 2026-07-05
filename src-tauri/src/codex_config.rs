@@ -173,25 +173,6 @@ pub(crate) fn is_custom_codex_model_provider_id(id: &str) -> bool {
             .any(|reserved| reserved.eq_ignore_ascii_case(id))
 }
 
-/// Write only Codex `config.toml` for provider switching.
-///
-/// Codex login state lives in `auth.json`; provider routing, endpoint, model,
-/// and provider-scoped bearer tokens live in `config.toml`. Provider switches
-/// should not overwrite the user's ChatGPT login cache.
-pub fn write_codex_live_config_atomic(config_text_opt: Option<&str>) -> Result<(), AppError> {
-    let config_path = get_codex_config_path();
-    let cfg_text = match config_text_opt {
-        Some(config_text) => config_text.to_string(),
-        None => String::new(),
-    };
-
-    if !cfg_text.trim().is_empty() {
-        toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
-    }
-
-    write_text_file(&config_path, &cfg_text)
-}
-
 pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {
     auth.get("OPENAI_API_KEY")
         .and_then(|value| value.as_str())
@@ -201,8 +182,9 @@ pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {
 }
 
 pub fn extract_codex_api_key(auth: Option<&Value>, config_text: Option<&str>) -> Option<String> {
-    auth.and_then(extract_codex_auth_api_key)
-        .or_else(|| config_text.and_then(extract_codex_experimental_bearer_token))
+    config_text
+        .and_then(extract_codex_experimental_bearer_token)
+        .or_else(|| auth.and_then(extract_codex_auth_api_key))
 }
 
 /// Extract the upstream base URL from a Codex `config.toml` string.
@@ -276,6 +258,46 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
             _ => true,
         }
     })
+}
+
+/// Return only the Codex OAuth login cache that is safe to preserve while a
+/// third-party provider supplies the actual API key via config.toml.
+///
+/// `OPENAI_API_KEY` is an API credential, not official ChatGPT login state.
+/// When it appears alongside OAuth fields it must be stripped so stale provider
+/// keys cannot leak back into live auth or future provider backfills.
+pub fn codex_oauth_auth_for_preservation(auth: &Value) -> Option<Value> {
+    if !codex_auth_has_oauth_login_material(auth) {
+        return None;
+    }
+
+    let mut preserved = auth.as_object()?.clone();
+    preserved.remove("OPENAI_API_KEY");
+    Some(Value::Object(preserved))
+}
+
+fn read_live_codex_oauth_auth_for_preservation() -> Option<Value> {
+    let auth_path = get_codex_auth_path();
+    if !auth_path.exists() {
+        return None;
+    }
+
+    match read_json_file(&auth_path) {
+        Ok(auth) => codex_oauth_auth_for_preservation(&auth),
+        Err(err) => {
+            log::warn!(
+                "Failed to read Codex auth.json for official-login preservation; clearing API-key auth during provider switch: {err}"
+            );
+            None
+        }
+    }
+}
+
+pub fn write_codex_live_config_with_preserved_oauth_auth(
+    config_text: Option<&str>,
+) -> Result<(), AppError> {
+    let auth = read_live_codex_oauth_auth_for_preservation().unwrap_or_else(|| json!({}));
+    write_codex_live_atomic(&auth, config_text)
 }
 
 pub fn should_restore_codex_provider_token_for_backfill(
@@ -1213,9 +1235,11 @@ pub fn strip_codex_unified_session_bucket_from_settings(
 
 /// Route a Codex live write between full auth+config or config-only.
 ///
-/// Official providers with usable login material own `auth.json`. Third-party
-/// providers only touch `config.toml` when the compatibility setting is enabled
-/// so the user's ChatGPT login cache survives provider switches.
+/// Official providers only own OAuth login material in `auth.json`. Third-party
+/// providers move their API key into `config.toml` when the compatibility
+/// setting is enabled, while live `auth.json` is rewritten to either preserved
+/// OAuth login state or `{}`. A raw `OPENAI_API_KEY` is never treated as
+/// official login state.
 ///
 /// 统一会话开关开启时，官方配置在落盘前注入共享的 `custom` 路由
 /// （见 `inject_codex_unified_session_bucket`）。
@@ -1234,16 +1258,17 @@ pub fn write_codex_live_for_provider(
         };
     let config_text = unified_official_config.as_deref().or(config_text);
 
-    let should_write_auth = (category == Some("official") && codex_auth_has_login_material(auth))
-        || (category != Some("official")
-            && !crate::settings::preserve_codex_official_auth_on_switch());
-
-    if should_write_auth {
-        write_codex_live_atomic(auth, config_text)
-    } else {
-        let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
-        write_codex_live_config_atomic(Some(&live_config))
+    if category == Some("official") {
+        let official_auth = codex_oauth_auth_for_preservation(auth).unwrap_or_else(|| json!({}));
+        return write_codex_live_atomic(&official_auth, config_text);
     }
+
+    if !crate::settings::preserve_codex_official_auth_on_switch() {
+        return write_codex_live_atomic(auth, config_text);
+    }
+
+    let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
+    write_codex_live_config_with_preserved_oauth_auth(Some(&live_config))
 }
 
 /// Build the live Codex config for provider switching.
@@ -1631,6 +1656,61 @@ experimental_bearer_token = "stale-table-key"
         assert_eq!(
             extract_codex_experimental_bearer_token(input).as_deref(),
             Some("top-level-key")
+        );
+    }
+
+    #[test]
+    fn extract_codex_api_key_prefers_live_bearer_over_preserved_auth() {
+        let auth = json!({
+            "OPENAI_API_KEY": "preserved-official-key"
+        });
+        let config = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "PuppyRouter"
+base_url = "https://puppyrouter.com/v1"
+wire_api = "responses"
+experimental_bearer_token = "active-puppyrouter-key"
+"#;
+
+        assert_eq!(
+            extract_codex_api_key(Some(&auth), Some(config)).as_deref(),
+            Some("active-puppyrouter-key")
+        );
+    }
+
+    #[test]
+    fn oauth_auth_for_preservation_strips_openai_api_key() {
+        let auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "oauth-access"
+            },
+            "OPENAI_API_KEY": "stale-provider-key"
+        });
+
+        let preserved = codex_oauth_auth_for_preservation(&auth).expect("preserve OAuth auth");
+        assert_eq!(
+            preserved
+                .pointer("/tokens/access_token")
+                .and_then(|v| v.as_str()),
+            Some("oauth-access")
+        );
+        assert!(
+            preserved.get("OPENAI_API_KEY").is_none(),
+            "API keys are not official login state and must not be preserved"
+        );
+    }
+
+    #[test]
+    fn oauth_auth_for_preservation_rejects_api_key_only_auth() {
+        let auth = json!({
+            "OPENAI_API_KEY": "stale-provider-key"
+        });
+
+        assert!(
+            codex_oauth_auth_for_preservation(&auth).is_none(),
+            "auth.json with only OPENAI_API_KEY is provider auth, not official OAuth login"
         );
     }
 

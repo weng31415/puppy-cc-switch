@@ -64,6 +64,7 @@ export interface PuppyRouterApiKey {
   modelLimits?: string;
   usable: boolean;
   recommended: boolean;
+  providerKeyMatch: boolean;
   active: boolean;
 }
 

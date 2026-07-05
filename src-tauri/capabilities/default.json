@@ -16,6 +16,7 @@
     "core:window:allow-close",
     "core:window:allow-set-decorations",
     "process:allow-restart",
-    "dialog:default"
+    "dialog:default",
+    "updater:default"
   ]
 }

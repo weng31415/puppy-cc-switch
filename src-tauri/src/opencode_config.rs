@@ -137,6 +137,49 @@ pub fn set_provider(id: &str, config: Value) -> Result<(), AppError> {
     write_opencode_config(&full_config)
 }
 
+pub fn get_current_model() -> Result<Option<String>, AppError> {
+    let config = read_opencode_config()?;
+    Ok(config
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string))
+}
+
+pub fn set_current_model(model: &str) -> Result<(), AppError> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Config(
+            "OpenCode default model cannot be empty".to_string(),
+        ));
+    }
+
+    let mut config = read_opencode_config()?;
+    config["model"] = Value::String(model.to_string());
+    write_opencode_config(&config)
+}
+
+pub fn default_model_for_provider(
+    provider_id: &str,
+    config: &OpenCodeProviderConfig,
+) -> Option<String> {
+    const PREFERRED_MODELS: [&str; 3] = ["gpt-5.5", "claude-sonnet-4-6", "gemini-3.5-flash"];
+
+    let model_id = PREFERRED_MODELS
+        .iter()
+        .copied()
+        .find(|model| config.models.contains_key(*model))
+        .map(ToString::to_string)
+        .or_else(|| {
+            let mut model_ids = config.models.keys().cloned().collect::<Vec<_>>();
+            model_ids.sort();
+            model_ids.into_iter().next()
+        })?;
+
+    Some(format!("{provider_id}/{model_id}"))
+}
+
 pub fn remove_provider(id: &str) -> Result<(), AppError> {
     let mut config = read_opencode_config()?;
 

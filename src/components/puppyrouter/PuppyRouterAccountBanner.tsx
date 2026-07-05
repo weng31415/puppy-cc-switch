@@ -8,6 +8,7 @@ import {
   Copy,
   CreditCard,
   KeyRound,
+  Activity,
   Loader2,
   LogIn,
   LogOut,
@@ -20,11 +21,13 @@ import { toast } from "sonner";
 
 import {
   puppyrouterAccountApi,
+  providersApi,
   settingsApi,
   type AppId,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
   type PuppyRouterLoginStart,
+  vscodeApi,
 } from "@/lib/api";
 import {
   clearPuppyRouterAccountCache,
@@ -38,6 +41,11 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { APP_ICON_MAP } from "@/config/appConfig";
+import { PUPPYROUTER_PROVIDER_IDS } from "@/utils/lockedProviders";
+import {
+  extractCodexBaseUrl,
+  getApiKeyFromConfig,
+} from "@/utils/providerConfigUtils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -62,6 +70,21 @@ const AUTO_APPLY_APP_IDS: AppId[] = [
 
 const MANUAL_ONLY_APP_IDS: AppId[] = ["openclaw", "hermes"];
 const PUPPYROUTER_WALLET_URL = "https://www.puppyrouter.com/console/topup";
+
+type DiagnoseFixAction = "cloud" | "live";
+
+interface DiagnoseIssue {
+  id: string;
+  message: string;
+  fixAction?: DiagnoseFixAction;
+}
+
+interface DiagnoseResult {
+  appLabel: string;
+  providerId?: string;
+  selectedTokenId?: number;
+  issues: DiagnoseIssue[];
+}
 
 function keyStatusLabel(t: TFunction, status: number) {
   switch (status) {
@@ -97,6 +120,86 @@ function chooseAutoApplyKey(keys: PuppyRouterApiKey[]) {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
+
+function readStringPath(value: unknown, path: string[]): string {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current)) return "";
+    current = current[key];
+  }
+  return typeof current === "string" ? current.trim() : "";
+}
+
+function normalizeUrl(value: string) {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function sameNonEmptyString(a: string, b: string) {
+  return Boolean(a && b && a === b);
+}
+
+function sameUrl(a: string, b: string) {
+  return Boolean(a && b && normalizeUrl(a) === normalizeUrl(b));
+}
+
+function isPuppyRouterUrl(value: string) {
+  if (!value) return false;
+  try {
+    const host = new URL(value).hostname.replace(/^www\./, "");
+    return host === "puppyrouter.com";
+  } catch {
+    return value.includes("puppyrouter.com");
+  }
+}
+
+function resolveOpenCodeProviderSettings(
+  settings: unknown,
+  providerId?: string,
+): unknown {
+  if (!providerId || !isRecord(settings)) return settings;
+  const providers = settings.provider;
+  if (!isRecord(providers)) return settings;
+  return providers[providerId] ?? settings;
+}
+
+function readBaseUrlFromSettings(
+  appId: AppId,
+  settings: unknown,
+  providerId?: string,
+) {
+  if (appId === "codex") {
+    return extractCodexBaseUrl(readStringPath(settings, ["config"])) ?? "";
+  }
+  if (appId === "gemini") {
+    return readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]);
+  }
+  if (appId === "opencode") {
+    return readStringPath(
+      resolveOpenCodeProviderSettings(settings, providerId),
+      ["options", "baseURL"],
+    );
+  }
+  return readStringPath(settings, ["env", "ANTHROPIC_BASE_URL"]);
+}
+
+function readApiKeyFromSettings(
+  appId: AppId,
+  settings: unknown,
+  providerId?: string,
+) {
+  if (appId === "opencode") {
+    return readStringPath(
+      resolveOpenCodeProviderSettings(settings, providerId),
+      ["options", "apiKey"],
+    );
+  }
+  if (!isRecord(settings)) return "";
+  return getApiKeyFromConfig(JSON.stringify(settings), appId);
+}
+
 export function PuppyRouterAccountBanner({
   activeApp,
 }: PuppyRouterAccountBannerProps) {
@@ -125,6 +228,13 @@ export function PuppyRouterAccountBanner({
   const [isPollingLogin, setIsPollingLogin] = useState(false);
   const [loginPollMessage, setLoginPollMessage] = useState("");
   const [applyingKeyId, setApplyingKeyId] = useState<number | null>(null);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [isDiagnoseOpen, setIsDiagnoseOpen] = useState(false);
+  const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(
+    null,
+  );
+  const [fixingDiagnoseAction, setFixingDiagnoseAction] =
+    useState<DiagnoseFixAction | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isLoadingBalance = isBalanceFetching || isRefreshingBalance;
   const isLoadingKeys = isKeysFetching || isRefreshingKeys;
@@ -391,8 +501,13 @@ export function PuppyRouterAccountBanner({
           app: APP_ICON_MAP[activeApp].label,
         }),
       );
-      void queryClient.invalidateQueries({
-        queryKey: ["providers"],
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", activeApp],
+        refetchType: "all",
+      });
+      await queryClient.refetchQueries({
+        queryKey: ["providers", activeApp],
+        type: "all",
       });
     } catch (error) {
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
@@ -403,6 +518,284 @@ export function PuppyRouterAccountBanner({
       );
     } finally {
       setApplyingKeyId(null);
+    }
+  };
+
+  const handleDiagnosePuppyRouterConfig = async () => {
+    if (isDiagnosing) return;
+
+    const providerId = PUPPYROUTER_PROVIDER_IDS[activeApp];
+    if (!providerId || isManualOnlyApp) {
+      setDiagnoseResult({
+        appLabel: APP_ICON_MAP[activeApp].label,
+        issues: [
+          {
+            id: "manual-only",
+            message: t("puppyrouterAccount.diagnoseManualOnly", {
+              app: APP_ICON_MAP[activeApp].label,
+            }),
+          },
+        ],
+      });
+      setIsDiagnoseOpen(true);
+      return;
+    }
+
+    setIsDiagnosing(true);
+    try {
+      const providers = await providersApi.getAll(activeApp);
+      const provider = providers[providerId];
+      if (!provider) {
+        setDiagnoseResult({
+          appLabel: APP_ICON_MAP[activeApp].label,
+          providerId,
+          issues: [
+            {
+              id: "provider-missing",
+              message: t("puppyrouterAccount.diagnoseProviderMissing", {
+                app: APP_ICON_MAP[activeApp].label,
+              }),
+            },
+          ],
+        });
+        setIsDiagnoseOpen(true);
+        return;
+      }
+
+      const issues: DiagnoseIssue[] = [];
+      const cloudKeys = await puppyrouterAccountApi.listApiKeys(activeApp);
+      const selectedCloudKey =
+        cloudKeys.selectedTokenId != null
+          ? cloudKeys.keys.find((key) => key.id === cloudKeys.selectedTokenId)
+          : undefined;
+      const providerMatchesCloud = selectedCloudKey
+        ? selectedCloudKey.providerKeyMatch
+        : cloudKeys.keys.some((key) => key.providerKeyMatch);
+      if (cloudKeys.selectedTokenId != null && !selectedCloudKey) {
+        issues.push({
+          id: "cloud-key-missing",
+          message: t("puppyrouterAccount.diagnoseCloudKeyMissing"),
+        });
+      } else if (!providerMatchesCloud) {
+        issues.push({
+          id: "cloud-key-mismatch",
+          message: t("puppyrouterAccount.diagnoseCloudKeyMismatch"),
+          fixAction:
+            cloudKeys.selectedTokenId != null ? "cloud" : undefined,
+        });
+      }
+
+      if (activeApp !== "opencode") {
+        const currentId = await providersApi.getCurrent(activeApp).catch(() => "");
+        if (currentId !== providerId) {
+          issues.push({
+            id: "provider-not-current",
+            message: t("puppyrouterAccount.diagnoseProviderNotCurrent", {
+              app: APP_ICON_MAP[activeApp].label,
+            }),
+            fixAction: "live",
+          });
+        }
+      }
+
+      const expectedBaseUrl = readBaseUrlFromSettings(
+        activeApp,
+        provider.settingsConfig,
+        providerId,
+      );
+      const expectedApiKey = readApiKeyFromSettings(
+        activeApp,
+        provider.settingsConfig,
+        providerId,
+      );
+
+      if (activeApp === "claude-desktop") {
+        const status = await providersApi.getClaudeDesktopStatus();
+        const liveBaseUrl = status.actualBaseUrl ?? "";
+        const expectedDesktopBaseUrl =
+          status.expectedBaseUrl || expectedBaseUrl;
+
+        if (!status.supported) {
+          issues.push({
+            id: "claude-desktop-unsupported",
+            message: t("claudeDesktop.statusUnsupported", {
+              defaultValue:
+                "当前平台暂不支持 Claude Desktop 3P 配置写入。",
+            }),
+          });
+        } else if (!isPuppyRouterUrl(liveBaseUrl)) {
+          issues.push({
+            id: "endpoint-not-puppyrouter",
+            message: t("puppyrouterAccount.diagnoseEndpointNotPuppyRouter", {
+              app: APP_ICON_MAP[activeApp].label,
+            }),
+            fixAction: "live",
+          });
+        } else if (
+          expectedDesktopBaseUrl &&
+          !sameUrl(expectedDesktopBaseUrl, liveBaseUrl)
+        ) {
+          issues.push({
+            id: "endpoint-mismatch",
+            message: t("puppyrouterAccount.diagnoseEndpointMismatch"),
+            fixAction: "live",
+          });
+        }
+
+        if (status.supported) {
+          if (!status.profileGatewayKeyConfigured) {
+            issues.push({
+              id: "key-missing",
+              message: t("puppyrouterAccount.diagnoseKeyMissing"),
+              fixAction: "live",
+            });
+          } else if (expectedApiKey && !status.gatewayTokenMatchesProvider) {
+            issues.push({
+              id: "key-mismatch",
+              message: t("puppyrouterAccount.diagnoseKeyMismatch"),
+              fixAction: "live",
+            });
+          }
+        }
+
+        setDiagnoseResult({
+          appLabel: APP_ICON_MAP[activeApp].label,
+          providerId,
+          selectedTokenId: cloudKeys.selectedTokenId,
+          issues,
+        });
+        setIsDiagnoseOpen(true);
+        return;
+      }
+
+      let liveSettings: unknown;
+      try {
+        liveSettings = await vscodeApi.getLiveProviderSettings(activeApp);
+      } catch (error) {
+        setDiagnoseResult({
+          appLabel: APP_ICON_MAP[activeApp].label,
+          providerId,
+          selectedTokenId: cloudKeys.selectedTokenId,
+          issues: [
+            {
+              id: "live-read-failed",
+              message: extractErrorMessage(error),
+            },
+          ],
+        });
+        setIsDiagnoseOpen(true);
+        return;
+      }
+
+      const liveBaseUrl = readBaseUrlFromSettings(
+        activeApp,
+        liveSettings,
+        providerId,
+      );
+      const liveApiKey = readApiKeyFromSettings(activeApp, liveSettings, providerId);
+
+      if (!isPuppyRouterUrl(liveBaseUrl)) {
+        issues.push({
+          id: "endpoint-not-puppyrouter",
+          message: t("puppyrouterAccount.diagnoseEndpointNotPuppyRouter", {
+            app: APP_ICON_MAP[activeApp].label,
+          }),
+          fixAction: "live",
+        });
+      } else if (expectedBaseUrl && !sameUrl(expectedBaseUrl, liveBaseUrl)) {
+        issues.push({
+          id: "endpoint-mismatch",
+          message: t("puppyrouterAccount.diagnoseEndpointMismatch"),
+          fixAction: "live",
+        });
+      }
+
+      if (!liveApiKey) {
+        issues.push({
+          id: "key-missing",
+          message: t("puppyrouterAccount.diagnoseKeyMissing"),
+          fixAction: "live",
+        });
+      } else if (
+        expectedApiKey &&
+        !sameNonEmptyString(expectedApiKey, liveApiKey)
+      ) {
+        issues.push({
+          id: "key-mismatch",
+          message: t("puppyrouterAccount.diagnoseKeyMismatch"),
+          fixAction: "live",
+        });
+      }
+
+      setDiagnoseResult({
+        appLabel: APP_ICON_MAP[activeApp].label,
+        providerId,
+        selectedTokenId: cloudKeys.selectedTokenId,
+        issues,
+      });
+      setIsDiagnoseOpen(true);
+    } catch (error) {
+      setDiagnoseResult({
+        appLabel: APP_ICON_MAP[activeApp].label,
+        providerId,
+        issues: [
+          {
+            id: "diagnose-failed",
+            message: extractErrorMessage(error),
+          },
+        ],
+      });
+      setIsDiagnoseOpen(true);
+    } finally {
+      setIsDiagnosing(false);
+    }
+  };
+
+  const handleFixDiagnoseIssue = async (action: DiagnoseFixAction) => {
+    if (!diagnoseResult || fixingDiagnoseAction) return;
+
+    setFixingDiagnoseAction(action);
+    try {
+      if (action === "cloud") {
+        if (diagnoseResult.selectedTokenId == null) {
+          throw new Error(t("puppyrouterAccount.diagnoseCloudKeyMissing"));
+        }
+        await puppyrouterAccountApi.applyApiKey(
+          diagnoseResult.selectedTokenId,
+          activeApp,
+        );
+        await queryClient.invalidateQueries({
+          queryKey: puppyrouterAccountKeys.apiKeys(activeApp),
+        });
+      } else {
+        const providerId =
+          diagnoseResult.providerId ?? PUPPYROUTER_PROVIDER_IDS[activeApp];
+        if (!providerId) {
+          throw new Error(
+            t("puppyrouterAccount.diagnoseManualOnly", {
+              app: APP_ICON_MAP[activeApp].label,
+            }),
+          );
+        }
+        await providersApi.switch(providerId, activeApp);
+      }
+
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", activeApp],
+        refetchType: "all",
+      });
+      await queryClient.refetchQueries({
+        queryKey: ["providers", activeApp],
+        type: "all",
+      });
+      await handleDiagnosePuppyRouterConfig();
+    } catch (error) {
+      toast.error(t("puppyrouterAccount.diagnoseFixFailed"), {
+        description: extractErrorMessage(error),
+        closeButton: true,
+      });
+    } finally {
+      setFixingDiagnoseAction(null);
     }
   };
 
@@ -564,6 +957,25 @@ export function PuppyRouterAccountBanner({
               </Button>
               <Button
                 type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleDiagnosePuppyRouterConfig()}
+                disabled={isDiagnosing}
+                title={t("puppyrouterAccount.diagnose")}
+                aria-label={t("puppyrouterAccount.diagnose")}
+                className="border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/18"
+              >
+                {isDiagnosing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Activity className="mr-2 h-4 w-4" />
+                )}
+                {isDiagnosing
+                  ? t("puppyrouterAccount.diagnosing")
+                  : t("puppyrouterAccount.diagnose")}
+              </Button>
+              <Button
+                type="button"
                 variant="ghost"
                 size="sm"
                 onClick={() => void handleLogout()}
@@ -703,6 +1115,102 @@ export function PuppyRouterAccountBanner({
           </div>
         </div>
       )}
+
+      <Dialog open={isDiagnoseOpen} onOpenChange={setIsDiagnoseOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("puppyrouterAccount.diagnoseTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("puppyrouterAccount.diagnoseDescription", {
+                app: diagnoseResult?.appLabel ?? APP_ICON_MAP[activeApp].label,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 px-6 py-5">
+            {diagnoseResult && diagnoseResult.issues.length === 0 ? (
+              <div className="flex items-start gap-3 rounded-lg border border-emerald-400/35 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-50">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+                <div>
+                  <div className="font-medium">
+                    {t("puppyrouterAccount.diagnoseHealthy")}
+                  </div>
+                  <div className="mt-1 text-xs text-emerald-50/75">
+                    {t("puppyrouterAccount.diagnoseSuccess", {
+                      app:
+                        diagnoseResult?.appLabel ?? APP_ICON_MAP[activeApp].label,
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-xs font-medium uppercase tracking-wide text-amber-200">
+                  {t("puppyrouterAccount.diagnoseIssuesTitle")}
+                </div>
+                {(diagnoseResult?.issues ?? []).map((issue) => (
+                  <div
+                    key={issue.id}
+                    className="flex flex-col gap-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-sm text-amber-50 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex min-w-0 items-start gap-2">
+                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                      <span className="min-w-0 whitespace-pre-line">
+                        {issue.message}
+                      </span>
+                    </div>
+                    {issue.fixAction && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleFixDiagnoseIssue(issue.fixAction!)}
+                        disabled={
+                          fixingDiagnoseAction !== null || isDiagnosing
+                        }
+                        className="shrink-0 border-primary/35 bg-primary/12 text-primary hover:bg-primary/20"
+                      >
+                        {fixingDiagnoseAction === issue.fixAction ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                        )}
+                        {issue.fixAction === "cloud"
+                          ? t("puppyrouterAccount.diagnoseFixCloudKey")
+                          : t("puppyrouterAccount.diagnoseFixLiveConfig")}
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col-reverse gap-2 border-t border-border-default bg-muted/20 px-6 py-5 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setIsDiagnoseOpen(false)}
+              disabled={fixingDiagnoseAction !== null}
+            >
+              {t("common.close", { defaultValue: "关闭" })}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleDiagnosePuppyRouterConfig()}
+              disabled={isDiagnosing || fixingDiagnoseAction !== null}
+            >
+              {isDiagnosing ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Activity className="mr-2 h-4 w-4" />
+              )}
+              {t("puppyrouterAccount.diagnoseRecheck")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={isLoginOpen}

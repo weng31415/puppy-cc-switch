@@ -2,6 +2,7 @@ import { Suspense, type ComponentType } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { UpdateProvider } from "@/contexts/UpdateContext";
 import { providersApi } from "@/lib/api/providers";
 import {
   resetProviderState,
@@ -149,9 +150,11 @@ const renderApp = (AppComponent: ComponentType) => {
   const client = new QueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <Suspense fallback={<div data-testid="loading">loading</div>}>
-        <AppComponent />
-      </Suspense>
+      <UpdateProvider>
+        <Suspense fallback={<div data-testid="loading">loading</div>}>
+          <AppComponent />
+        </Suspense>
+      </UpdateProvider>
     </QueryClientProvider>,
   );
 };

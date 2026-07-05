@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const RELEASES_URL = "https://github.com/farion1231/puppyrouter-app/releases";
+const DOWNLOAD_URL = "https://www.puppyrouter.com/client";
 
 interface DatabaseUpgradeProps {
   payload: {
@@ -41,8 +41,9 @@ interface DownloadProgress {
 /**
  * 数据库版本过新（应用过旧）时的应用内恢复界面。
  *
- * 应用更新已禁用。数据库版本过新时直接提示当前客户端不兼容，
- * 避免提供无法执行的应用内更新入口。
+ * 启动时先检查官网更新源：
+ * - 有可用更新：提供一键下载、安装、重启。
+ * - 没有更新：说明当前客户端仍不兼容，提示用户备份后处理。
  */
 export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const { t } = useTranslation();
@@ -55,7 +56,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const dbVersion = payload.db_version;
   const supportedVersion = payload.supported_version;
 
-  // 应用更新已禁用；保留后端检查调用的兼容性，但不提供更新入口。
+  // 启动时检查可用更新，决定 upgradable / incompatible。
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -71,7 +72,8 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           setPhase("incompatible");
         }
       } catch {
-        if (!cancelled) setPhase("incompatible");
+        // 离线或官网 manifest 暂不可达时仍允许用户手动尝试升级。
+        if (!cancelled) setPhase("upgradable");
       }
     })();
     return () => {
@@ -199,7 +201,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
                 db: dbVersion,
                 supported: supportedVersion,
                 defaultValue:
-                  "数据库版本（v{{db}}）高于本应用支持的版本（v{{supported}}）。应用内更新已禁用，请换用支持该数据库版本的客户端，或先备份后处理数据文件。",
+                  "数据库版本（v{{db}}）高于本应用支持的版本（v{{supported}}）。当前官网更新源没有可用新版，请换用支持该数据库版本的客户端，或先备份后处理数据文件。",
               })}
             </p>
           </div>
@@ -265,7 +267,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
               variant="outline"
               className="gap-2"
               onClick={() =>
-                void invoke("open_external", { url: RELEASES_URL })
+                void invoke("open_external", { url: DOWNLOAD_URL })
               }
             >
               <ExternalLink className="h-4 w-4" />

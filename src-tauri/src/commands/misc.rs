@@ -50,10 +50,15 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
     .map_err(|e| format!("剪贴板任务执行失败: {e}"))?
 }
 
-/// 检查更新
+/// 打开官网下载页，供便携版或自动更新失败时手动下载。
 #[tauri::command]
-pub async fn check_for_updates(_handle: AppHandle) -> Result<bool, String> {
-    Err("应用自动更新已禁用".to_string())
+pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
+    handle
+        .opener()
+        .open_url("https://www.puppyrouter.com/client", None::<String>)
+        .map_err(|e| format!("打开下载页面失败: {e}"))?;
+
+    Ok(true)
 }
 
 /// 判断是否为便携版（绿色版）运行

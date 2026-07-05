@@ -116,6 +116,7 @@ pub struct PuppyRouterApiKey {
     pub model_limits: Option<String>,
     pub usable: bool,
     pub recommended: bool,
+    pub provider_key_match: bool,
     pub active: bool,
 }
 
@@ -459,7 +460,8 @@ async fn fetch_token_key(
         &serde_json::json!({}),
     )
     .await?;
-    Ok(data.key)
+    normalize_puppyrouter_api_key(&data.key)
+        .ok_or_else(|| "PuppyRouter 返回了空 API key。".to_string())
 }
 
 async fn fetch_token_key_map(
@@ -479,13 +481,31 @@ async fn fetch_token_key_map(
         .await?;
 
         for (id, key) in data.keys {
-            if let Ok(id) = id.parse::<i64>() {
-                result.insert(id, key);
+            if let (Ok(id), Some(full_key)) =
+                (id.parse::<i64>(), normalize_puppyrouter_api_key(&key))
+            {
+                result.insert(id, full_key);
             }
         }
     }
 
     Ok(result)
+}
+
+fn normalize_puppyrouter_api_key(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("sk-") {
+        Some(value.to_string())
+    } else {
+        Some(format!("sk-{value}"))
+    }
+}
+
+fn display_puppyrouter_api_key(value: &str) -> String {
+    normalize_puppyrouter_api_key(value).unwrap_or_default()
 }
 
 fn is_token_usable(token: &TokenItem) -> bool {
@@ -510,14 +530,16 @@ fn token_to_api_key(
     let recommended = usable && token.name == DEFAULT_TOKEN_NAME;
     let active_by_key = provider_api_key
         .zip(full_key)
-        .map(|(provider_key, token_key)| !provider_key.is_empty() && provider_key == token_key)
+        .map(|(provider_key, token_key)| {
+            normalize_puppyrouter_api_key(provider_key) == normalize_puppyrouter_api_key(token_key)
+        })
         .unwrap_or(false);
     let active = active_by_key || active_token_id == Some(token.id);
 
     PuppyRouterApiKey {
         id: token.id,
         name: token.name,
-        masked_key: token.key,
+        masked_key: display_puppyrouter_api_key(&token.key),
         status: token.status,
         remain_quota: token.remain_quota.unwrap_or_default(),
         used_quota: token.used_quota.unwrap_or_default(),
@@ -534,6 +556,7 @@ fn token_to_api_key(
             .filter(|value| !value.is_empty()),
         usable,
         recommended,
+        provider_key_match: active_by_key,
         active,
     }
 }
@@ -579,13 +602,12 @@ fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
     }
 }
 
-fn selected_tokens_by_app(state: &AppState) -> Result<HashMap<String, StoredSelectedToken>, String> {
+fn selected_tokens_by_app(
+    state: &AppState,
+) -> Result<HashMap<String, StoredSelectedToken>, String> {
     Ok(
-        setting_json::<HashMap<String, StoredSelectedToken>>(
-            state,
-            SELECTED_TOKEN_BY_APP_SETTING,
-        )?
-        .unwrap_or_default(),
+        setting_json::<HashMap<String, StoredSelectedToken>>(state, SELECTED_TOKEN_BY_APP_SETTING)?
+            .unwrap_or_default(),
     )
 }
 
@@ -659,7 +681,8 @@ fn puppyrouter_provider_for_app(
             provider.category = Some("aggregator".to_string());
             provider.sort_index = Some(0);
             let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-            meta.claude_desktop_mode.get_or_insert(ClaudeDesktopMode::Direct);
+            meta.claude_desktop_mode
+                .get_or_insert(ClaudeDesktopMode::Direct);
             Ok(provider)
         }
         AppType::Codex => universal
@@ -669,9 +692,9 @@ fn puppyrouter_provider_for_app(
             .to_gemini_provider()
             .ok_or_else(|| "PuppyRouter 未启用 Gemini 配置。".to_string()),
         AppType::OpenCode => unreachable!("OpenCode handled above"),
-        AppType::OpenClaw | AppType::Hermes => Err(
-            "该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string(),
-        ),
+        AppType::OpenClaw | AppType::Hermes => {
+            Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string())
+        }
     }
 }
 
@@ -979,17 +1002,13 @@ pub async fn apply_puppyrouter_api_key(
     }
 
     let full_key = fetch_token_key(&client, &session, token_id).await?;
-    if full_key.trim().is_empty() {
-        return Err("PuppyRouter 返回了空 API key。".to_string());
-    }
-
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key)?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
         token_id,
         name: token.name.clone(),
-        masked_key: token.key.clone(),
+        masked_key: display_puppyrouter_api_key(&token.key),
         group: group.clone(),
         applied_at: now_timestamp(),
     };
@@ -1000,7 +1019,38 @@ pub async fn apply_puppyrouter_api_key(
         synced: true,
         token_id,
         name: token.name,
-        masked_key: token.key,
+        masked_key: display_puppyrouter_api_key(&token.key),
         group,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_puppyrouter_api_key_adds_sk_prefix_once() {
+        assert_eq!(
+            normalize_puppyrouter_api_key("raw-token").as_deref(),
+            Some("sk-raw-token")
+        );
+        assert_eq!(
+            normalize_puppyrouter_api_key(" sk-existing ").as_deref(),
+            Some("sk-existing")
+        );
+        assert_eq!(normalize_puppyrouter_api_key("   "), None);
+    }
+
+    #[test]
+    fn display_puppyrouter_api_key_matches_full_key_shape() {
+        assert_eq!(
+            display_puppyrouter_api_key("abcd********wxyz"),
+            "sk-abcd********wxyz"
+        );
+        assert_eq!(
+            display_puppyrouter_api_key("sk-abcd********wxyz"),
+            "sk-abcd********wxyz"
+        );
+        assert_eq!(display_puppyrouter_api_key("   "), "");
+    }
 }

@@ -104,6 +104,12 @@ export function ProviderList({
     enabled: appId === "opencode",
   });
 
+  const { data: opencodeCurrentModel } = useQuery({
+    queryKey: ["opencodeCurrentModel"],
+    queryFn: () => providersApi.getOpenCodeCurrentModel(),
+    enabled: appId === "opencode",
+  });
+
   // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
   const { data: openclawLiveIds } = useOpenClawLiveProviderIds(
     appId === "openclaw",
@@ -140,10 +146,13 @@ export function ProviderList({
 
   const isProviderDefaultModel = useCallback(
     (providerId: string): boolean => {
+      if (appId === "opencode") {
+        return opencodeCurrentModel?.startsWith(`${providerId}/`) ?? false;
+      }
       if (appId !== "openclaw" || !openclawDefaultModel?.primary) return false;
       return openclawDefaultModel.primary.startsWith(providerId + "/");
     },
-    [appId, openclawDefaultModel],
+    [appId, opencodeCurrentModel, openclawDefaultModel],
   );
 
   // 故障转移相关

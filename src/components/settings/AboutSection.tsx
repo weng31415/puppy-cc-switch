@@ -27,6 +27,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
 import { settingsApi } from "@/lib/api";
+import { useUpdate } from "@/contexts/UpdateContext";
 import type {
   ToolInstallation,
   ToolInstallationReport,
@@ -221,6 +222,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const [isLoadingTools, setIsLoadingTools] = useState(
     () => toolVersionsCache === null,
   );
+  const [isDownloading, setIsDownloading] = useState(false);
   const [toolActions, setToolActions] = useState<
     Partial<Record<ToolName, ToolLifecycleAction>>
   >({});
@@ -228,6 +230,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     null,
   );
   const [showInstallCommands, setShowInstallCommands] = useState(false);
+  const { hasUpdate, updateInfo, checkUpdate, resetDismiss, isChecking } =
+    useUpdate();
 
   const [wslShellByTool, setWslShellByTool] = useState<
     Record<string, WslShellPreference>
@@ -412,11 +416,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ... (handlers like handleOpenReleaseNotes, handleCheckUpdate) ...
-
   const handleOpenReleaseNotes = useCallback(async () => {
     try {
-      const targetVersion = version ?? "";
+      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
       const displayVersion = targetVersion.startsWith("v")
         ? targetVersion
         : targetVersion
@@ -424,20 +426,70 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           : "";
 
       if (!displayVersion) {
-        await settingsApi.openExternal(
-          "https://github.com/farion1231/puppyrouter-app/releases",
-        );
+        await settingsApi.openExternal("https://www.puppyrouter.com/client");
         return;
       }
 
       await settingsApi.openExternal(
-        `https://github.com/farion1231/puppyrouter-app/releases/tag/${displayVersion}`,
+        `https://www.puppyrouter.com/client?version=${encodeURIComponent(displayVersion)}`,
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
       toast.error(t("settings.openReleaseNotesFailed"));
     }
-  }, [t, version]);
+  }, [t, updateInfo?.availableVersion, version]);
+
+  const handleCheckUpdate = useCallback(async () => {
+    if (hasUpdate) {
+      if (isPortable) {
+        try {
+          await settingsApi.checkUpdates();
+        } catch (error) {
+          console.error("[AboutSection] Portable update failed", error);
+        }
+        return;
+      }
+
+      setIsDownloading(true);
+      try {
+        resetDismiss();
+        const installed = await settingsApi.installUpdateAndRestart();
+        if (!installed) {
+          toast.success(t("settings.upToDate"), { closeButton: true });
+        }
+      } catch (error) {
+        console.error("[AboutSection] Update failed", error);
+        toast.error(t("settings.updateFailed"), {
+          description: extractErrorMessage(error) || undefined,
+          closeButton: true,
+        });
+        try {
+          await settingsApi.checkUpdates();
+        } catch (fallbackError) {
+          console.error(
+            "[AboutSection] Failed to open fallback updater",
+            fallbackError,
+          );
+        }
+      } finally {
+        setIsDownloading(false);
+      }
+      return;
+    }
+
+    try {
+      const available = await checkUpdate();
+      if (!available) {
+        toast.success(t("settings.upToDate"), { closeButton: true });
+      }
+    } catch (error) {
+      console.error("[AboutSection] Check update failed", error);
+      toast.error(t("settings.checkUpdateFailed"), {
+        description: extractErrorMessage(error) || undefined,
+        closeButton: true,
+      });
+    }
+  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t]);
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -807,7 +859,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               variant="outline"
               size="sm"
               onClick={() =>
-                settingsApi.openExternal("https://puppyrouter.com")
+                settingsApi.openExternal("https://www.puppyrouter.com")
               }
               className="h-8 gap-1.5 text-xs"
             >
@@ -838,8 +890,58 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               <ExternalLink className="h-3.5 w-3.5" />
               {t("settings.releaseNotes")}
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleCheckUpdate}
+              disabled={isChecking || isDownloading}
+              className="h-8 gap-1.5 text-xs"
+            >
+              {isDownloading ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("settings.updating")}
+                </>
+              ) : hasUpdate ? (
+                <>
+                  <Download className="h-3.5 w-3.5" />
+                  {t("settings.updateTo", {
+                    version: updateInfo?.availableVersion ?? "",
+                  })}
+                </>
+              ) : isChecking ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  {t("settings.checking")}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {t("settings.checkForUpdates")}
+                </>
+              )}
+            </Button>
           </div>
         </div>
+
+        {hasUpdate && updateInfo && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="rounded-lg border border-primary/20 bg-primary/10 px-4 py-3 text-sm"
+          >
+            <p className="mb-1 font-medium text-primary">
+              {t("settings.updateAvailable", {
+                version: updateInfo.availableVersion,
+              })}
+            </p>
+            {updateInfo.notes && (
+              <p className="line-clamp-3 leading-relaxed text-muted-foreground">
+                {updateInfo.notes}
+              </p>
+            )}
+          </motion.div>
+        )}
       </motion.div>
 
       <div className="space-y-3">

@@ -317,6 +317,16 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(app.handle());
 
+            #[cfg(desktop)]
+            {
+                if let Err(e) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                }
+            }
+
             // 初始化日志（单文件输出到 <app_config_dir>/logs/puppyrouter-app.log）
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
@@ -1430,6 +1440,7 @@ pub fn run() {
             // OpenCode specific
             commands::import_opencode_providers_from_live,
             commands::get_opencode_live_provider_ids,
+            commands::get_opencode_current_model,
             // OpenClaw specific
             commands::import_openclaw_providers_from_live,
             commands::get_openclaw_live_provider_ids,

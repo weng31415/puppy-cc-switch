@@ -119,6 +119,88 @@ fn write_json_value(path: &Path, value: &Value) -> Result<(), AppError> {
     atomic_write(path, json.as_bytes())
 }
 
+fn custom_api_key_response_array<'a>(
+    responses: &'a mut Map<String, Value>,
+    key: &str,
+    changed: &mut bool,
+) -> Result<&'a mut Vec<Value>, AppError> {
+    if !responses.contains_key(key) {
+        responses.insert(key.to_string(), Value::Array(Vec::new()));
+        *changed = true;
+    }
+
+    responses
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::Config(format!(
+                "~/.claude.json customApiKeyResponses.{key} 必须是数组"
+            ))
+        })
+}
+
+fn approve_custom_api_key_in_root(root: &mut Value, api_key: &str) -> Result<bool, AppError> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() || api_key.eq_ignore_ascii_case("PROXY_MANAGED") {
+        return Ok(false);
+    }
+
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| AppError::Config("~/.claude.json 根必须是对象".into()))?;
+
+    let mut changed = false;
+    if !root_obj.contains_key("customApiKeyResponses") {
+        root_obj.insert("customApiKeyResponses".into(), Value::Object(Map::new()));
+        changed = true;
+    }
+
+    let responses = root_obj
+        .get_mut("customApiKeyResponses")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            AppError::Config("~/.claude.json customApiKeyResponses 必须是对象".into())
+        })?;
+
+    {
+        let rejected = custom_api_key_response_array(responses, "rejected", &mut changed)?;
+        let before_len = rejected.len();
+        rejected.retain(|item| item.as_str() != Some(api_key));
+        changed |= rejected.len() != before_len;
+    }
+
+    let approved = custom_api_key_response_array(responses, "approved", &mut changed)?;
+    if !approved.iter().any(|item| item.as_str() == Some(api_key)) {
+        approved.push(Value::String(api_key.to_string()));
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+/// 将当前启用的 Claude API key 从 Claude Code 的 rejected 列表精确移除，并加入 approved。
+/// 只处理完全匹配的 key，保留其他 Claude 配置和其他 rejected 项。
+pub fn approve_custom_api_key(api_key: &str) -> Result<bool, AppError> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() || api_key.eq_ignore_ascii_case("PROXY_MANAGED") {
+        return Ok(false);
+    }
+
+    let path = user_config_path();
+    let mut root = if path.exists() {
+        read_json_value(&path)?
+    } else {
+        serde_json::json!({})
+    };
+
+    let changed = approve_custom_api_key_in_root(&mut root, api_key)?;
+    if changed {
+        write_json_value(&path, &root)?;
+    }
+
+    Ok(changed)
+}
+
 pub fn get_mcp_status() -> Result<McpStatus, AppError> {
     let path = user_config_path();
     let (exists, count) = if path.exists() {
@@ -597,5 +679,81 @@ mod tests {
             assert!(!is_wsl_path(Path::new(r"\\localhost\c$\Users")));
             assert!(!is_wsl_path(Path::new(r"\\192.168.1.1\share")));
         }
+    }
+
+    #[test]
+    fn approve_custom_api_key_removes_only_matching_rejected_key() {
+        let mut root = json!({
+            "hasCompletedOnboarding": true,
+            "customApiKeyResponses": {
+                "approved": ["sk-existing"],
+                "rejected": ["sk-other", "sk-target", 42, "sk-target"]
+            }
+        });
+
+        let changed = approve_custom_api_key_in_root(&mut root, " sk-target ").unwrap();
+
+        assert!(changed);
+        assert_eq!(
+            root["customApiKeyResponses"]["rejected"],
+            json!(["sk-other", 42])
+        );
+        assert_eq!(
+            root["customApiKeyResponses"]["approved"],
+            json!(["sk-existing", "sk-target"])
+        );
+        assert_eq!(root["hasCompletedOnboarding"], json!(true));
+    }
+
+    #[test]
+    fn approve_custom_api_key_does_not_duplicate_approved_key() {
+        let mut root = json!({
+            "customApiKeyResponses": {
+                "approved": ["sk-target"],
+                "rejected": ["sk-other"]
+            }
+        });
+
+        let changed = approve_custom_api_key_in_root(&mut root, "sk-target").unwrap();
+
+        assert!(!changed);
+        assert_eq!(
+            root["customApiKeyResponses"]["approved"],
+            json!(["sk-target"])
+        );
+        assert_eq!(
+            root["customApiKeyResponses"]["rejected"],
+            json!(["sk-other"])
+        );
+    }
+
+    #[test]
+    fn approve_custom_api_key_initializes_missing_response_structure() {
+        let mut root = json!({
+            "hasCompletedOnboarding": true
+        });
+
+        let changed = approve_custom_api_key_in_root(&mut root, "sk-new").unwrap();
+
+        assert!(changed);
+        assert_eq!(root["customApiKeyResponses"]["approved"], json!(["sk-new"]));
+        assert_eq!(root["customApiKeyResponses"]["rejected"], json!([]));
+        assert_eq!(root["hasCompletedOnboarding"], json!(true));
+    }
+
+    #[test]
+    fn approve_custom_api_key_skips_empty_and_proxy_managed_values() {
+        let original = json!({
+            "customApiKeyResponses": {
+                "approved": [],
+                "rejected": ["sk-other"]
+            }
+        });
+        let mut root = original.clone();
+
+        assert!(!approve_custom_api_key_in_root(&mut root, "   ").unwrap());
+        assert_eq!(root, original);
+        assert!(!approve_custom_api_key_in_root(&mut root, "PROXY_MANAGED").unwrap());
+        assert_eq!(root, original);
     }
 }

@@ -9,6 +9,7 @@ import {
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
 import { openclawApi, providersApi, vscodeApi, type AppId } from "@/lib/api";
+import { isPuppyRouterProvider } from "@/utils/lockedProviders";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -59,6 +60,17 @@ export function EditProviderDialog({
       // 代理接管模式：Live 配置已被代理改写，读取 live 会导致编辑界面展示代理地址/占位符等内容
       // 因此直接回退到 SSOT（数据库）配置，避免用户困惑与误保存
       if (isProxyTakeover) {
+        if (!cancelled) {
+          setLiveSettings(null);
+          setHasLoadedLive(true);
+        }
+        return;
+      }
+
+      // PuppyRouter 的 SSOT 是应用数据库：点击顶部 API key 只更新 DB provider，
+      // 真实客户端配置要等用户点击“启用/切换”才写入。若这里读取 live，会把旧 key
+      // 盖回编辑页，造成“点击 key 没生效”的错觉。
+      if (isPuppyRouterProvider(provider, appId)) {
         if (!cancelled) {
           setLiveSettings(null);
           setHasLoadedLive(true);

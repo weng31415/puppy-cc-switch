@@ -16,8 +16,8 @@ use crate::app_config::AppType;
 use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
 use crate::provider::{
-    ClaudeDesktopMode, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, Provider,
-    ProviderMeta, UniversalProviderApps, UsageResult,
+    ClaudeDesktopMode, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig,
+    OpenCodeProviderConfig, Provider, ProviderMeta, UniversalProviderApps, UsageResult,
 };
 use crate::services::mcp::McpService;
 use crate::settings::CustomEndpoint;
@@ -108,6 +108,7 @@ fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
         AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
         AppType::Codex => Some("universal-codex-puppyrouter"),
         AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        AppType::OpenCode => Some(PUPPYROUTER_UNIVERSAL_ID),
         _ => None,
     }
 }
@@ -905,6 +906,158 @@ base_url = "http://localhost:8080"
         );
     }
 
+    #[test]
+    #[serial]
+    fn switch_away_from_puppyrouter_claude_does_not_backfill_live_key() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        let mut puppyrouter = Provider::with_id(
+            "universal-claude-puppyrouter".into(),
+            "PuppyRouter".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "cloud-key",
+                    "ANTHROPIC_BASE_URL": "https://puppyrouter.com",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-20250514"
+                }
+            }),
+            None,
+        );
+        puppyrouter.category = Some("aggregator".into());
+        db.save_provider("claude", &puppyrouter)
+            .expect("save PuppyRouter provider");
+
+        let mut official = Provider::with_id(
+            "claude-official".into(),
+            "Claude Official".into(),
+            json!({ "env": {} }),
+            None,
+        );
+        official.category = Some("official".into());
+        db.save_provider("claude", &official)
+            .expect("save official provider");
+
+        db.set_current_provider("claude", "universal-claude-puppyrouter")
+            .expect("set current provider");
+        crate::settings::set_current_provider(
+            &AppType::Claude,
+            Some("universal-claude-puppyrouter"),
+        )
+        .expect("set local current provider");
+
+        write_json_file(
+            &get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "123",
+                    "ANTHROPIC_BASE_URL": "https://puppyrouter.com",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-20250514"
+                }
+            }),
+        )
+        .expect("seed wrong live Claude config");
+
+        ProviderService::switch(&state, AppType::Claude, "claude-official")
+            .expect("switch to official");
+
+        let stored = db
+            .get_provider_by_id("universal-claude-puppyrouter", "claude")
+            .expect("read stored provider")
+            .expect("PuppyRouter provider should exist");
+        assert_eq!(
+            stored
+                .settings_config
+                .pointer("/env/ANTHROPIC_API_KEY")
+                .and_then(|value| value.as_str()),
+            Some("cloud-key"),
+            "switch-away backfill must not overwrite PuppyRouter provider key from live config"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn switch_away_from_puppyrouter_codex_does_not_backfill_live_key() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        let puppy_config = r#"model_provider = "custom"
+model = "gpt-5-codex"
+
+[model_providers.custom]
+name = "PuppyRouter"
+base_url = "https://puppyrouter.com/v1"
+wire_api = "responses"
+"#;
+        let mut puppyrouter = Provider::with_id(
+            "universal-codex-puppyrouter".into(),
+            "PuppyRouter".into(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "cloud-key"
+                },
+                "config": puppy_config
+            }),
+            None,
+        );
+        puppyrouter.category = Some("aggregator".into());
+        db.save_provider("codex", &puppyrouter)
+            .expect("save PuppyRouter provider");
+
+        let mut official = Provider::with_id(
+            "codex-official".into(),
+            "OpenAI Official".into(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        official.category = Some("official".into());
+        db.save_provider("codex", &official)
+            .expect("save official provider");
+
+        db.set_current_provider("codex", "universal-codex-puppyrouter")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("universal-codex-puppyrouter"))
+            .expect("set local current provider");
+
+        crate::codex_config::write_codex_live_atomic(
+            &json!({}),
+            Some(
+                r#"model_provider = "custom"
+model = "gpt-5-codex"
+
+[model_providers.custom]
+name = "PuppyRouter"
+base_url = "https://puppyrouter.com/v1"
+wire_api = "responses"
+experimental_bearer_token = "123"
+"#,
+            ),
+        )
+        .expect("seed wrong live Codex config");
+
+        ProviderService::switch(&state, AppType::Codex, "codex-official")
+            .expect("switch to official");
+
+        let stored = db
+            .get_provider_by_id("universal-codex-puppyrouter", "codex")
+            .expect("read stored provider")
+            .expect("PuppyRouter provider should exist");
+        assert_eq!(
+            stored
+                .settings_config
+                .pointer("/auth/OPENAI_API_KEY")
+                .and_then(|value| value.as_str()),
+            Some("cloud-key"),
+            "switch-away backfill must not overwrite PuppyRouter provider key from live config"
+        );
+    }
+
     #[cfg(any(target_os = "macos", windows))]
     #[tokio::test]
     #[serial]
@@ -1123,6 +1276,47 @@ base_url = "http://localhost:8080"
 
     #[test]
     #[serial]
+    fn switch_opencode_provider_sets_top_level_model() {
+        with_test_home(|state, _| {
+            let provider = opencode_provider("puppyrouter");
+            ProviderService::add(state, AppType::OpenCode, provider.clone(), false)
+                .expect("seed db-only opencode provider");
+
+            ProviderService::switch(state, AppType::OpenCode, &provider.id)
+                .expect("switch opencode provider");
+
+            let live_providers =
+                crate::opencode_config::get_providers().expect("read opencode providers");
+            assert!(
+                live_providers.contains_key(&provider.id),
+                "switch should write opencode provider to live config"
+            );
+            assert_eq!(
+                crate::opencode_config::get_current_model()
+                    .expect("read opencode current model")
+                    .as_deref(),
+                Some("puppyrouter/gpt-4o"),
+                "switch should point OpenCode's top-level model at the selected provider"
+            );
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::OpenCode.as_str())
+                .expect("query switched opencode provider")
+                .expect("switched provider should exist");
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.live_config_managed),
+                Some(true),
+                "switched additive provider should become live-managed"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
     fn sync_current_provider_for_app_skips_db_only_openclaw_provider() {
         with_test_home(|state, _| {
             let provider = openclaw_provider("db-only-openclaw");
@@ -1137,6 +1331,145 @@ base_url = "http://localhost:8080"
             assert!(
                 !live_providers.contains_key(&provider.id),
                 "db-only openclaw provider should not be written to live during sync"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn list_opencode_ensures_puppyrouter_provider_without_live_config() {
+        with_test_home(|state, _| {
+            let providers =
+                ProviderService::list(state, AppType::OpenCode).expect("list opencode providers");
+            let provider = providers
+                .get("puppyrouter")
+                .expect("opencode puppyrouter provider should be seeded");
+
+            assert_eq!(provider.name, "PuppyRouter");
+            assert_eq!(provider.category.as_deref(), Some("aggregator"));
+            assert_eq!(provider.sort_index, Some(0));
+            assert_eq!(
+                provider
+                    .settings_config
+                    .pointer("/options/baseURL")
+                    .and_then(|item| item.as_str()),
+                Some("https://puppyrouter.com/v1")
+            );
+            assert_eq!(
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.live_config_managed),
+                Some(false),
+                "default OpenCode PuppyRouter provider should remain DB-only until user enables it"
+            );
+
+            let live_providers =
+                crate::opencode_config::get_providers().expect("read opencode live providers");
+            assert!(
+                !live_providers.contains_key("puppyrouter"),
+                "listing should not write PuppyRouter into OpenCode live config"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn ensure_locked_defaults_preserves_opencode_puppyrouter_key_and_live_flag() {
+        with_test_home(|state, _| {
+            let mut existing = opencode_provider("puppyrouter");
+            existing.settings_config["options"]["apiKey"] =
+                Value::String("sk-existing-opencode".to_string());
+            existing.meta = Some(ProviderMeta {
+                live_config_managed: Some(true),
+                ..ProviderMeta::default()
+            });
+            state
+                .db
+                .save_provider(AppType::OpenCode.as_str(), &existing)
+                .expect("seed existing OpenCode PuppyRouter provider");
+
+            ProviderService::ensure_locked_puppyrouter_defaults(state)
+                .expect("ensure locked defaults");
+
+            let saved = state
+                .db
+                .get_provider_by_id("puppyrouter", AppType::OpenCode.as_str())
+                .expect("query saved opencode puppyrouter")
+                .expect("opencode puppyrouter should exist");
+
+            assert_eq!(
+                saved
+                    .settings_config
+                    .pointer("/options/apiKey")
+                    .and_then(|item| item.as_str()),
+                Some("sk-existing-opencode"),
+                "sync must not overwrite an already applied OpenCode key"
+            );
+            assert_eq!(
+                saved
+                    .settings_config
+                    .pointer("/options/baseURL")
+                    .and_then(|item| item.as_str()),
+                Some("https://puppyrouter.com/v1")
+            );
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.live_config_managed),
+                Some(true),
+                "sync should preserve whether OpenCode PuppyRouter is already live-managed"
+            );
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref()),
+                Some("puppyrouter")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn ensure_locked_defaults_normalizes_existing_claude_desktop_puppyrouter_key() {
+        with_test_home(|state, _| {
+            let existing = Provider::with_id(
+                "universal-claude-desktop-puppyrouter".into(),
+                "PuppyRouter".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://puppyrouter.com",
+                        "ANTHROPIC_AUTH_TOKEN": "raw-desktop-key"
+                    }
+                }),
+                Some("https://puppyrouter.com".into()),
+            );
+            state
+                .db
+                .save_provider(AppType::ClaudeDesktop.as_str(), &existing)
+                .expect("seed existing Claude Desktop PuppyRouter provider");
+
+            ProviderService::ensure_locked_puppyrouter_defaults(state)
+                .expect("ensure locked defaults");
+
+            let saved = state
+                .db
+                .get_provider_by_id(
+                    "universal-claude-desktop-puppyrouter",
+                    AppType::ClaudeDesktop.as_str(),
+                )
+                .expect("query saved Claude Desktop PuppyRouter")
+                .expect("Claude Desktop PuppyRouter should exist");
+
+            assert_eq!(
+                saved
+                    .settings_config
+                    .pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                    .and_then(|item| item.as_str()),
+                Some("sk-raw-desktop-key"),
+                "sync should normalize legacy PuppyRouter keys before preserving them"
             );
         });
     }
@@ -1578,6 +1911,71 @@ impl ProviderService {
         }
     }
 
+    fn opencode_default_model_for_provider(provider: &Provider) -> Option<String> {
+        let config =
+            serde_json::from_value::<OpenCodeProviderConfig>(provider.settings_config.clone())
+                .ok()?;
+        crate::opencode_config::default_model_for_provider(&provider.id, &config)
+    }
+
+    fn puppyrouter_opencode_provider(universal: &crate::provider::UniversalProvider) -> Provider {
+        let base_url = universal.base_url.trim_end_matches('/');
+        let opencode_base_url = if base_url.ends_with("/v1") {
+            base_url.to_string()
+        } else {
+            format!("{base_url}/v1")
+        };
+
+        Provider {
+            id: PUPPYROUTER_UNIVERSAL_ID.to_string(),
+            name: PUPPYROUTER_NAME.to_string(),
+            settings_config: serde_json::json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": PUPPYROUTER_NAME,
+                "options": {
+                    "baseURL": opencode_base_url,
+                    "apiKey": universal.api_key,
+                },
+                "models": {
+                    "gpt-5.5": {
+                        "name": "GPT-5.5",
+                        "limit": {
+                            "context": 400000,
+                            "output": 128000
+                        }
+                    },
+                    "claude-sonnet-4-6": {
+                        "name": "Claude Sonnet 4.6",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 64000
+                        }
+                    },
+                    "gemini-3.5-flash": {
+                        "name": "Gemini 3.5 Flash",
+                        "limit": {
+                            "context": 1048576,
+                            "output": 65536
+                        }
+                    }
+                }
+            }),
+            website_url: Some(PUPPYROUTER_BASE_URL.to_string()),
+            category: Some("aggregator".to_string()),
+            created_at: universal.created_at,
+            sort_index: Some(0),
+            notes: None,
+            meta: Some(ProviderMeta {
+                live_config_managed: Some(false),
+                provider_type: Some(PUPPYROUTER_PROVIDER_TYPE.to_string()),
+                ..ProviderMeta::default()
+            }),
+            icon: Some("openai".to_string()),
+            icon_color: Some("#F59E0B".to_string()),
+            in_failover_queue: false,
+        }
+    }
+
     fn puppyrouter_universal_provider(
         existing: Option<crate::provider::UniversalProvider>,
     ) -> crate::provider::UniversalProvider {
@@ -1652,7 +2050,7 @@ impl ProviderService {
         state: &AppState,
         app_type: &AppType,
     ) -> Result<(), AppError> {
-        if !is_restricted_provider_app(app_type) {
+        if !is_restricted_provider_app(app_type) && !matches!(app_type, AppType::OpenCode) {
             return Ok(());
         }
 
@@ -1689,17 +2087,12 @@ impl ProviderService {
         state.db.save_universal_provider(&universal)?;
         Self::sync_universal_to_apps(state, PUPPYROUTER_UNIVERSAL_ID)?;
 
-        if let Some(provider) = Self::puppyrouter_claude_desktop_provider(&universal) {
-            state
-                .db
-                .save_provider(AppType::ClaudeDesktop.as_str(), &provider)?;
-        }
-
         for app_type in [
             AppType::Claude,
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::OpenCode,
         ] {
             Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
         }
@@ -1778,7 +2171,7 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
-        if is_restricted_provider_app(&app_type) {
+        if is_restricted_provider_app(&app_type) || matches!(app_type, AppType::OpenCode) {
             Self::ensure_locked_puppyrouter_defaults(state)?;
         }
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
@@ -2092,15 +2485,13 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
-        if is_restricted_provider_app(&app_type) {
-            if let Some(provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
-                if Self::is_locked_provider_for_app(&app_type, &provider) {
-                    return Err(AppError::localized(
-                        "provider.locked.cannot_delete",
-                        "Official 和 PuppyRouter 供应商不可删除。",
-                        "Official and PuppyRouter providers cannot be deleted.",
-                    ));
-                }
+        if let Some(provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
+            if Self::is_locked_provider_for_app(&app_type, &provider) {
+                return Err(AppError::localized(
+                    "provider.locked.cannot_delete",
+                    "Official 和 PuppyRouter 供应商不可删除。",
+                    "Official and PuppyRouter providers cannot be deleted.",
+                ));
             }
         }
 
@@ -2175,6 +2566,16 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if let Some(provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
+            if Self::is_locked_provider_for_app(&app_type, &provider) {
+                return Err(AppError::localized(
+                    "provider.locked.cannot_remove_from_config",
+                    "Official 和 PuppyRouter 供应商不可从配置中移除。",
+                    "Official and PuppyRouter providers cannot be removed from config.",
+                ));
+            }
+        }
+
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -2368,20 +2769,28 @@ impl ProviderService {
                     // Only backfill when switching to a different provider
                     if let Ok(live_config) = read_live_settings(app_type.clone()) {
                         if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                            current_provider.settings_config =
-                                strip_common_config_from_live_settings(
-                                    state.db.as_ref(),
-                                    &app_type,
-                                    &current_provider,
-                                    live_config,
+                            if Self::is_puppyrouter_provider_for_app(&app_type, &current_provider) {
+                                log::debug!(
+                                    "Skipping live backfill for locked PuppyRouter provider '{}' ({})",
+                                    current_provider.id,
+                                    app_type.as_str()
                                 );
-                            if let Err(e) =
-                                state.db.save_provider(app_type.as_str(), &current_provider)
-                            {
-                                log::warn!("Backfill failed: {e}");
-                                result
-                                    .warnings
-                                    .push(format!("backfill_failed:{current_id}"));
+                            } else {
+                                current_provider.settings_config =
+                                    strip_common_config_from_live_settings(
+                                        state.db.as_ref(),
+                                        &app_type,
+                                        &current_provider,
+                                        live_config,
+                                    );
+                                if let Err(e) =
+                                    state.db.save_provider(app_type.as_str(), &current_provider)
+                                {
+                                    log::warn!("Backfill failed: {e}");
+                                    result
+                                        .warnings
+                                        .push(format!("backfill_failed:{current_id}"));
+                                }
                             }
                         }
                     }
@@ -2400,6 +2809,25 @@ impl ProviderService {
 
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
         write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
+
+        if matches!(app_type, AppType::OpenCode) {
+            if let Some(default_model) = Self::opencode_default_model_for_provider(provider) {
+                crate::opencode_config::set_current_model(&default_model)?;
+                log::info!(
+                    "OpenCode default model updated to '{}' after switching provider '{}'",
+                    default_model,
+                    provider.id
+                );
+            } else {
+                log::warn!(
+                    "OpenCode provider '{}' has no declared models; default model was not changed",
+                    provider.id
+                );
+                result
+                    .warnings
+                    .push(format!("opencode_default_model_missing:{}", provider.id));
+            }
+        }
 
         // Hermes is additive, so "switching" doesn't overwrite a live config file
         // — we instead update the top-level `model:` section to point at this
@@ -3492,11 +3920,37 @@ impl ProviderService {
                 .save_provider(AppType::ClaudeDesktop.as_str(), &desktop_provider)?;
         }
 
+        let mut opencode_provider = Self::puppyrouter_opencode_provider(&provider);
+        if let Some(existing) = state
+            .db
+            .get_provider_by_id(&opencode_provider.id, AppType::OpenCode.as_str())?
+        {
+            let mut merged = existing.settings_config.clone();
+            Self::merge_json(&mut merged, &opencode_provider.settings_config);
+            Self::preserve_existing_puppyrouter_api_key(&AppType::OpenCode, &existing, &mut merged);
+            opencode_provider.settings_config = merged;
+            opencode_provider.created_at = existing.created_at.or(opencode_provider.created_at);
+            opencode_provider.notes = existing.notes.or(opencode_provider.notes);
+            opencode_provider.in_failover_queue = existing.in_failover_queue;
+
+            let mut meta = existing
+                .meta
+                .unwrap_or_else(|| opencode_provider.meta.take().unwrap_or_default());
+            meta.live_config_managed.get_or_insert(false);
+            meta.provider_type
+                .get_or_insert_with(|| PUPPYROUTER_PROVIDER_TYPE.to_string());
+            opencode_provider.meta = Some(meta);
+        }
+        state
+            .db
+            .save_provider(AppType::OpenCode.as_str(), &opencode_provider)?;
+
         for app_type in [
             AppType::Claude,
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::OpenCode,
         ] {
             Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
         }
@@ -3532,18 +3986,13 @@ impl ProviderService {
         settings: &mut Value,
     ) {
         let (_, api_key) = existing.resolve_usage_credentials(app_type);
-        if api_key.trim().is_empty() {
+        let Some(api_key) = Self::normalize_puppyrouter_api_key_for_storage(&api_key) else {
             return;
-        }
+        };
 
         match app_type {
             AppType::Claude | AppType::ClaudeDesktop => {
-                Self::set_nested_string(
-                    settings,
-                    "env",
-                    "ANTHROPIC_AUTH_TOKEN",
-                    api_key,
-                );
+                Self::set_nested_string(settings, "env", "ANTHROPIC_AUTH_TOKEN", api_key);
             }
             AppType::Codex => {
                 Self::set_nested_string(settings, "auth", "OPENAI_API_KEY", api_key);
@@ -3551,7 +4000,22 @@ impl ProviderService {
             AppType::Gemini => {
                 Self::set_nested_string(settings, "env", "GEMINI_API_KEY", api_key);
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {}
+            AppType::OpenCode => {
+                Self::set_nested_string(settings, "options", "apiKey", api_key);
+            }
+            AppType::OpenClaw | AppType::Hermes => {}
+        }
+    }
+
+    fn normalize_puppyrouter_api_key_for_storage(api_key: &str) -> Option<String> {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            return None;
+        }
+        if api_key.starts_with("sk-") {
+            Some(api_key.to_string())
+        } else {
+            Some(format!("sk-{api_key}"))
         }
     }
 

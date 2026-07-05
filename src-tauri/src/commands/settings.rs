@@ -1,6 +1,14 @@
 #![allow(non_snake_case)]
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_updater::UpdaterExt;
+
+/// 应用更新下载进度（通过 `update-download-progress` 事件发给前端）。
+#[derive(Clone, serde::Serialize)]
+struct UpdateDownloadProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
 
 fn merge_settings_for_save(
     mut incoming: crate::settings::AppSettings,
@@ -187,8 +195,72 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// `process.relaunch()`，旧进程可能已经处在 bundle 被替换后的不稳定窗口期。
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
-pub async fn install_update_and_restart(_app: AppHandle) -> Result<bool, String> {
-    Err("应用自动更新已禁用".to_string())
+pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|e| format!("检查更新失败: {e}"))?
+    else {
+        return Ok(false);
+    };
+
+    log::info!("开始下载应用更新: {}", update.version);
+    let progress_handle = app.clone();
+    let mut downloaded: u64 = 0;
+    let bytes = update
+        .download(
+            move |chunk_len, content_len| {
+                downloaded = downloaded.saturating_add(chunk_len as u64);
+                let _ = progress_handle.emit(
+                    "update-download-progress",
+                    UpdateDownloadProgress {
+                        downloaded,
+                        total: content_len,
+                    },
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("下载更新失败: {e}"))?;
+
+    log::info!("开始安装应用更新: {}", update.version);
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows updater 会在 install() 内启动安装器并直接退出当前进程，
+        // 所以必须在 install 前清理托盘图标、代理和单实例锁。
+        crate::save_window_state_before_exit(&app);
+        crate::cleanup_before_exit(&app).await;
+        crate::remove_tray_icon_before_exit(&app);
+        crate::destroy_single_instance_lock(&app);
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        update.install(bytes).map_err(|e| {
+            format!(
+                "Windows 更新安装失败: {e}。已执行退出前清理，代理或 Live 接管可能已暂停；请重启应用或重新开启代理后再试。"
+            )
+        })?;
+        return Ok(true);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        update
+            .install(bytes)
+            .map_err(|e| format!("安装更新失败: {e}"))?;
+
+        crate::save_window_state_before_exit(&app);
+        crate::cleanup_before_exit(&app).await;
+
+        log::info!("应用更新安装完成，正在重启应用");
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        crate::restart_process(&app);
+    }
 }
 
 /// 检查是否有可用的应用更新，返回可用的新版本号（无更新时返回 None）。
@@ -197,8 +269,16 @@ pub async fn install_update_and_restart(_app: AppHandle) -> Result<bool, String>
 /// 已是最新版本，但数据库仍不兼容（通常由第三方客户端或更高版本创建），应提示用户
 /// 升级无法解决，而不是让其反复尝试。
 #[tauri::command]
-pub async fn check_app_update_available(_app: AppHandle) -> Result<Option<String>, String> {
-    Ok(None)
+pub async fn check_app_update_available(app: AppHandle) -> Result<Option<String>, String> {
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("检查更新失败: {e}"))?;
+    Ok(update.map(|u| u.version))
 }
 
 /// 获取 app_config_dir 覆盖配置 (从 Store)

@@ -106,6 +106,10 @@ export function ProviderActions({
     } else if (isAdditiveMode) {
       // 累加模式：切换配置状态（添加/移除）
       if (isInConfig) {
+        if (isLocked) {
+          onSwitch();
+          return;
+        }
         if (onRemoveFromConfig) {
           onRemoveFromConfig();
         } else {
@@ -145,6 +149,30 @@ export function ProviderActions({
     // 累加模式（OpenCode 非 OMO / OpenClaw）
     if (isAdditiveMode) {
       if (isInConfig) {
+        if (isLocked) {
+          if (isDefaultModel === true) {
+            return {
+              disabled: true,
+              variant: "secondary" as const,
+              className:
+                "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
+              icon: <Check className="h-4 w-4" />,
+              text: t("provider.inUse"),
+            };
+          }
+          return {
+            disabled: false,
+            variant: "default" as const,
+            className:
+              "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm shadow-primary/20",
+            icon: <Play className="h-4 w-4" />,
+            text: t("provider.enable"),
+            title: t("provider.lockedProviderInConfigHint", {
+              defaultValue:
+                "PuppyRouter 已在配置中，点击可重新应用并设为当前默认",
+            }),
+          };
+        }
         return {
           disabled: isDefaultModel === true,
           variant: "secondary" as const,

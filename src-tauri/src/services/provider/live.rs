@@ -522,10 +522,40 @@ pub(crate) fn write_live_with_common_config(
             crate::claude_desktop_config::PROFILE_ID,
             effective_provider.id
         );
+        approve_claude_custom_api_key_for_provider(app_type, &effective_provider);
         return Ok(());
     }
 
-    write_live_snapshot(app_type, &effective_provider)
+    write_live_snapshot(app_type, &effective_provider)?;
+    approve_claude_custom_api_key_for_provider(app_type, &effective_provider);
+    Ok(())
+}
+
+fn approve_claude_custom_api_key_for_provider(app_type: &AppType, provider: &Provider) {
+    if !matches!(app_type, AppType::Claude) {
+        return;
+    }
+
+    let (_, api_key) = provider.resolve_usage_credentials(app_type);
+    let api_key = api_key.trim();
+    if api_key.is_empty() || api_key.eq_ignore_ascii_case("PROXY_MANAGED") {
+        return;
+    }
+
+    match crate::claude_mcp::approve_custom_api_key(api_key) {
+        Ok(true) => log::info!(
+            "Claude custom API key response approved for provider '{}'",
+            provider.id
+        ),
+        Ok(false) => log::debug!(
+            "Claude custom API key response already approved for provider '{}'",
+            provider.id
+        ),
+        Err(err) => log::warn!(
+            "Failed to update Claude custom API key responses for provider '{}': {err}",
+            provider.id
+        ),
+    }
 }
 
 pub(crate) fn strip_common_config_from_live_settings(
@@ -1599,6 +1629,40 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::env;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
+
+    fn test_home_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn with_isolated_home<T>(test: impl FnOnce(&Path) -> T) -> T {
+        let _guard = test_home_guard();
+        let temp = TempDir::new().expect("temp home");
+        let old_test_home = env::var_os("CC_SWITCH_TEST_HOME");
+        let old_home = env::var_os("HOME");
+        env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        env::set_var("HOME", temp.path());
+
+        let result = test(temp.path());
+
+        match old_test_home {
+            Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        match old_home {
+            Some(value) => env::set_var("HOME", value),
+            None => env::remove_var("HOME"),
+        }
+
+        result
+    }
 
     #[test]
     fn claude_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
@@ -1721,6 +1785,94 @@ mod tests {
             .map(|value| value.as_str().expect("tool id should be string"))
             .collect();
         assert_eq!(values, vec!["tool2"]);
+    }
+
+    #[test]
+    fn write_live_with_common_config_approves_current_claude_api_key() {
+        with_isolated_home(|home| {
+            let claude_json_path = home.join(".claude.json");
+            fs::write(
+                &claude_json_path,
+                serde_json::to_string_pretty(&json!({
+                    "customApiKeyResponses": {
+                        "approved": ["sk-existing"],
+                        "rejected": ["sk-other", "sk-target"]
+                    },
+                    "otherSetting": true
+                }))
+                .expect("serialize claude json"),
+            )
+            .expect("seed claude json");
+
+            let db = Database::memory().expect("memory database");
+            let provider = Provider::with_id(
+                "p1".to_string(),
+                "Provider 1".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_API_KEY": "sk-target",
+                        "ANTHROPIC_BASE_URL": "https://api.example.com"
+                    }
+                }),
+                None,
+            );
+
+            write_live_with_common_config(&db, &AppType::Claude, &provider)
+                .expect("write Claude live config");
+
+            let root: Value = serde_json::from_str(
+                &fs::read_to_string(&claude_json_path).expect("read claude json"),
+            )
+            .expect("parse claude json");
+            assert_eq!(
+                root["customApiKeyResponses"]["rejected"],
+                json!(["sk-other"])
+            );
+            assert_eq!(
+                root["customApiKeyResponses"]["approved"],
+                json!(["sk-existing", "sk-target"])
+            );
+            assert_eq!(root["otherSetting"], json!(true));
+        });
+    }
+
+    #[test]
+    fn approve_claude_custom_api_key_skips_claude_desktop() {
+        with_isolated_home(|home| {
+            let claude_json_path = home.join(".claude.json");
+            let original = json!({
+                "customApiKeyResponses": {
+                    "approved": [],
+                    "rejected": ["sk-target"]
+                },
+                "otherSetting": true
+            });
+            fs::write(
+                &claude_json_path,
+                serde_json::to_string_pretty(&original).expect("serialize claude json"),
+            )
+            .expect("seed claude json");
+
+            let provider = Provider::with_id(
+                "desktop".to_string(),
+                "Desktop".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "sk-target",
+                        "ANTHROPIC_BASE_URL": "https://api.example.com"
+                    }
+                }),
+                None,
+            );
+
+            approve_claude_custom_api_key_for_provider(&AppType::ClaudeDesktop, &provider);
+
+            let root: Value = serde_json::from_str(
+                &fs::read_to_string(&claude_json_path).expect("read claude json"),
+            )
+            .expect("parse claude json");
+            assert_eq!(root, original);
+        });
     }
 
     #[test]

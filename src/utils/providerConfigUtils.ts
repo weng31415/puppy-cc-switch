@@ -167,6 +167,18 @@ export const getApiKeyFromConfig = (
       return config.apiKey;
     }
 
+    // Codex API Key
+    if (appType === "codex") {
+      const bearerToken = extractCodexExperimentalBearerToken(config?.config);
+      if (bearerToken) return bearerToken;
+
+      const openAiKey = config?.auth?.OPENAI_API_KEY;
+      if (typeof openAiKey === "string") return openAiKey;
+
+      const legacyCodexKey = config?.env?.CODEX_API_KEY;
+      return typeof legacyCodexKey === "string" ? legacyCodexKey : "";
+    }
+
     const env = config?.env;
 
     if (!env) return "";
@@ -175,12 +187,6 @@ export const getApiKeyFromConfig = (
     if (appType === "gemini") {
       const geminiKey = env.GEMINI_API_KEY;
       return typeof geminiKey === "string" ? geminiKey : "";
-    }
-
-    // Codex API Key
-    if (appType === "codex") {
-      const codexKey = env.CODEX_API_KEY;
-      return typeof codexKey === "string" ? codexKey : "";
     }
 
     // Claude API Key (优先 ANTHROPIC_AUTH_TOKEN，其次 ANTHROPIC_API_KEY)

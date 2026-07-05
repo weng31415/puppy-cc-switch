@@ -4,6 +4,7 @@ import {
   extractCodexExperimentalBearerToken,
   extractCodexModelName,
   extractCodexTopLevelInt,
+  getApiKeyFromConfig,
   isCodexGoalModeEnabled,
   removeCodexTopLevelField,
   setCodexBaseUrl,
@@ -445,5 +446,25 @@ describe("Codex TOML utils", () => {
     ].join("\n");
 
     expect(extractCodexExperimentalBearerToken(input)).toBe("top-level-key");
+  });
+
+  it("getApiKeyFromConfig prefers active Codex bearer token over preserved auth", () => {
+    const settings = {
+      auth: {
+        OPENAI_API_KEY: "preserved-official-key",
+      },
+      config: [
+        'model_provider = "custom"',
+        "",
+        "[model_providers.custom]",
+        'base_url = "https://puppyrouter.com/v1"',
+        'experimental_bearer_token = "active-puppyrouter-key"',
+        "",
+      ].join("\n"),
+    };
+
+    expect(getApiKeyFromConfig(JSON.stringify(settings), "codex")).toBe(
+      "active-puppyrouter-key",
+    );
   });
 });

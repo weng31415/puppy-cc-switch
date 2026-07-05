@@ -7,6 +7,7 @@ export const PUPPYROUTER_PROVIDER_IDS: Partial<Record<AppId, string>> = {
   "claude-desktop": "universal-claude-desktop-puppyrouter",
   codex: "universal-codex-puppyrouter",
   gemini: "universal-gemini-puppyrouter",
+  opencode: "puppyrouter",
 };
 
 export const OFFICIAL_PROVIDER_IDS: Partial<Record<AppId, string>> = {
@@ -21,6 +22,7 @@ export const LOCKED_PROVIDER_APP_IDS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "opencode",
 ];
 
 export function isLockedProviderApp(appId: AppId): boolean {

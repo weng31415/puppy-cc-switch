@@ -33,7 +33,10 @@ import {
   Cpu,
   LayoutDashboard,
   AlertTriangle,
+  RefreshCw,
+  ArrowUpCircle,
 } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
@@ -56,6 +59,7 @@ import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { useScanUnmanagedSkills } from "@/hooks/useSkills";
+import { useUpdate } from "@/contexts/UpdateContext";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { deepClone } from "@/utils/deepClone";
@@ -277,10 +281,35 @@ function App() {
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const {
+    hasUpdate: hasAppUpdate,
+    updateInfo: appUpdateInfo,
+    checkUpdate: checkAppUpdate,
+    isChecking: isCheckingAppUpdate,
+  } = useUpdate();
 
   useEffect(() => {
     localStorage.setItem(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
+
+  useEffect(() => {
+    let active = true;
+
+    void getVersion()
+      .then((version) => {
+        if (active) {
+          setAppVersion(version);
+        }
+      })
+      .catch((error) => {
+        console.error("[App] Failed to load app version", error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const { data: settingsData } = useSettingsQuery();
   const useAppWindowControls =
@@ -807,6 +836,62 @@ function App() {
     }
   };
 
+  const formatVersion = (version: string | null | undefined) => {
+    if (!version) return "v...";
+    return version.startsWith("v") ? version : `v${version}`;
+  };
+
+  const currentAppVersionLabel = formatVersion(appVersion);
+  const availableAppVersionLabel = appUpdateInfo
+    ? formatVersion(appUpdateInfo.availableVersion)
+    : null;
+  const headerVersionTooltip = isCheckingAppUpdate
+    ? t("header.versionChecking", {
+        defaultValue: "正在检查版本更新",
+      })
+    : hasAppUpdate && availableAppVersionLabel
+      ? t("header.versionUpdateAvailable", {
+          current: currentAppVersionLabel,
+          latest: availableAppVersionLabel,
+          defaultValue: "当前版本 {{current}}，可更新到 {{latest}}",
+        })
+      : t("header.versionCurrent", {
+          version: currentAppVersionLabel,
+          defaultValue: "当前版本 {{version}}",
+        });
+
+  const handleHeaderVersionCheck = async () => {
+    if (isCheckingAppUpdate) return;
+
+    if (hasAppUpdate && appUpdateInfo) {
+      setSettingsDefaultTab("about");
+      setCurrentView("settings");
+      return;
+    }
+
+    try {
+      const available = await checkAppUpdate();
+      if (available) {
+        toast.success(
+          t("header.versionCheckUpdateFound", {
+            defaultValue: "发现新版本，可在关于页面升级",
+          }),
+          { closeButton: true },
+        );
+        setSettingsDefaultTab("about");
+        setCurrentView("settings");
+        return;
+      }
+      toast.success(t("settings.upToDate"), { closeButton: true });
+    } catch (error) {
+      console.error("[App] Check update failed", error);
+      toast.error(t("settings.checkUpdateFailed"), {
+        description: extractErrorMessage(error) || undefined,
+        closeButton: true,
+      });
+    }
+  };
+
   const handleEditProvider = async ({
     provider,
     originalId,
@@ -830,6 +915,9 @@ function App() {
       if (activeApp === "opencode") {
         await queryClient.invalidateQueries({
           queryKey: ["opencodeLiveProviderIds"],
+        });
+        await queryClient.invalidateQueries({
+          queryKey: ["opencodeCurrentModel"],
         });
       } else if (activeApp === "openclaw") {
         await queryClient.invalidateQueries({
@@ -1213,11 +1301,14 @@ function App() {
                         <div className="flex items-center gap-3">
                           <AlertTriangle className="h-5 w-5 shrink-0 text-red-200" />
                           <span>
-                            {t("puppyrouterAccount.clientNotConfiguredWarning", {
-                              app: t(`apps.${activeApp}`),
-                              defaultValue:
-                                "{{app}} 暂未配置到 PuppyRouter，你正在使用官方或其他渠道。",
-                            })}
+                            {t(
+                              "puppyrouterAccount.clientNotConfiguredWarning",
+                              {
+                                app: t(`apps.${activeApp}`),
+                                defaultValue:
+                                  "{{app}} 暂未配置到 PuppyRouter，你正在使用官方或其他渠道。",
+                              },
+                            )}
                           </span>
                         </div>
                       </motion.div>
@@ -1517,6 +1608,34 @@ function App() {
                   className="flex shrink-0 items-center gap-1.5 ml-auto"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
+                  {renderHeaderTooltip(
+                    headerVersionTooltip,
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={headerVersionTooltip}
+                      aria-busy={isCheckingAppUpdate}
+                      onClick={() => void handleHeaderVersionCheck()}
+                      className={cn(
+                        "h-8 shrink-0 gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-sm transition-all",
+                        hasAppUpdate && appUpdateInfo
+                          ? "border-primary/50 bg-primary/15 text-primary shadow-primary/20 hover:bg-primary/25 hover:text-primary"
+                          : "border-primary/30 bg-primary/10 text-primary/90 shadow-primary/10 hover:bg-primary/20 hover:text-primary",
+                      )}
+                    >
+                      {isCheckingAppUpdate ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : hasAppUpdate && appUpdateInfo ? (
+                        <ArrowUpCircle className="h-3.5 w-3.5" />
+                      ) : null}
+                      <span>{currentAppVersionLabel}</span>
+                      {hasAppUpdate && availableAppVersionLabel && (
+                        <span className="hidden xl:inline text-primary/80">
+                          -&gt; {availableAppVersionLabel}
+                        </span>
+                      )}
+                    </Button>,
+                  )}
                   {currentView === "prompts" &&
                     renderHeaderTooltip(
                       t("prompts.add"),

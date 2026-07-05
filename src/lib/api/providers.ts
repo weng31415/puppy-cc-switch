@@ -38,6 +38,8 @@ export interface ClaudeDesktopStatus {
   staleRawModels: boolean;
   missingRouteMappings: boolean;
   gatewayTokenConfigured: boolean;
+  profileGatewayKeyConfigured: boolean;
+  gatewayTokenMatchesProvider: boolean;
 }
 
 export interface ClaudeDesktopDefaultRoute {
@@ -163,6 +165,13 @@ export const providersApi = {
    */
   async getOpenCodeLiveProviderIds(): Promise<string[]> {
     return await invoke("get_opencode_live_provider_ids");
+  },
+
+  /**
+   * 获取 OpenCode 顶层 model，用于判断当前默认模型属于哪个 provider。
+   */
+  async getOpenCodeCurrentModel(): Promise<string | null> {
+    return await invoke("get_opencode_current_model");
   },
 
   /**

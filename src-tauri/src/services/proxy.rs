@@ -2242,8 +2242,7 @@ impl ProxyService {
 
         let Some(existing_auth) = existing_backup
             .get("auth")
-            .filter(|auth| crate::codex_config::codex_auth_has_oauth_login_material(auth))
-            .cloned()
+            .and_then(crate::codex_config::codex_oauth_auth_for_preservation)
         else {
             return Ok(());
         };
@@ -2396,8 +2395,10 @@ impl ProxyService {
                             auth, config_str,
                         )
                         .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                        crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
-                            .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                        crate::codex_config::write_codex_live_config_with_preserved_oauth_auth(
+                            Some(&live_config),
+                        )
+                        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
                         return Ok(());
                     }
                 }
@@ -2443,8 +2444,10 @@ impl ProxyService {
                 let live_config =
                     crate::codex_config::prepare_codex_provider_live_config(auth, &prepared_config)
                         .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
-                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                crate::codex_config::write_codex_live_config_with_preserved_oauth_auth(Some(
+                    &live_config,
+                ))
+                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
                 return Ok(());
             }
         }
@@ -3248,6 +3251,158 @@ wire_api = "responses"
         assert!(
             live_config.contains(PROXY_TOKEN_PLACEHOLDER),
             "live config should carry the proxy placeholder token"
+        );
+
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[test]
+    #[serial]
+    fn codex_custom_provider_live_write_strips_stale_api_key_from_preserved_oauth_auth() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        crate::settings::update_settings(crate::settings::AppSettings {
+            preserve_codex_official_auth_on_switch: true,
+            ..Default::default()
+        })
+        .expect("enable Codex official auth preservation");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db);
+        let mixed_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            },
+            "OPENAI_API_KEY": "stale-provider-key"
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &mixed_auth,
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5-codex"
+"#,
+            ),
+        )
+        .expect("seed live mixed auth");
+
+        let mut provider = Provider::with_id(
+            "rightcode".to_string(),
+            "RightCode".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "rightcode-key"
+                },
+                "config": r#"model_provider = "rightcode"
+model = "gpt-5-codex"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+
+        service
+            .write_codex_live_for_provider(&provider.settings_config, Some(&provider))
+            .expect("write provider-driven Codex live config");
+
+        let live_auth: Value =
+            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read live auth");
+        assert_eq!(
+            live_auth
+                .pointer("/tokens/access_token")
+                .and_then(|v| v.as_str()),
+            Some("oauth-access"),
+            "OAuth login state should remain available"
+        );
+        assert!(
+            live_auth.get("OPENAI_API_KEY").is_none(),
+            "stale API-key auth must be stripped when preserving official login"
+        );
+
+        let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read live config");
+        assert!(
+            live_config.contains("experimental_bearer_token")
+                && live_config.contains("rightcode-key"),
+            "selected provider token should move into config.toml"
+        );
+
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[test]
+    #[serial]
+    fn codex_custom_provider_live_write_clears_api_key_only_auth_when_preserve_enabled() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        crate::settings::update_settings(crate::settings::AppSettings {
+            preserve_codex_official_auth_on_switch: true,
+            ..Default::default()
+        })
+        .expect("enable Codex official auth preservation");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db);
+        crate::codex_config::write_codex_live_atomic(
+            &json!({
+                "OPENAI_API_KEY": "stale-provider-key"
+            }),
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5-codex"
+"#,
+            ),
+        )
+        .expect("seed live API-key auth");
+
+        let mut provider = Provider::with_id(
+            "rightcode".to_string(),
+            "RightCode".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "rightcode-key"
+                },
+                "config": r#"model_provider = "rightcode"
+model = "gpt-5-codex"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+
+        service
+            .write_codex_live_for_provider(&provider.settings_config, Some(&provider))
+            .expect("write provider-driven Codex live config");
+
+        let live_auth: Value =
+            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read live auth");
+        assert_eq!(
+            live_auth,
+            json!({}),
+            "API-key-only auth.json is not official login and should be cleared"
+        );
+
+        let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read live config");
+        assert!(
+            live_config.contains("experimental_bearer_token")
+                && live_config.contains("rightcode-key"),
+            "selected provider token should still be applied"
         );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())

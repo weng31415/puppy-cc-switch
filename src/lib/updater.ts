@@ -23,9 +23,25 @@ export async function getCurrentVersion(): Promise<string> {
 }
 
 export async function checkForUpdate(
-  _opts: CheckOptions = {},
+  opts: CheckOptions = {},
 ): Promise<
   { status: "up-to-date" } | { status: "available"; info: UpdateInfo }
 > {
-  return { status: "up-to-date" };
+  const { check } = await import("@tauri-apps/plugin-updater");
+
+  const currentVersion = await getCurrentVersion();
+  const update = await check({ timeout: opts.timeout ?? 30000 } as any);
+
+  if (!update) {
+    return { status: "up-to-date" };
+  }
+
+  const info: UpdateInfo = {
+    currentVersion,
+    availableVersion: (update as any).version ?? "",
+    notes: (update as any).notes,
+    pubDate: (update as any).date,
+  };
+
+  return { status: "available", info };
 }

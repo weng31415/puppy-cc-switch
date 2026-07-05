@@ -42,6 +42,7 @@ import { CopilotAuthSection } from "./CopilotAuthSection";
 import { EndpointField } from "./shared/EndpointField";
 import { ModelDropdown } from "./shared/ModelDropdown";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
+import ApiKeyInput from "./ApiKeyInput";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import type {
   ClaudeApiFormat,
@@ -766,15 +767,13 @@ export function ClaudeDesktopProviderForm({
                 )}
               </div>
             ) : (
-              <div className="space-y-1">
-                <Label>{"API Key"}</Label>
-                <Input
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  type="password"
-                  placeholder="sk-..."
-                />
-              </div>
+              <ApiKeyInput
+                id="claudeDesktopApiKey"
+                label="API Key"
+                value={apiKey}
+                onChange={setApiKey}
+                placeholder="sk-..."
+              />
             )}
 
             <EndpointField

@@ -270,6 +270,9 @@ export const useSwitchProviderMutation = (appId: AppId) => {
           queryKey: ["opencodeLiveProviderIds"],
         });
         await queryClient.invalidateQueries({
+          queryKey: ["opencodeCurrentModel"],
+        });
+        await queryClient.invalidateQueries({
           queryKey: ["omo", "current-provider-id"],
         });
         await queryClient.invalidateQueries({

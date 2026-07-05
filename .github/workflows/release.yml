@@ -129,6 +129,65 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
+      - name: Validate release version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const tagVersion = process.env.TAG.replace(/^v/, "").split("-")[0];
+          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          if (tagVersion !== packageVersion || tagVersion !== tauriVersion) {
+            throw new Error(
+              `Release tag base version (${tagVersion}) must match package.json (${packageVersion}) and tauri.conf.json (${tauriVersion})`,
+            );
+          }
+          console.log(`✅ Release version ${tagVersion} matches app metadata`);
+          NODE
+
+      - name: Prepare Tauri updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_RAW:-}" ]; then
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY Secret is missing" >&2
+            exit 1
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/tauri_signing.key"
+          RAW="$TAURI_SIGNING_PRIVATE_KEY_RAW"
+          if echo "$RAW" | head -n1 | grep -q '^untrusted comment:'; then
+            printf '%s\n' "$RAW" > "$KEY_PATH"
+          elif DECODED=$(printf '%s' "$RAW" | (base64 --decode 2>/dev/null || base64 -D 2>/dev/null)) \
+            && echo "$DECODED" | head -n1 | grep -q '^untrusted comment:'; then
+            printf '%s\n' "$DECODED" > "$KEY_PATH"
+          elif echo "$RAW" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+            ONE=$(printf '%s' "$RAW" | tr -d '\r\n')
+            printf '%s\n%s\n' "untrusted comment: tauri signing key" "$ONE" > "$KEY_PATH"
+          else
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY format is not recognized" >&2
+            exit 1
+          fi
+
+          if command -v base64 >/dev/null 2>&1; then
+            KEY_B64=$(base64 < "$KEY_PATH" | tr -d '\r\n')
+          elif command -v openssl >/dev/null 2>&1; then
+            KEY_B64=$(openssl base64 -A -in "$KEY_PATH")
+          else
+            KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW" >> "$GITHUB_ENV"
+          fi
+          echo "✅ Tauri updater signing key prepared"
+
       - name: Import Apple signing certificate
         if: runner.os == 'macOS'
         shell: bash
@@ -185,7 +244,7 @@ jobs:
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             echo "=== macOS build/notarization attempt ${attempt}/${max_attempts} ==="
-            if pnpm tauri build --target universal-apple-darwin; then
+            if pnpm tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}'; then
               echo "✅ macOS build/notarization succeeded"
               exit 0
             fi
@@ -208,14 +267,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') {
-            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi
+            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi --config '{"bundle":{"createUpdaterArtifacts":true}}'
           } else {
-            pnpm tauri build
+            pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
           }
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
-        run: pnpm tauri build --bundles appimage,deb,rpm
+        run: pnpm tauri build --bundles appimage,deb,rpm --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -225,8 +284,9 @@ jobs:
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME}"  # e.g., v3.5.0
 
-          # Locate app bundle artifact
+          # Locate app bundle and updater artifacts
           APP_PATH=""
+          TAR_GZ=""
           for path in \
             "src-tauri/target/universal-apple-darwin/release/bundle/macos" \
             "src-tauri/target/aarch64-apple-darwin/release/bundle/macos" \
@@ -234,6 +294,7 @@ jobs:
             "src-tauri/target/release/bundle/macos"; do
             if [ -d "$path" ]; then
               [ -z "$APP_PATH" ] && APP_PATH=$(find "$path" -maxdepth 1 -name "*.app" -type d | head -1 || true)
+              [ -z "$TAR_GZ" ] && TAR_GZ=$(find "$path" -maxdepth 1 -name "*.tar.gz" -type f | head -1 || true)
             fi
           done
 
@@ -241,17 +302,31 @@ jobs:
             echo "❌ No .app found" >&2
             exit 1
           fi
+          if [ -z "$TAR_GZ" ]; then
+            echo "❌ No macOS .tar.gz updater artifact found" >&2
+            exit 1
+          fi
+          if [ ! -f "$TAR_GZ.sig" ]; then
+            echo "❌ No signature found for macOS updater artifact: $TAR_GZ.sig" >&2
+            exit 1
+          fi
 
           # Staple notarization ticket to .app (Tauri already notarized it)
           xcrun stapler staple "$APP_PATH"
           echo "✅ .app stapled"
 
-          # 1) Collect .app as zip
+          # 1) Collect .tar.gz updater artifact
+          NEW_TAR_GZ="PuppyRouter-App-${VERSION}-macOS.tar.gz"
+          cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
+          cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig"
+          echo "macOS updater artifact ready: $NEW_TAR_GZ"
+
+          # 2) Collect .app as zip
           NEW_ZIP="PuppyRouter-App-${VERSION}-macOS.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-assets/$NEW_ZIP"
           echo "macOS zip ready: $NEW_ZIP"
 
-          # 2) Create styled DMG with create-dmg (Tauri's built-in DMG styling doesn't work on CI)
+          # 3) Create styled DMG with create-dmg (Tauri's built-in DMG styling doesn't work on CI)
           if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
             echo "❌ APPLE_SIGNING_IDENTITY is missing before DMG creation" >&2
             exit 1
@@ -391,10 +466,14 @@ jobs:
             $dest = "PuppyRouter-App-$VERSION-Windows$assetSuffix.msi"
             Copy-Item $msi.FullName (Join-Path release-assets $dest)
             Write-Host "Installer copied: $dest"
-          } elseif ($isArm64) {
-            throw 'No Windows ARM64 MSI installer found'
+            $sigPath = "$($msi.FullName).sig"
+            if (-not (Test-Path $sigPath)) {
+              throw "Signature not found for $($msi.Name)"
+            }
+            Copy-Item $sigPath (Join-Path release-assets "$dest.sig")
+            Write-Host "Signature copied: $dest.sig"
           } else {
-            Write-Warning 'No Windows MSI installer found'
+            throw "No Windows$assetSuffix MSI installer found"
           }
 
           # 绿色版（portable）：仅可执行文件打 zip
@@ -450,6 +529,11 @@ jobs:
           if [ -n "$APPIMAGE" ]; then
             NEW_APPIMAGE="PuppyRouter-App-${VERSION}-Linux-${ARCH}.AppImage"
             cp "$APPIMAGE" "release-assets/$NEW_APPIMAGE"
+            if [ ! -f "$APPIMAGE.sig" ]; then
+              echo "❌ No signature found for Linux updater artifact: $APPIMAGE.sig" >&2
+              exit 1
+            fi
+            cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig"
             echo "AppImage copied: $NEW_APPIMAGE"
           else
             echo "No AppImage found under target/release/bundle" >&2
@@ -520,6 +604,74 @@ jobs:
         run: |
           set -euo pipefail
           ls -la release-assets
+
+      - name: Generate official website latest.json
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          DOWNLOAD_BASE_URL: https://www.puppyrouter.com/downloads
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const dir = "release-assets";
+          const tag = process.env.TAG;
+          const version = tag.replace(/^v/, "").split("-")[0];
+          const baseUrl = process.env.DOWNLOAD_BASE_URL.replace(/\/+$/, "");
+          const platforms = {};
+
+          const addPlatform = (key, filename) => {
+            const sigPath = path.join(dir, `${filename}.sig`);
+            if (!fs.existsSync(sigPath)) {
+              throw new Error(`Missing signature for ${filename}`);
+            }
+            platforms[key] = {
+              signature: fs.readFileSync(sigPath, "utf8").trim(),
+              url: `${baseUrl}/${filename}`,
+            };
+          };
+
+          for (const sigName of fs.readdirSync(dir).filter((f) => f.endsWith(".sig")).sort()) {
+            const filename = sigName.slice(0, -4);
+            if (filename.endsWith("-macOS.tar.gz")) {
+              addPlatform("darwin-aarch64", filename);
+              addPlatform("darwin-x86_64", filename);
+            } else if (filename.endsWith("-Windows-arm64.msi")) {
+              addPlatform("windows-aarch64", filename);
+            } else if (filename.endsWith("-Windows.msi")) {
+              addPlatform("windows-x86_64", filename);
+            } else if (filename.endsWith("-Linux-arm64.AppImage")) {
+              addPlatform("linux-aarch64", filename);
+            } else if (filename.endsWith("-Linux-x86_64.AppImage")) {
+              addPlatform("linux-x86_64", filename);
+            }
+          }
+
+          if (Object.keys(platforms).length === 0) {
+            throw new Error("No updater platforms were detected from .sig files");
+          }
+
+          const latest = {
+            version,
+            notes: `Release ${tag}`,
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+          fs.writeFileSync(
+            path.join(dir, "latest.json"),
+            `${JSON.stringify(latest, null, 2)}\n`,
+          );
+          console.log(fs.readFileSync(path.join(dir, "latest.json"), "utf8"));
+          NODE
+
+      - name: Upload official website download bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-downloads-${{ github.ref_name }}
+          path: release-assets/*
+          if-no-files-found: error
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
