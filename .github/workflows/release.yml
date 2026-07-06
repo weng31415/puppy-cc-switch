@@ -609,7 +609,7 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
-          DOWNLOAD_BASE_URL: https://www.puppyrouter.com/downloads
+          DOWNLOAD_BASE_URL: https://pub-46dbf53707f84a02979c772ef87254ab.r2.dev/downloads
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -665,6 +665,33 @@ jobs:
           );
           console.log(fs.readFileSync(path.join(dir, "latest.json"), "utf8"));
           NODE
+
+      - name: Upload official downloads to Cloudflare R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
+            echo "Cloudflare R2 secrets are missing; cannot publish official downloads." >&2
+            exit 1
+          fi
+          python3 -m pip install --user awscli
+          export PATH="$HOME/.local/bin:$PATH"
+          aws s3 sync release-assets "s3://${R2_BUCKET}/downloads/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --delete \
+            --exclude "*" \
+            --include "PuppyRouter-App-*"
+          aws s3 cp release-assets/latest.json "s3://${R2_BUCKET}/downloads/latest.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --cache-control "no-cache, max-age=60" \
+            --content-type "application/json"
 
       - name: Upload official website download bundle
         uses: actions/upload-artifact@v7
