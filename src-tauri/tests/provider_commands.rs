@@ -317,13 +317,12 @@ command = "say"
 
     let auth_value: serde_json::Value =
         read_json_file(&get_codex_auth_path()).expect("read auth.json");
-    assert_eq!(
+    assert!(
         auth_value
             .get("OPENAI_API_KEY")
             .and_then(|v| v.as_str())
-            .unwrap_or(""),
-        "legacy-key",
-        "Codex provider switching should preserve the existing live auth.json"
+            .is_none(),
+        "Codex provider switching should not preserve raw OPENAI_API_KEY as official login state"
     );
 
     let config_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
