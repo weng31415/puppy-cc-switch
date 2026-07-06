@@ -71,7 +71,7 @@ fn sync_claude_provider_writes_live_settings() {
 }
 
 #[test]
-fn sync_codex_provider_writes_config_without_touching_auth() {
+fn sync_codex_provider_writes_config_without_provider_key_in_auth() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     enable_codex_official_auth_preservation();
@@ -107,9 +107,18 @@ fn sync_codex_provider_writes_config_without_touching_auth() {
     let config_path = cc_switch_lib::get_codex_config_path();
 
     assert!(
-        !auth_path.exists(),
-        "auth.json should not be created by provider switching at {}",
+        auth_path.exists(),
+        "auth.json should be kept as the official-login cache at {}",
         auth_path.display()
+    );
+    let auth_json: serde_json::Value =
+        read_json_file(&auth_path).expect("read preserved auth.json");
+    assert!(
+        auth_json
+            .get("OPENAI_API_KEY")
+            .and_then(|value| value.as_str())
+            .is_none(),
+        "provider API key should live in config.toml, not auth.json"
     );
     assert!(
         config_path.exists(),
