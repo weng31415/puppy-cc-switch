@@ -215,8 +215,10 @@ export function PuppyRouterAccountBanner({
   const isLoggedIn = effectiveAccount?.loggedIn ?? false;
   const { data: balance, isFetching: isBalanceFetching } =
     usePuppyRouterAccountBalance(isLoggedIn);
-  const { data: keyList, isFetching: isKeysFetching } =
-    usePuppyRouterApiKeys(isLoggedIn, activeApp);
+  const { data: keyList, isFetching: isKeysFetching } = usePuppyRouterApiKeys(
+    isLoggedIn,
+    activeApp,
+  );
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
   const [isRefreshingKeys, setIsRefreshingKeys] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -580,13 +582,14 @@ export function PuppyRouterAccountBanner({
         issues.push({
           id: "cloud-key-mismatch",
           message: t("puppyrouterAccount.diagnoseCloudKeyMismatch"),
-          fixAction:
-            cloudKeys.selectedTokenId != null ? "cloud" : undefined,
+          fixAction: cloudKeys.selectedTokenId != null ? "cloud" : undefined,
         });
       }
 
       if (activeApp !== "opencode") {
-        const currentId = await providersApi.getCurrent(activeApp).catch(() => "");
+        const currentId = await providersApi
+          .getCurrent(activeApp)
+          .catch(() => "");
         if (currentId !== providerId) {
           issues.push({
             id: "provider-not-current",
@@ -619,8 +622,7 @@ export function PuppyRouterAccountBanner({
           issues.push({
             id: "claude-desktop-unsupported",
             message: t("claudeDesktop.statusUnsupported", {
-              defaultValue:
-                "当前平台暂不支持 Claude Desktop 3P 配置写入。",
+              defaultValue: "当前平台暂不支持 Claude Desktop 3P 配置写入。",
             }),
           });
         } else if (!isPuppyRouterUrl(liveBaseUrl)) {
@@ -692,7 +694,11 @@ export function PuppyRouterAccountBanner({
         liveSettings,
         providerId,
       );
-      const liveApiKey = readApiKeyFromSettings(activeApp, liveSettings, providerId);
+      const liveApiKey = readApiKeyFromSettings(
+        activeApp,
+        liveSettings,
+        providerId,
+      );
 
       if (!isPuppyRouterUrl(liveBaseUrl)) {
         issues.push({
@@ -1029,7 +1035,9 @@ export function PuppyRouterAccountBanner({
                     key={apiKey.id}
                     type="button"
                     disabled={
-                      isManualOnlyApp || !apiKey.usable || applyingKeyId !== null
+                      isManualOnlyApp ||
+                      !apiKey.usable ||
+                      applyingKeyId !== null
                     }
                     onClick={() => void handleApplyKey(apiKey)}
                     className={cn(
@@ -1138,7 +1146,8 @@ export function PuppyRouterAccountBanner({
                   <div className="mt-1 text-xs text-emerald-50/75">
                     {t("puppyrouterAccount.diagnoseSuccess", {
                       app:
-                        diagnoseResult?.appLabel ?? APP_ICON_MAP[activeApp].label,
+                        diagnoseResult?.appLabel ??
+                        APP_ICON_MAP[activeApp].label,
                     })}
                   </div>
                 </div>
@@ -1164,10 +1173,10 @@ export function PuppyRouterAccountBanner({
                         type="button"
                         size="sm"
                         variant="outline"
-                        onClick={() => void handleFixDiagnoseIssue(issue.fixAction!)}
-                        disabled={
-                          fixingDiagnoseAction !== null || isDiagnosing
+                        onClick={() =>
+                          void handleFixDiagnoseIssue(issue.fixAction!)
                         }
+                        disabled={fixingDiagnoseAction !== null || isDiagnosing}
                         className="shrink-0 border-primary/35 bg-primary/12 text-primary hover:bg-primary/20"
                       >
                         {fixingDiagnoseAction === issue.fixAction ? (
