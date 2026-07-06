@@ -11,6 +11,7 @@
       <key>CFBundleURLSchemes</key>
       <array>
         <string>puppyrouter</string>
+        <string>ccswitch</string>
       </array>
     </dict>
   </array>

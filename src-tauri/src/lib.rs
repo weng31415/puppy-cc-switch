@@ -127,7 +127,7 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    if !url_str.starts_with("puppyrouter://") {
+    if !url_str.starts_with("puppyrouter://") && !url_str.starts_with("ccswitch://") {
         return false;
     }
 
@@ -1611,7 +1611,9 @@ pub fn run() {
                         let url_str = url.to_string();
                         log::info!("RunEvent::Opened with URL: {url_str}");
 
-                        if url_str.starts_with("puppyrouter://") {
+                        if url_str.starts_with("puppyrouter://")
+                            || url_str.starts_with("ccswitch://")
+                        {
                             if crate::lightweight::is_lightweight_mode() {
                                 if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
                                 {
