@@ -1788,6 +1788,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn write_live_with_common_config_approves_current_claude_api_key() {
         with_isolated_home(|home| {
             let claude_json_path = home.join(".claude.json");
@@ -1837,6 +1838,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn approve_claude_custom_api_key_skips_claude_desktop() {
         with_isolated_home(|home| {
             let claude_json_path = home.join(".claude.json");
