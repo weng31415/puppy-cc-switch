@@ -75,7 +75,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["puppyrouter", "ccswitch"]
+        "schemes": ["puppyrouter"]
       }
     },
     "updater": {

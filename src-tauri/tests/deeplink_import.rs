@@ -12,7 +12,7 @@ fn deeplink_import_claude_provider_persists_to_db() {
     reset_test_fs();
     let _home = ensure_test_home();
 
-    let url = "ccswitch://v1/import?resource=provider&app=claude&name=DeepLink%20Claude&homepage=https%3A%2F%2Fpuppyrouter.com&endpoint=https%3A%2F%2Fpuppyrouter.com%2Fv1&apiKey=sk-test-claude-key&model=claude-sonnet-4&icon=claude";
+    let url = "puppyrouter://v1/import?resource=provider&app=claude&name=DeepLink%20Claude&homepage=https%3A%2F%2Fpuppyrouter.com&endpoint=https%3A%2F%2Fpuppyrouter.com%2Fv1&apiKey=sk-test-claude-key&model=claude-sonnet-4&icon=claude";
     let request = parse_deeplink_url(url).expect("parse deeplink url");
 
     let db = Arc::new(Database::memory().expect("create memory db"));
@@ -53,7 +53,7 @@ fn deeplink_import_codex_provider_builds_auth_and_config() {
     reset_test_fs();
     let _home = ensure_test_home();
 
-    let url = "ccswitch://v1/import?resource=provider&app=codex&name=DeepLink%20Codex&homepage=https%3A%2F%2Fpuppyrouter.com&endpoint=https%3A%2F%2Fpuppyrouter.com%2Fv1&apiKey=sk-test-codex-key&model=gpt-4o&icon=openai";
+    let url = "puppyrouter://v1/import?resource=provider&app=codex&name=DeepLink%20Codex&homepage=https%3A%2F%2Fpuppyrouter.com&endpoint=https%3A%2F%2Fpuppyrouter.com%2Fv1&apiKey=sk-test-codex-key&model=gpt-4o&icon=openai";
     let request = parse_deeplink_url(url).expect("parse deeplink url");
 
     let db = Arc::new(Database::memory().expect("create memory db"));
@@ -101,7 +101,7 @@ fn deeplink_import_rejects_third_party_locked_app_provider() {
     reset_test_fs();
     let _home = ensure_test_home();
 
-    let url = "ccswitch://v1/import?resource=provider&app=codex&name=Third%20Party&homepage=https%3A%2F%2Fopenai.example&endpoint=https%3A%2F%2Fapi.openai.example%2Fv1&apiKey=sk-third-party-key&model=gpt-4o&icon=openai";
+    let url = "puppyrouter://v1/import?resource=provider&app=codex&name=Third%20Party&homepage=https%3A%2F%2Fopenai.example&endpoint=https%3A%2F%2Fapi.openai.example%2Fv1&apiKey=sk-third-party-key&model=gpt-4o&icon=openai";
     let request = parse_deeplink_url(url).expect("parse deeplink url");
 
     let db = Arc::new(Database::memory().expect("create memory db"));

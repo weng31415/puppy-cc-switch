@@ -19,7 +19,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 
     // Validate scheme
     let scheme = url.scheme();
-    if scheme != "puppyrouter" && scheme != "ccswitch" {
+    if scheme != "puppyrouter" {
         return Err(AppError::InvalidInput(format!(
             "Invalid scheme: expected 'puppyrouter', got '{scheme}'"
         )));
