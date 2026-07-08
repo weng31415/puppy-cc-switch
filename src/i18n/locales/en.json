@@ -202,6 +202,8 @@
     "editProviderHint": "Configuration will be applied to the current provider immediately after update.",
     "deleteProvider": "Delete Provider",
     "addNewProvider": "Add New Provider",
+    "addCustomProvider": "Add Custom Provider",
+    "customProviderCannotBeOfficial": "Official providers are built in and locked. Add a third-party, aggregator, or custom provider instead.",
     "addClaudeProvider": "Add Claude Code Provider",
     "addCodexProvider": "Add Codex Provider",
     "addGeminiProvider": "Add Gemini Provider",

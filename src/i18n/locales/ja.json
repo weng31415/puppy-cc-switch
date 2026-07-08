@@ -202,6 +202,8 @@
     "editProviderHint": "保存すると現在のプロバイダーにすぐ反映されます。",
     "deleteProvider": "プロバイダーを削除",
     "addNewProvider": "新しいプロバイダーを追加",
+    "addCustomProvider": "カスタムプロバイダーを追加",
+    "customProviderCannotBeOfficial": "Official プロバイダーは組み込みで固定されています。サードパーティ、集約サービス、またはカスタムプロバイダーを追加してください。",
     "addClaudeProvider": "Claude Code プロバイダーを追加",
     "addCodexProvider": "Codex プロバイダーを追加",
     "addGeminiProvider": "Gemini プロバイダーを追加",

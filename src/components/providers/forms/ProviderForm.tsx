@@ -250,6 +250,7 @@ export interface ProviderFormProps {
   };
   showButtons?: boolean;
   isProxyTakeover?: boolean;
+  customOnly?: boolean;
 }
 
 export function ProviderForm(props: ProviderFormProps) {
@@ -272,6 +273,7 @@ function ProviderFormFull({
   initialData,
   showButtons = true,
   isProxyTakeover = false,
+  customOnly = false,
 }: ProviderFormProps) {
   if (appId === "claude-desktop") {
     throw new Error("ProviderFormFull should not receive claude-desktop");
@@ -659,16 +661,24 @@ function ProviderFormFull({
   );
 
   const presetEntries = useMemo(() => {
+    const hideLockedOfficial = <T extends { category?: ProviderCategory }>(
+      preset: T,
+    ) => !customOnly || preset.category !== "official";
+
     if (appId === "codex") {
-      return codexProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `codex-${index}`,
-        preset,
-      }));
+      return codexProviderPresets
+        .filter(hideLockedOfficial)
+        .map<PresetEntry>((preset, index) => ({
+          id: `codex-${index}`,
+          preset,
+        }));
     } else if (appId === "gemini") {
-      return geminiProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `gemini-${index}`,
-        preset,
-      }));
+      return geminiProviderPresets
+        .filter(hideLockedOfficial)
+        .map<PresetEntry>((preset, index) => ({
+          id: `gemini-${index}`,
+          preset,
+        }));
     } else if (appId === "opencode") {
       return opencodeProviderPresets.map<PresetEntry>((preset, index) => ({
         id: `opencode-${index}`,
@@ -686,12 +696,12 @@ function ProviderFormFull({
       }));
     }
     return providerPresets
-      .filter((p) => !p.hidden)
+      .filter((p) => !p.hidden && hideLockedOfficial(p))
       .map<PresetEntry>((preset, index) => ({
         id: `claude-${index}`,
         preset,
       }));
-  }, [appId]);
+  }, [appId, customOnly]);
 
   const {
     templateValues,
@@ -1370,6 +1380,16 @@ function ProviderFormFull({
     }
 
     if (activePreset) {
+      if (customOnly && activePreset.category === "official") {
+        toast.error(
+          t("provider.customProviderCannotBeOfficial", {
+            defaultValue:
+              "官方供应商已内置锁定，请添加第三方、聚合或自定义渠道。",
+          }),
+        );
+        return;
+      }
+
       payload.presetId = activePreset.id;
       if (activePreset.category) {
         payload.presetCategory = activePreset.category;

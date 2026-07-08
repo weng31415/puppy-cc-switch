@@ -1983,18 +1983,23 @@ function App() {
                         </AnimatePresence>
                       </div>
 
-                      {!isLockedProviderApp(activeApp) &&
-                        renderHeaderTooltip(
-                          t("provider.addNewProvider"),
-                          <Button
-                            aria-label={t("provider.addNewProvider")}
-                            onClick={() => setIsAddOpen(true)}
-                            size="icon"
-                            className={`ml-2 ${addActionButtonClass}`}
-                          >
-                            <Plus className="w-5 h-5" />
-                          </Button>,
-                        )}
+                      {renderHeaderTooltip(
+                        isLockedProviderApp(activeApp)
+                          ? t("provider.addCustomProvider")
+                          : t("provider.addNewProvider"),
+                        <Button
+                          aria-label={
+                            isLockedProviderApp(activeApp)
+                              ? t("provider.addCustomProvider")
+                              : t("provider.addNewProvider")
+                          }
+                          onClick={() => setIsAddOpen(true)}
+                          size="icon"
+                          className={`ml-2 ${addActionButtonClass}`}
+                        >
+                          <Plus className="w-5 h-5" />
+                        </Button>,
+                      )}
                     </>
                   )}
                 </div>
@@ -2016,6 +2021,7 @@ function App() {
         onOpenChange={setIsAddOpen}
         appId={activeApp}
         onSubmit={addProvider}
+        customOnly={isLockedProviderApp(activeApp)}
       />
 
       <EditProviderDialog

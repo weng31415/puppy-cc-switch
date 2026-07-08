@@ -26,6 +26,7 @@ interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   appId: AppId;
+  customOnly?: boolean;
   onSubmit: (
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
@@ -39,11 +40,13 @@ export function AddProviderDialog({
   open,
   onOpenChange,
   appId,
+  customOnly = false,
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
   // OpenCode and OpenClaw don't support universal providers
   const showUniversalTab =
+    !customOnly &&
     appId !== "opencode" &&
     appId !== "openclaw" &&
     appId !== "hermes" &&
@@ -90,6 +93,16 @@ export function AddProviderDialog({
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
+      if (customOnly && values.presetCategory === "official") {
+        toast.error(
+          t("provider.customProviderCannotBeOfficial", {
+            defaultValue:
+              "官方供应商已内置锁定，请添加第三方、聚合或自定义渠道。",
+          }),
+        );
+        return;
+      }
+
       const parsedConfig = JSON.parse(values.settingsConfig) as Record<
         string,
         unknown
@@ -274,7 +287,7 @@ export function AddProviderDialog({
       await onSubmit(providerData);
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, customOnly, onSubmit, onOpenChange, t],
   );
 
   const footer =
@@ -322,7 +335,11 @@ export function AddProviderDialog({
   return (
     <FullScreenPanel
       isOpen={open}
-      title={t("provider.addNewProvider")}
+      title={
+        customOnly
+          ? t("provider.addCustomProvider")
+          : t("provider.addNewProvider")
+      }
       onClose={() => onOpenChange(false)}
       footer={footer}
       contentClassName="pt-3"
@@ -349,6 +366,7 @@ export function AddProviderDialog({
               onCancel={() => onOpenChange(false)}
               onSubmittingChange={setIsFormSubmitting}
               showButtons={false}
+              customOnly={customOnly}
             />
           </TabsContent>
 
@@ -365,6 +383,7 @@ export function AddProviderDialog({
           onCancel={() => onOpenChange(false)}
           onSubmittingChange={setIsFormSubmitting}
           showButtons={false}
+          customOnly={customOnly}
         />
       )}
 

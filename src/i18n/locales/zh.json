@@ -202,6 +202,8 @@
     "editProviderHint": "更新配置后将立即应用到当前供应商。",
     "deleteProvider": "删除供应商",
     "addNewProvider": "添加新供应商",
+    "addCustomProvider": "添加自定义渠道",
+    "customProviderCannotBeOfficial": "官方供应商已内置锁定，请添加第三方、聚合或自定义渠道。",
     "addClaudeProvider": "添加 Claude Code 供应商",
     "addCodexProvider": "添加 Codex 供应商",
     "addGeminiProvider": "添加 Gemini 供应商",

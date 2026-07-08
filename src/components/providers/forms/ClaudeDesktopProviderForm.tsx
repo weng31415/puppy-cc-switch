@@ -101,6 +101,7 @@ export interface ClaudeDesktopProviderFormProps {
     iconColor?: string;
   };
   showButtons?: boolean;
+  customOnly?: boolean;
 }
 
 type RouteRow = {
@@ -253,6 +254,7 @@ export function ClaudeDesktopProviderForm({
   onSubmittingChange,
   initialData,
   showButtons = true,
+  customOnly = false,
 }: ClaudeDesktopProviderFormProps) {
   const { t } = useTranslation();
   const initialMode = initialData?.meta?.claudeDesktopMode ?? "direct";
@@ -352,11 +354,13 @@ export function ClaudeDesktopProviderForm({
 
   const presetEntries = useMemo<PresetEntry[]>(
     () =>
-      claudeDesktopProviderPresets.map((preset, index) => ({
-        id: `claude-desktop-${index}`,
-        preset,
-      })),
-    [],
+      claudeDesktopProviderPresets
+        .filter((preset) => !customOnly || preset.category !== "official")
+        .map((preset, index) => ({
+          id: `claude-desktop-${index}`,
+          preset,
+        })),
+    [customOnly],
   );
 
   const presetCategoryLabels: Record<string, string> = useMemo(

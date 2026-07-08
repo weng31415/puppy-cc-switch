@@ -277,6 +277,23 @@ mod tests {
         })
     }
 
+    fn claude_provider(id: &str) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            format!("Provider {id}"),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-test"
+                }
+            }),
+            Some("https://api.example.com".to_string()),
+        );
+        provider.category = Some("third_party".to_string());
+        provider.sort_index = Some(0);
+        provider
+    }
+
     fn usage_script_with_credentials(
         api_key: Option<&str>,
         base_url: Option<&str>,
@@ -1375,6 +1392,78 @@ experimental_bearer_token = "123"
 
     #[test]
     #[serial]
+    fn restricted_app_allows_custom_provider_while_locked_defaults_remain_pinned() {
+        with_test_home(|state, _| {
+            ProviderService::ensure_locked_puppyrouter_defaults(state)
+                .expect("seed locked defaults");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), "claude-official")
+                .expect("set official current provider");
+
+            let provider = claude_provider("custom-claude");
+            ProviderService::add(state, AppType::Claude, provider.clone(), true)
+                .expect("add custom claude provider");
+
+            let providers =
+                ProviderService::list(state, AppType::Claude).expect("list claude providers");
+            let puppyrouter = providers
+                .get("universal-claude-puppyrouter")
+                .expect("puppyrouter provider should be present");
+            let official = providers
+                .get("claude-official")
+                .expect("official provider should be present");
+            let saved = providers
+                .get(&provider.id)
+                .expect("custom provider should remain visible");
+
+            assert_eq!(puppyrouter.sort_index, Some(0));
+            assert_eq!(official.sort_index, Some(1));
+            assert_eq!(
+                saved.sort_index,
+                Some(2),
+                "custom providers must stay after PuppyRouter and official"
+            );
+            assert_eq!(saved.category.as_deref(), Some("third_party"));
+
+            ProviderService::delete(state, AppType::Claude, &provider.id)
+                .expect("custom provider should be deletable");
+            let providers =
+                ProviderService::list(state, AppType::Claude).expect("list claude providers");
+            assert!(
+                !providers.contains_key(&provider.id),
+                "deleted custom provider should be removed"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn restricted_app_rejects_custom_provider_that_claims_official_category() {
+        with_test_home(|state, _| {
+            let mut provider = claude_provider("custom-official");
+            provider.category = Some("official".to_string());
+
+            let err = ProviderService::add(state, AppType::Claude, provider.clone(), true)
+                .expect_err("non-seed official provider should be rejected");
+
+            assert!(
+                err.to_string().contains("Official"),
+                "unexpected error: {err}"
+            );
+            assert!(
+                state
+                    .db
+                    .get_provider_by_id(&provider.id, AppType::Claude.as_str())
+                    .expect("query rejected provider")
+                    .is_none(),
+                "rejected provider must not be saved"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
     fn ensure_locked_defaults_preserves_opencode_puppyrouter_key_and_live_flag() {
         with_test_home(|state, _| {
             let mut existing = opencode_provider("puppyrouter");
@@ -1885,8 +1974,12 @@ impl ProviderService {
         puppyrouter_provider_id_for_app(app_type).is_some_and(|id| provider.id == id)
     }
 
+    fn is_official_provider_for_app(app_type: &AppType, provider: &Provider) -> bool {
+        official_seed_id_for_app(app_type).is_some_and(|id| provider.id == id)
+    }
+
     fn is_locked_provider_for_app(app_type: &AppType, provider: &Provider) -> bool {
-        crate::database::is_official_seed_id(&provider.id)
+        Self::is_official_provider_for_app(app_type, provider)
             || Self::is_puppyrouter_provider_for_app(app_type, provider)
     }
 
@@ -1895,6 +1988,7 @@ impl ProviderService {
             return true;
         }
         Self::is_locked_provider_for_app(app_type, provider)
+            || provider.category.as_deref() != Some("official")
     }
 
     fn normalize_locked_provider_for_app(app_type: &AppType, provider: &mut Provider) {
@@ -1905,9 +1999,20 @@ impl ProviderService {
             provider.sort_index = Some(0);
             provider.icon = Some("openai".to_string());
             provider.icon_color = Some("#F59E0B".to_string());
-        } else if crate::database::is_official_seed_id(&provider.id) {
+        } else if Self::is_official_provider_for_app(app_type, provider) {
             provider.category = Some("official".to_string());
             provider.sort_index = Some(1);
+        }
+    }
+
+    fn normalize_custom_provider_sort_for_app(app_type: &AppType, provider: &mut Provider) {
+        if Self::is_locked_provider_for_app(app_type, provider) {
+            return;
+        }
+        if is_restricted_provider_app(app_type) || matches!(app_type, AppType::OpenCode) {
+            if provider.sort_index.is_some_and(|sort_index| sort_index < 2) {
+                provider.sort_index = Some(2);
+            }
         }
     }
 
@@ -2058,9 +2163,10 @@ impl ProviderService {
         for mut provider in providers.into_values() {
             let previous_sort = provider.sort_index;
             Self::normalize_locked_provider_for_app(app_type, &mut provider);
+            Self::normalize_custom_provider_sort_for_app(app_type, &mut provider);
             let should_save = provider.sort_index != previous_sort
                 || Self::is_puppyrouter_provider_for_app(app_type, &provider)
-                || crate::database::is_official_seed_id(&provider.id);
+                || Self::is_official_provider_for_app(app_type, &provider);
             if should_save {
                 state.db.save_provider(app_type.as_str(), &provider)?;
             }
@@ -2209,11 +2315,12 @@ impl ProviderService {
             Self::normalize_locked_provider_for_app(&app_type, &mut provider);
             if !Self::is_allowed_provider_for_app(&app_type, &provider) {
                 return Err(AppError::localized(
-                    "provider.locked.only_official_puppyrouter",
-                    "当前版本仅允许保留 Official 和 PuppyRouter 供应商。",
-                    "This build only allows Official and PuppyRouter providers.",
+                    "provider.locked.custom_cannot_be_official",
+                    "Official 供应商已内置锁定，请添加第三方、聚合或自定义渠道。",
+                    "Official providers are built in and locked. Add a third-party, aggregator, or custom provider instead.",
                 ));
             }
+            Self::normalize_custom_provider_sort_for_app(&app_type, &mut provider);
         }
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
@@ -2281,11 +2388,12 @@ impl ProviderService {
             Self::normalize_locked_provider_for_app(&app_type, &mut provider);
             if !Self::is_allowed_provider_for_app(&app_type, &provider) {
                 return Err(AppError::localized(
-                    "provider.locked.only_official_puppyrouter",
-                    "当前版本仅允许保留 Official 和 PuppyRouter 供应商。",
-                    "This build only allows Official and PuppyRouter providers.",
+                    "provider.locked.custom_cannot_be_official",
+                    "Official 供应商已内置锁定，请添加第三方、聚合或自定义渠道。",
+                    "Official providers are built in and locked. Add a third-party, aggregator, or custom provider instead.",
                 ));
             }
+            Self::normalize_custom_provider_sort_for_app(&app_type, &mut provider);
         }
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
