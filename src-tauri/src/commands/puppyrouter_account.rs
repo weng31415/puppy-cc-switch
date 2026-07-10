@@ -4,11 +4,12 @@ use std::time::Duration;
 
 use reqwest::header::{COOKIE, SET_COOKIE};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_config::AppType;
 use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta};
+use crate::services::model_fetch::FetchedModel;
 use crate::services::ProviderService;
 use crate::store::AppState;
 
@@ -19,6 +20,7 @@ const LEGACY_ACCOUNT_PENDING_SESSION_SETTING: &str = "puppyrouter_account_pendin
 const SELECTED_TOKEN_SETTING: &str = "puppyrouter_account_selected_token";
 const SELECTED_TOKEN_BY_APP_SETTING: &str = "puppyrouter_account_selected_tokens_by_app";
 const DEFAULT_TOKEN_NAME: &str = "default_api_key";
+const CODEX_MODEL_CATALOG_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -653,6 +655,135 @@ fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
+fn codex_config_text(settings: &Value) -> Option<&str> {
+    settings.get("config").and_then(|value| value.as_str())
+}
+
+fn codex_model_from_config(config_text: &str) -> Option<String> {
+    let doc = config_text.parse::<toml::Value>().ok()?;
+    doc.get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_catalog_model_id(model_id: &str) -> Option<String> {
+    let trimmed = model_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn is_codex_catalog_model_id(model_id: &str) -> bool {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    if normalized.contains("claude") || normalized.contains("anthropic") {
+        return false;
+    }
+
+    let leaf = normalized.rsplit('/').next().unwrap_or(&normalized);
+    leaf.starts_with("gpt")
+        || leaf.starts_with("chatgpt")
+        || leaf.starts_with("codex")
+        || leaf.starts_with("o1")
+        || leaf.starts_with("o3")
+        || leaf.starts_with("o4")
+        || leaf.starts_with("o5")
+        || leaf.contains("-codex")
+}
+
+fn fetched_models_to_codex_catalog(
+    fetched_models: &[FetchedModel],
+    preferred_model: Option<&str>,
+) -> Option<Value> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+
+    for model in fetched_models {
+        let Some(id) = normalize_catalog_model_id(&model.id) else {
+            continue;
+        };
+        if !is_codex_catalog_model_id(&id) {
+            continue;
+        }
+        if seen.insert(id.clone()) {
+            ids.push(id);
+        }
+        if ids.len() >= CODEX_MODEL_CATALOG_LIMIT {
+            break;
+        }
+    }
+
+    if ids.is_empty() {
+        return None;
+    }
+
+    let preferred = preferred_model
+        .and_then(normalize_catalog_model_id)
+        .filter(|preferred| ids.iter().any(|id| id == preferred));
+    if let Some(preferred) = preferred {
+        ids.retain(|id| id != &preferred);
+        ids.insert(0, preferred);
+    }
+
+    let models = ids
+        .into_iter()
+        .map(|id| {
+            json!({
+                "model": id,
+                "displayName": id,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Some(json!({ "models": models }))
+}
+
+async fn refresh_codex_model_catalog_from_puppyrouter(
+    provider: &mut Provider,
+    api_key: &str,
+) -> Result<(), String> {
+    let config_text = codex_config_text(&provider.settings_config).unwrap_or_default();
+    let base_url = crate::codex_config::extract_codex_base_url(config_text)
+        .unwrap_or_else(|| format!("{PUPPYROUTER_BASE_URL}/v1"));
+    let preferred_model = codex_model_from_config(config_text);
+
+    let fetched_models =
+        crate::services::model_fetch::fetch_models(&base_url, api_key, false, None, None).await?;
+    let Some(model_catalog) =
+        fetched_models_to_codex_catalog(&fetched_models, preferred_model.as_deref())
+    else {
+        return Ok(());
+    };
+
+    let first_model = model_catalog
+        .get("models")
+        .and_then(|models| models.as_array())
+        .and_then(|models| models.first())
+        .and_then(|model| model.get("model"))
+        .and_then(|model| model.as_str())
+        .map(ToString::to_string);
+
+    if let Some(settings) = provider.settings_config.as_object_mut() {
+        settings.insert("modelCatalog".to_string(), model_catalog);
+        if preferred_model.is_none() {
+            if let (Some(first_model), Some(config)) = (
+                first_model,
+                settings.get("config").and_then(|value| value.as_str()),
+            ) {
+                if let Ok(updated_config) =
+                    crate::codex_config::update_codex_toml_field(config, "model", &first_model)
+                {
+                    settings.insert("config".to_string(), Value::String(updated_config));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn puppyrouter_provider_for_app(
     state: &AppState,
     app_type: &AppType,
@@ -698,7 +829,7 @@ fn puppyrouter_provider_for_app(
     }
 }
 
-fn save_puppyrouter_provider_for_app(
+async fn save_puppyrouter_provider_for_app(
     state: &AppState,
     app_type: &AppType,
     api_key: &str,
@@ -727,6 +858,15 @@ fn save_puppyrouter_provider_for_app(
             .meta
             .get_or_insert_with(ProviderMeta::default)
             .live_config_managed = Some(false);
+    }
+
+    if matches!(app_type, AppType::Codex) {
+        if let Err(err) = refresh_codex_model_catalog_from_puppyrouter(&mut provider, api_key).await
+        {
+            log::warn!(
+                "Failed to refresh PuppyRouter Codex model catalog during API key apply: {err}"
+            );
+        }
     }
 
     state
@@ -1002,7 +1142,7 @@ pub async fn apply_puppyrouter_api_key(
     }
 
     let full_key = fetch_token_key(&client, &session, token_id).await?;
-    save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key)?;
+    save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
@@ -1052,5 +1192,68 @@ mod tests {
             "sk-abcd********wxyz"
         );
         assert_eq!(display_puppyrouter_api_key("   "), "");
+    }
+
+    #[test]
+    fn fetched_models_to_codex_catalog_dedupes_and_keeps_preferred_first() {
+        let models = vec![
+            FetchedModel {
+                id: "gpt-5.6-luna".to_string(),
+                owned_by: None,
+            },
+            FetchedModel {
+                id: "gpt-5.6-sol".to_string(),
+                owned_by: None,
+            },
+            FetchedModel {
+                id: "gpt-5.6-luna".to_string(),
+                owned_by: None,
+            },
+            FetchedModel {
+                id: "claude-sonnet-4-5".to_string(),
+                owned_by: None,
+            },
+        ];
+
+        let catalog = fetched_models_to_codex_catalog(&models, Some("gpt-5.6-sol"))
+            .expect("non-empty models should produce catalog");
+        let ids = catalog["models"]
+            .as_array()
+            .expect("catalog models should be an array")
+            .iter()
+            .map(|model| {
+                model["model"]
+                    .as_str()
+                    .expect("catalog model id should be a string")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn fetched_models_to_codex_catalog_ignores_blank_ids() {
+        let models = vec![FetchedModel {
+            id: "   ".to_string(),
+            owned_by: None,
+        }];
+
+        assert!(fetched_models_to_codex_catalog(&models, None).is_none());
+    }
+
+    #[test]
+    fn fetched_models_to_codex_catalog_ignores_claude_family_models() {
+        let models = vec![
+            FetchedModel {
+                id: "anthropic/claude-opus-4-1".to_string(),
+                owned_by: None,
+            },
+            FetchedModel {
+                id: "claude-sonnet-4-5".to_string(),
+                owned_by: None,
+            },
+        ];
+
+        assert!(fetched_models_to_codex_catalog(&models, None).is_none());
     }
 }
