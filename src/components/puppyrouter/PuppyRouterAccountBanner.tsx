@@ -1224,14 +1224,19 @@ export function PuppyRouterAccountBanner({
                     <Button
                       type="button"
                       size="sm"
-                      variant={apiKey.active ? "outline" : "default"}
+                      variant="outline"
                       disabled={
                         isManualOnlyApp ||
                         !apiKey.usable ||
                         applyingKeyId !== null
                       }
                       onClick={() => void handleApplyKey(apiKey)}
-                      className="mt-3 w-full"
+                      className={cn(
+                        "mt-3 w-full shadow-none",
+                        apiKey.active
+                          ? "border-emerald-500/25 bg-emerald-500/5 text-emerald-300/75 hover:border-emerald-500/35 hover:bg-emerald-500/10 hover:text-emerald-300"
+                          : "border-emerald-500/45 bg-emerald-500/10 text-emerald-300 hover:border-emerald-400/60 hover:bg-emerald-500/16 hover:text-emerald-200",
+                      )}
                     >
                       {applyingKeyId === apiKey.id ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />

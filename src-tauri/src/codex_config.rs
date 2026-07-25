@@ -340,6 +340,29 @@ fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+const CODEX_DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+const CODEX_GPT_5_6_CONTEXT_WINDOW: u64 = 272_000;
+
+fn is_gpt_5_6_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase().replace('_', "-");
+    ["gpt-5.6", "gpt5.6"].iter().any(|prefix| {
+        normalized == *prefix
+            || normalized
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+    })
+}
+
+fn default_codex_context_window(model: &str, configured_default: Option<u64>) -> u64 {
+    configured_default.unwrap_or_else(|| {
+        if is_gpt_5_6_model(model) {
+            CODEX_GPT_5_6_CONTEXT_WINDOW
+        } else {
+            CODEX_DEFAULT_CONTEXT_WINDOW
+        }
+    })
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
     model: &str,
@@ -382,8 +405,7 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
         return Vec::new();
     };
 
-    let default_context_window =
-        extract_codex_top_level_u64(config_text, "model_context_window").unwrap_or(128_000);
+    let configured_default = extract_codex_top_level_u64(config_text, "model_context_window");
     let mut seen = std::collections::HashSet::new();
     let mut specs = Vec::new();
 
@@ -413,7 +435,7 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
                 .get("contextWindow")
                 .or_else(|| model_config.get("context_window")),
         )
-        .unwrap_or(default_context_window);
+        .unwrap_or_else(|| default_codex_context_window(model, configured_default));
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
@@ -826,11 +848,12 @@ pub fn prepare_codex_config_text_with_model_catalog(
 /// `displayName` and `contextWindow` are omitted from the returned entry when
 /// the on-disk value matches the fallback that
 /// `codex_model_catalog_from_settings` injects for unset inputs (slug for
-/// display_name, `model_context_window` or 128_000 for context_window). This
-/// preserves the "user left it blank" intent across round-trip; an unavoidable
-/// edge case is that a user-typed value that happens to equal the fallback
-/// will also collapse to blank, but the next save writes the same fallback so
-/// behavior stays consistent.
+/// display_name, an explicit `model_context_window`, the GPT-5.6 family
+/// default of 272_000, or the generic 128_000 context fallback). This preserves
+/// the "user left it blank" intent across round-trip; an unavoidable edge case
+/// is that a user-typed value that happens to equal the fallback will also
+/// collapse to blank, but the next save writes the same fallback so behavior
+/// stays consistent.
 ///
 /// All failure modes (missing file, parse error, no `model_catalog_json`,
 /// entries without `slug`) collapse to `Ok(None)` so callers can treat this
@@ -892,8 +915,7 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
     let catalog: Value = serde_json::from_str(catalog_text).ok()?;
     let models = catalog.get("models").and_then(|m| m.as_array())?;
 
-    let default_context_window =
-        extract_codex_top_level_u64(config_text, "model_context_window").unwrap_or(128_000);
+    let configured_default = extract_codex_top_level_u64(config_text, "model_context_window");
 
     let mut entries = Vec::with_capacity(models.len());
     for entry in models {
@@ -918,6 +940,7 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             obj.insert("displayName".to_string(), json!(display_name));
         }
 
+        let default_context_window = default_codex_context_window(model, configured_default);
         if let Some(context_window) = entry
             .get("context_window")
             .and_then(|v| v.as_u64())
@@ -2369,6 +2392,62 @@ name = "any"
         assert!(
             entry.get("contextWindow").is_none(),
             "default 128_000 should be squashed so the form shows blank, matching the user's blank input"
+        );
+    }
+
+    #[test]
+    fn gpt_5_6_catalog_models_default_to_272k() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.6-luna" },
+                    { "model": "gpt-5.6_terra" },
+                    { "model": "gpt5.6-sol" },
+                    { "model": "gpt-5.5" }
+                ]
+            }
+        });
+
+        let specs = codex_catalog_model_specs(&settings, "");
+        assert_eq!(specs[0].context_window, 272_000);
+        assert_eq!(specs[1].context_window, 272_000);
+        assert_eq!(specs[2].context_window, 272_000);
+        assert_eq!(specs[3].context_window, 128_000);
+    }
+
+    #[test]
+    fn explicit_context_settings_override_gpt_5_6_default() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.6-luna" },
+                    { "model": "gpt-5.6-sol", "contextWindow": 400000 }
+                ]
+            }
+        });
+
+        let specs = codex_catalog_model_specs(&settings, "model_context_window = 200000\n");
+        assert_eq!(specs[0].context_window, 200_000);
+        assert_eq!(specs[1].context_window, 400_000);
+    }
+
+    #[test]
+    fn build_simplified_catalog_squashes_gpt_5_6_default_context_window() {
+        let catalog = r#"{
+            "models": [
+                {
+                    "slug": "gpt-5.6-luna",
+                    "display_name": "gpt-5.6-luna",
+                    "context_window": 272000
+                }
+            ]
+        }"#;
+
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entry");
+        let entry = &result.get("models").unwrap().as_array().unwrap()[0];
+        assert!(
+            entry.get("contextWindow").is_none(),
+            "the implicit GPT-5.6 272K default should remain blank in the simplified editor"
         );
     }
 
