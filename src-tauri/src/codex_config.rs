@@ -6,14 +6,21 @@ use crate::config::{
     write_json_file, write_text_file,
 };
 use crate::error::AppError;
+use once_cell::sync::OnceCell;
 use serde_json::{json, Value};
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use toml_edit::DocumentMut;
 
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "puppyrouter-app-model-catalog.json";
 const CODEX_MODEL_CATALOG_TEMPLATE_SLUG: &str = "gpt-5.5";
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(not(test))]
+static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
 /// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
@@ -602,13 +609,25 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+fn codex_bundled_models_command(candidate: &Path) -> Command {
+    let mut command = Command::new(candidate);
+    command
+        .args(["debug", "models", "--bundled"])
+        .stdin(Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
+}
+
 fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
-        let output = match Command::new(&candidate)
-            .args(["debug", "models", "--bundled"])
-            .output()
-        {
+        let output = match codex_bundled_models_command(&candidate).output() {
             Ok(output) => output,
             Err(err) => {
                 log::debug!("failed to run `{candidate_label} debug models --bundled`: {err}");
@@ -650,13 +669,36 @@ fn load_codex_model_template_static() -> Option<Value> {
     }
 }
 
-fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summaries"];
+
+fn fill_template_fields_from_static(template: &mut Value) {
+    let Some(static_template) = load_codex_model_template_static() else {
+        return;
+    };
+    let (Some(template_obj), Some(static_obj)) =
+        (template.as_object_mut(), static_template.as_object())
+    else {
+        return;
+    };
+
+    for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
+        if !template_obj.contains_key(*key) {
+            if let Some(value) = static_obj.get(*key) {
+                template_obj.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+}
+
+fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
     // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(template) = load_codex_model_template_from_cache()? {
+    if let Some(mut template) = load_codex_model_template_from_cache()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
     // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(template) = load_codex_model_template_from_bundled()? {
+    if let Some(mut template) = load_codex_model_template_from_bundled()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
     // ③ Static fallback bundled at compile time
@@ -667,6 +709,29 @@ fn load_codex_model_catalog_template() -> Result<Value, AppError> {
     Err(AppError::Message(format!(
         "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
     )))
+}
+
+fn get_or_load_codex_model_catalog_template<F>(
+    cache: &OnceCell<Value>,
+    loader: F,
+) -> Result<Value, AppError>
+where
+    F: FnOnce() -> Result<Value, AppError>,
+{
+    cache.get_or_try_init(loader).cloned()
+}
+
+#[cfg(not(test))]
+fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+    get_or_load_codex_model_catalog_template(
+        &CODEX_MODEL_CATALOG_TEMPLATE_CACHE,
+        load_codex_model_catalog_template_uncached,
+    )
+}
+
+#[cfg(test)]
+fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+    load_codex_model_catalog_template_uncached()
 }
 
 fn codex_model_catalog_from_specs(specs: &[CodexCatalogModelSpec], template: &Value) -> Value {
@@ -2430,12 +2495,95 @@ name = "any"
             "base_instructions",
             "context_window",
             "display_name",
+            "supports_reasoning_summaries",
         ] {
             assert!(
                 template.get(key).is_some(),
                 "static template must contain key '{key}'"
             );
         }
+    }
+
+    #[test]
+    fn dynamic_template_backfills_parser_required_fields_from_static() {
+        let mut template = json!({
+            "slug": "gpt-5.5",
+            "context_window": 272_000,
+            "supports_parallel_tool_calls": false
+        });
+
+        fill_template_fields_from_static(&mut template);
+
+        assert_eq!(
+            template
+                .get("supports_reasoning_summaries")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            template
+                .get("supports_parallel_tool_calls")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(template.get("supports_search_tool").is_none());
+    }
+
+    #[test]
+    fn codex_bundled_models_command_uses_expected_program_and_args() {
+        let command = codex_bundled_models_command(Path::new("codex"));
+        assert_eq!(command.get_program(), "codex");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["debug", "models", "--bundled"]
+        );
+    }
+
+    #[test]
+    fn successful_model_catalog_template_load_is_cached() {
+        use std::cell::Cell;
+
+        let cache = OnceCell::new();
+        let calls = Cell::new(0);
+        let first = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "first" }))
+        })
+        .expect("first template load");
+        let second = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "second" }))
+        })
+        .expect("cached template load");
+
+        assert_eq!(first, json!({ "slug": "first" }));
+        assert_eq!(second, first);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn failed_model_catalog_template_load_can_retry() {
+        use std::cell::Cell;
+
+        let cache = OnceCell::new();
+        let calls = Cell::new(0);
+        let first = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Err(AppError::Message("temporary failure".to_string()))
+        });
+        assert!(first.is_err());
+
+        let second = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "recovered" }))
+        })
+        .expect("retry template load");
+
+        assert_eq!(second, json!({ "slug": "recovered" }));
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

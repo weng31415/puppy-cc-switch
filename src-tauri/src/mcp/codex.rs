@@ -361,14 +361,10 @@ pub fn sync_single_server_to_codex(
     let mut doc = if config_path.exists() {
         let content =
             std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
-        // 尝试解析现有配置，如果失败则创建新文档（容错处理）
-        match content.parse::<toml_edit::DocumentMut>() {
-            Ok(doc) => doc,
-            Err(e) => {
-                log::warn!("解析 Codex config.toml 失败: {e}，将创建新配置");
-                toml_edit::DocumentMut::new()
-            }
-        }
+        // 解析失败必须停止写入，否则空文档会覆盖用户完整的 config.toml。
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| AppError::McpValidation(format!("Failed to parse config.toml: {e}")))?
     } else {
         toml_edit::DocumentMut::new()
     };

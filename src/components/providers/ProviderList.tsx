@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { useDragSort } from "@/hooks/useDragSort";
 import {
   useOpenClawLiveProviderIds,
@@ -249,8 +250,9 @@ export function ProviderList({
         toast.info(t("provider.noProviders"));
       }
     },
-    onError: (error: Error) => {
-      toast.error(error.message);
+    onError: (error: unknown) => {
+      toast.error(extractErrorMessage(error) || t("settings.importFailed"));
+      queryClient.invalidateQueries({ queryKey: ["providers", appId] });
     },
   });
 
