@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 /// 获取全局代理 URL
 ///
-/// 返回当前配置的代理 URL，null 表示直连。
+/// 返回当前配置的代理 URL，null 表示跟随系统代理。
 #[tauri::command]
 pub fn get_global_proxy_url(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
     let result = state.db.get_global_proxy_url().map_err(|e| e.to_string())?;
@@ -27,7 +27,7 @@ pub fn get_global_proxy_url(state: tauri::State<'_, AppState>) -> Result<Option<
 /// 设置全局代理 URL
 ///
 /// - 传入非空字符串：启用代理
-/// - 传入空字符串：清除代理（直连）
+/// - 传入空字符串：清除 App 代理并跟随系统代理
 ///
 /// 执行顺序：先验证 → 写 DB → 再应用
 /// 这样确保 DB 写失败时不会出现运行态与持久化不一致的问题

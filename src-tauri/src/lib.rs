@@ -1326,6 +1326,8 @@ pub fn run() {
             commands::poll_puppyrouter_account_login,
             commands::logout_puppyrouter_account,
             commands::list_puppyrouter_api_keys,
+            commands::list_puppyrouter_account_groups,
+            commands::update_puppyrouter_api_key_group,
             commands::apply_puppyrouter_api_key,
             // Deep link import
             commands::parse_deeplink,

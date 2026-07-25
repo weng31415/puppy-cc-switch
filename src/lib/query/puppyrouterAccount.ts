@@ -2,6 +2,7 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 
 import {
   puppyrouterAccountApi,
+  type PuppyRouterAccountGroup,
   type PuppyRouterAccountBalance,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKeyList,
@@ -17,6 +18,7 @@ export const puppyrouterAccountKeys = {
   all: ["puppyrouterAccount"] as const,
   status: () => [...puppyrouterAccountKeys.all, "status"] as const,
   balance: () => [...puppyrouterAccountKeys.all, "balance"] as const,
+  groups: () => [...puppyrouterAccountKeys.all, "groups"] as const,
   apiKeys: (appId?: AppId) =>
     appId
       ? ([...puppyrouterAccountKeys.all, "apiKeys", appId] as const)
@@ -39,13 +41,55 @@ export function markPuppyRouterApiKeyActive(
   };
 }
 
+export function updatePuppyRouterApiKeyGroup(
+  list: PuppyRouterApiKeyList | undefined,
+  tokenId: number,
+  group: string,
+  crossGroupRetry: boolean,
+): PuppyRouterApiKeyList | undefined {
+  if (!list) return list;
+
+  return {
+    ...list,
+    keys: list.keys.map((key) =>
+      key.id === tokenId ? { ...key, group, crossGroupRetry } : key,
+    ),
+  };
+}
+
+export function updateAllPuppyRouterApiKeyGroupCaches(
+  queryClient: QueryClient,
+  tokenId: number,
+  group: string,
+  crossGroupRetry: boolean,
+) {
+  queryClient.setQueriesData<PuppyRouterApiKeyList>(
+    { queryKey: puppyrouterAccountKeys.apiKeys() },
+    (list) =>
+      updatePuppyRouterApiKeyGroup(list, tokenId, group, crossGroupRetry),
+  );
+}
+
 export function clearPuppyRouterAccountCache(queryClient: QueryClient) {
   queryClient.setQueryData<PuppyRouterAccountStatus>(
     puppyrouterAccountKeys.status(),
     { loggedIn: false },
   );
   queryClient.removeQueries({ queryKey: puppyrouterAccountKeys.balance() });
+  queryClient.removeQueries({ queryKey: puppyrouterAccountKeys.groups() });
   queryClient.removeQueries({ queryKey: puppyrouterAccountKeys.apiKeys() });
+}
+
+export function usePuppyRouterAccountGroups(enabled: boolean) {
+  return useQuery<PuppyRouterAccountGroup[]>({
+    queryKey: puppyrouterAccountKeys.groups(),
+    queryFn: () => puppyrouterAccountApi.listGroups(),
+    enabled,
+    staleTime: PUPPYROUTER_API_KEYS_CACHE_MS,
+    gcTime: PUPPYROUTER_ACCOUNT_GC_MS,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
 }
 
 export function usePuppyRouterAccountStatus() {

@@ -24,6 +24,8 @@ export type {
   PuppyRouterApiKey,
   PuppyRouterApiKeyList,
   PuppyRouterApplyKeyResult,
+  PuppyRouterAccountGroup,
+  PuppyRouterGroupUpdateResult,
   PuppyRouterLoginPollResult,
   PuppyRouterLoginStart,
 } from "./puppyrouterAccount";

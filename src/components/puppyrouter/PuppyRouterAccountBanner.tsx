@@ -4,7 +4,9 @@ import type { TFunction } from "i18next";
 import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   CheckCircle2,
+  ChevronDown,
   Copy,
   CreditCard,
   KeyRound,
@@ -33,7 +35,9 @@ import {
   clearPuppyRouterAccountCache,
   markPuppyRouterApiKeyActive,
   puppyrouterAccountKeys,
+  updateAllPuppyRouterApiKeyGroupCaches,
   usePuppyRouterAccountBalance,
+  usePuppyRouterAccountGroups,
   usePuppyRouterAccountStatus,
   usePuppyRouterApiKeys,
 } from "@/lib/query/puppyrouterAccount";
@@ -48,6 +52,13 @@ import {
 } from "@/utils/providerConfigUtils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -215,6 +226,8 @@ export function PuppyRouterAccountBanner({
   const isLoggedIn = effectiveAccount?.loggedIn ?? false;
   const { data: balance, isFetching: isBalanceFetching } =
     usePuppyRouterAccountBalance(isLoggedIn);
+  const { data: accountGroups, isFetching: isGroupsFetching } =
+    usePuppyRouterAccountGroups(isLoggedIn);
   const { data: keyList, isFetching: isKeysFetching } = usePuppyRouterApiKeys(
     isLoggedIn,
     activeApp,
@@ -230,6 +243,9 @@ export function PuppyRouterAccountBanner({
   const [isPollingLogin, setIsPollingLogin] = useState(false);
   const [loginPollMessage, setLoginPollMessage] = useState("");
   const [applyingKeyId, setApplyingKeyId] = useState<number | null>(null);
+  const [changingGroupKeyId, setChangingGroupKeyId] = useState<number | null>(
+    null,
+  );
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   const [isDiagnoseOpen, setIsDiagnoseOpen] = useState(false);
   const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(
@@ -520,6 +536,51 @@ export function PuppyRouterAccountBanner({
       );
     } finally {
       setApplyingKeyId(null);
+    }
+  };
+
+  const handleChangeKeyGroup = async (
+    key: PuppyRouterApiKey,
+    group: string,
+  ) => {
+    if (
+      changingGroupKeyId !== null ||
+      group === key.group ||
+      group.trim() === ""
+    ) {
+      return;
+    }
+
+    setChangingGroupKeyId(key.id);
+    try {
+      const result = await puppyrouterAccountApi.updateApiKeyGroup(
+        key.id,
+        group,
+      );
+      updateAllPuppyRouterApiKeyGroupCaches(
+        queryClient,
+        result.tokenId,
+        result.group,
+        result.crossGroupRetry,
+      );
+      toast.success(
+        t("puppyrouterAccount.groupChangeSuccess", {
+          name: key.name,
+          group: result.group,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        "[PuppyRouterAccountBanner] Change key group failed",
+        error,
+      );
+      toast.error(
+        t("puppyrouterAccount.groupChangeFailed", {
+          error: extractErrorMessage(error),
+        }),
+      );
+    } finally {
+      setChangingGroupKeyId(null);
     }
   };
 
@@ -1031,22 +1092,14 @@ export function PuppyRouterAccountBanner({
             ) : keyList && keyList.keys.length > 0 ? (
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {keyList.keys.map((apiKey) => (
-                  <button
+                  <div
                     key={apiKey.id}
-                    type="button"
-                    disabled={
-                      isManualOnlyApp ||
-                      !apiKey.usable ||
-                      applyingKeyId !== null
-                    }
-                    onClick={() => void handleApplyKey(apiKey)}
                     className={cn(
-                      "group flex min-h-[132px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
+                      "group flex min-h-[180px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
                       apiKey.active
                         ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(245,158,11,0.16)]"
                         : "border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/8",
-                      (isManualOnlyApp || !apiKey.usable) &&
-                        "cursor-not-allowed opacity-55",
+                      !apiKey.usable && "opacity-55",
                     )}
                   >
                     <div className="flex w-full min-w-0 items-start justify-between gap-2">
@@ -1058,7 +1111,8 @@ export function PuppyRouterAccountBanner({
                           {apiKey.maskedKey}
                         </div>
                       </div>
-                      {applyingKeyId === apiKey.id ? (
+                      {applyingKeyId === apiKey.id ||
+                      changingGroupKeyId === apiKey.id ? (
                         <Loader2 className="h-4 w-4 animate-spin text-primary" />
                       ) : apiKey.active ? (
                         <CheckCircle2 className="h-4 w-4 text-primary" />
@@ -1075,16 +1129,71 @@ export function PuppyRouterAccountBanner({
                       >
                         {keyStatusLabel(t, apiKey.status)}
                       </Badge>
-                      <Badge
-                        variant="outline"
-                        className="border-primary/30 text-[11px]"
-                      >
-                        {apiKey.group
-                          ? t("puppyrouterAccount.group", {
-                              group: apiKey.group,
-                            })
-                          : t("puppyrouterAccount.noGroup")}
-                      </Badge>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            disabled={
+                              isGroupsFetching ||
+                              !accountGroups?.length ||
+                              changingGroupKeyId !== null
+                            }
+                            className="inline-flex h-6 max-w-full items-center gap-1 rounded-md border border-primary/30 bg-primary/8 px-2 text-[11px] text-primary outline-none transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-55"
+                            title={t("puppyrouterAccount.changeCloudGroup")}
+                            aria-label={t(
+                              "puppyrouterAccount.changeCloudGroup",
+                            )}
+                          >
+                            <span className="truncate">
+                              {apiKey.group
+                                ? t("puppyrouterAccount.cloudGroup", {
+                                    group: apiKey.group,
+                                  })
+                                : t("puppyrouterAccount.noGroup")}
+                            </span>
+                            {changingGroupKeyId === apiKey.id ||
+                            isGroupsFetching ? (
+                              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                            ) : (
+                              <ChevronDown className="h-3 w-3 shrink-0" />
+                            )}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="start"
+                          className="w-64 border-primary/25"
+                        >
+                          <DropdownMenuLabel>
+                            {t("puppyrouterAccount.selectCloudGroup")}
+                          </DropdownMenuLabel>
+                          {accountGroups?.map((group) => (
+                            <DropdownMenuItem
+                              key={group.name}
+                              disabled={changingGroupKeyId !== null}
+                              onSelect={() =>
+                                void handleChangeKeyGroup(apiKey, group.name)
+                              }
+                              className="items-start"
+                            >
+                              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                                {apiKey.group === group.name && (
+                                  <Check className="h-3.5 w-3.5 text-primary" />
+                                )}
+                              </span>
+                              <span className="min-w-0">
+                                <span className="block font-medium">
+                                  {group.name}
+                                </span>
+                                {group.description && (
+                                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                                    {group.description}
+                                  </span>
+                                )}
+                              </span>
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       {apiKey.recommended && (
                         <Badge className="bg-primary/15 text-primary hover:bg-primary/20">
                           {t("puppyrouterAccount.defaultKey")}
@@ -1112,7 +1221,36 @@ export function PuppyRouterAccountBanner({
                         </div>
                       </div>
                     </div>
-                  </button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={apiKey.active ? "outline" : "default"}
+                      disabled={
+                        isManualOnlyApp ||
+                        !apiKey.usable ||
+                        applyingKeyId !== null
+                      }
+                      onClick={() => void handleApplyKey(apiKey)}
+                      className="mt-3 w-full"
+                    >
+                      {applyingKeyId === apiKey.id ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : apiKey.active ? (
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                      ) : (
+                        <KeyRound className="mr-2 h-4 w-4" />
+                      )}
+                      {isManualOnlyApp
+                        ? t("puppyrouterAccount.manualApplyUnavailable")
+                        : apiKey.active
+                          ? t("puppyrouterAccount.appliedToApp", {
+                              app: APP_ICON_MAP[activeApp].label,
+                            })
+                          : t("puppyrouterAccount.applyToApp", {
+                              app: APP_ICON_MAP[activeApp].label,
+                            })}
+                    </Button>
+                  </div>
                 ))}
               </div>
             ) : (

@@ -49,7 +49,7 @@ fn get_proxy_port() -> u16 {
 ///
 /// # Arguments
 /// * `proxy_url` - 代理 URL，如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`
-///   传入 None 或空字符串表示直连
+///   传入 None 或空字符串表示不指定 App 代理，并跟随系统代理
 pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let client = build_client(effective_url)?;
@@ -85,7 +85,7 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
 /// 用于在持久化之前验证配置的有效性。
 ///
 /// # Arguments
-/// * `proxy_url` - 代理 URL，None 或空字符串表示直连
+/// * `proxy_url` - 代理 URL，None 或空字符串表示跟随系统代理
 ///
 /// # Returns
 /// 验证成功返回 Ok(())，失败返回错误信息
@@ -102,7 +102,7 @@ pub fn validate_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 /// 应在 validate_proxy 成功后调用。
 ///
 /// # Arguments
-/// * `proxy_url` - 代理 URL，None 或空字符串表示直连
+/// * `proxy_url` - 代理 URL，None 或空字符串表示跟随系统代理
 pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let new_client = build_client(effective_url)?;
@@ -145,7 +145,7 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 /// 请使用 validate_proxy + apply_proxy 组合。
 ///
 /// # Arguments
-/// * `proxy_url` - 新的代理 URL，None 或空字符串表示直连
+/// * `proxy_url` - 新的代理 URL，None 或空字符串表示跟随系统代理
 #[allow(dead_code)]
 pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
@@ -198,7 +198,7 @@ pub fn get() -> Client {
 
 /// 获取当前代理 URL
 ///
-/// 返回当前配置的代理 URL，None 表示直连。
+/// 返回当前显式配置的代理 URL，None 表示跟随系统代理。
 pub fn get_current_proxy_url() -> Option<String> {
     CURRENT_PROXY_URL
         .get()

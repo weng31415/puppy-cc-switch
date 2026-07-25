@@ -82,6 +82,18 @@ export interface PuppyRouterApplyKeyResult {
   group?: string;
 }
 
+export interface PuppyRouterAccountGroup {
+  name: string;
+  description: string;
+  ratio: unknown;
+}
+
+export interface PuppyRouterGroupUpdateResult {
+  tokenId: number;
+  group: string;
+  crossGroupRetry: boolean;
+}
+
 export const puppyrouterAccountApi = {
   async getStatus(): Promise<PuppyRouterAccountStatus> {
     return await invoke("get_puppyrouter_account_status");
@@ -105,6 +117,20 @@ export const puppyrouterAccountApi = {
 
   async listApiKeys(targetApp: string): Promise<PuppyRouterApiKeyList> {
     return await invoke("list_puppyrouter_api_keys", { targetApp });
+  },
+
+  async listGroups(): Promise<PuppyRouterAccountGroup[]> {
+    return await invoke("list_puppyrouter_account_groups");
+  },
+
+  async updateApiKeyGroup(
+    tokenId: number,
+    group: string,
+  ): Promise<PuppyRouterGroupUpdateResult> {
+    return await invoke("update_puppyrouter_api_key_group", {
+      tokenId,
+      group,
+    });
   },
 
   async applyApiKey(

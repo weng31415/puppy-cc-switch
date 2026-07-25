@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use reqwest::header::{COOKIE, SET_COOKIE};
+use reqwest::Method;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -21,6 +22,8 @@ const SELECTED_TOKEN_SETTING: &str = "puppyrouter_account_selected_token";
 const SELECTED_TOKEN_BY_APP_SETTING: &str = "puppyrouter_account_selected_tokens_by_app";
 const DEFAULT_TOKEN_NAME: &str = "default_api_key";
 const CODEX_MODEL_CATALOG_LIMIT: usize = 200;
+const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const ACCOUNT_USER_AGENT: &str = "puppyrouter-app/1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +145,22 @@ pub struct PuppyRouterApplyKeyResult {
     pub group: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PuppyRouterAccountGroup {
+    pub name: String,
+    pub description: String,
+    pub ratio: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PuppyRouterGroupUpdateResult {
+    pub token_id: i64,
+    pub group: String,
+    pub cross_group_retry: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiResponse<T> {
     success: bool,
@@ -221,6 +240,14 @@ struct TokenKeysBatchData {
     keys: HashMap<String, String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountGroupData {
+    #[serde(default)]
+    desc: String,
+    #[serde(default)]
+    ratio: Value,
+}
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -244,12 +271,19 @@ fn normalize_quota_per_unit(value: Option<i64>) -> i64 {
         .unwrap_or(500_000)
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent("puppyrouter-app/1.0")
-        .build()
-        .map_err(|e| format!("创建 PuppyRouter HTTP 客户端失败: {e}"))
+fn http_client() -> reqwest::Client {
+    crate::proxy::http_client::get()
+}
+
+fn account_request(
+    client: &reqwest::Client,
+    method: Method,
+    path: &str,
+) -> reqwest::RequestBuilder {
+    client
+        .request(method, endpoint(path))
+        .timeout(ACCOUNT_REQUEST_TIMEOUT)
+        .header(reqwest::header::USER_AGENT, ACCOUNT_USER_AGENT)
 }
 
 fn endpoint(path: &str) -> String {
@@ -390,8 +424,7 @@ async fn auth_get<T: DeserializeOwned>(
     session: &StoredAccountSession,
     path: &str,
 ) -> Result<T, String> {
-    let response = client
-        .get(endpoint(path))
+    let response = account_request(client, Method::GET, path)
         .header(COOKIE, session.cookie_header.as_str())
         .header("New-Api-User", session.user.id.to_string())
         .send()
@@ -407,8 +440,24 @@ async fn auth_post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
     path: &str,
     body: &B,
 ) -> Result<T, String> {
-    let response = client
-        .post(endpoint(path))
+    let response = account_request(client, Method::POST, path)
+        .header(COOKIE, session.cookie_header.as_str())
+        .header("New-Api-User", session.user.id.to_string())
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
+    let (api, _) = parse_api_response::<T>(response).await?;
+    ensure_api_success(api)
+}
+
+async fn auth_patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+    client: &reqwest::Client,
+    session: &StoredAccountSession,
+    path: &str,
+    body: &B,
+) -> Result<T, String> {
+    let response = account_request(client, Method::PATCH, path)
         .header(COOKIE, session.cookie_header.as_str())
         .header("New-Api-User", session.user.id.to_string())
         .json(body)
@@ -967,7 +1016,7 @@ pub async fn get_puppyrouter_account_balance(
 ) -> Result<PuppyRouterAccountBalance, String> {
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
-    let client = http_client()?;
+    let client = http_client();
     let data: SelfData = auth_get(&client, &session, "/api/user/self").await?;
     let status: StatusData = auth_get(&client, &session, "/api/status").await?;
     let quota = data.quota.unwrap_or_default();
@@ -987,9 +1036,8 @@ pub async fn get_puppyrouter_account_balance(
 
 #[tauri::command]
 pub async fn begin_puppyrouter_account_login() -> Result<PuppyRouterLoginStart, String> {
-    let client = http_client()?;
-    let response = client
-        .post(endpoint("/api/desktop-auth/start"))
+    let client = http_client();
+    let response = account_request(&client, Method::POST, "/api/desktop-auth/start")
         .json(&serde_json::json!({
             "client_name": "puppyrouter app",
         }))
@@ -1018,9 +1066,8 @@ pub async fn poll_puppyrouter_account_login(
         return Err("PuppyRouter 浏览器授权会话缺少 device code。".to_string());
     }
 
-    let client = http_client()?;
-    let response = client
-        .post(endpoint("/api/desktop-auth/poll"))
+    let client = http_client();
+    let response = account_request(&client, Method::POST, "/api/desktop-auth/poll")
         .json(&serde_json::json!({ "device_code": device_code }))
         .send()
         .await
@@ -1077,7 +1124,7 @@ pub async fn list_puppyrouter_api_keys(
     let target_app = parse_target_app(target_app)?;
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
-    let client = http_client()?;
+    let client = http_client();
     let (tokens, total) = fetch_all_tokens(&client, &session).await?;
 
     let selected = selected_token_for_app(state.inner(), &target_app)?;
@@ -1117,6 +1164,62 @@ pub async fn list_puppyrouter_api_keys(
 }
 
 #[tauri::command]
+pub async fn list_puppyrouter_account_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<PuppyRouterAccountGroup>, String> {
+    let session =
+        read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
+    let client = http_client();
+    let groups: HashMap<String, AccountGroupData> =
+        auth_get(&client, &session, "/api/user/self/groups").await?;
+    let mut groups = groups
+        .into_iter()
+        .map(|(name, data)| PuppyRouterAccountGroup {
+            name,
+            description: data.desc,
+            ratio: data.ratio,
+        })
+        .collect::<Vec<_>>();
+    groups.sort_by(|a, b| {
+        let a_auto = a.name == "auto";
+        let b_auto = b.name == "auto";
+        b_auto
+            .cmp(&a_auto)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(groups)
+}
+
+#[tauri::command]
+pub async fn update_puppyrouter_api_key_group(
+    state: State<'_, AppState>,
+    token_id: i64,
+    group: String,
+) -> Result<PuppyRouterGroupUpdateResult, String> {
+    let group = group.trim().to_string();
+    if group.is_empty() {
+        return Err("API key 分组不能为空。".to_string());
+    }
+    let session =
+        read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
+    let client = http_client();
+    let token: TokenItem = auth_patch_json(
+        &client,
+        &session,
+        &format!("/api/token/{token_id}/group"),
+        &json!({ "group": group }),
+    )
+    .await?;
+    let group = normalize_group(token.group)
+        .ok_or_else(|| "PuppyRouter 返回了空的 API key 分组。".to_string())?;
+    Ok(PuppyRouterGroupUpdateResult {
+        token_id: token.id,
+        group,
+        cross_group_retry: token.cross_group_retry.unwrap_or(false),
+    })
+}
+
+#[tauri::command]
 pub async fn apply_puppyrouter_api_key(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1130,7 +1233,7 @@ pub async fn apply_puppyrouter_api_key(
 
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
-    let client = http_client()?;
+    let client = http_client();
     let (tokens, _) = fetch_all_tokens(&client, &session).await?;
     let token = tokens
         .into_iter()
