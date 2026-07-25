@@ -1,6 +1,6 @@
 {
   "name": "puppyrouter-app",
-  "version": "3.18.0",
+  "version": "3.18.1",
   "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
   "type": "module",
   "scripts": {

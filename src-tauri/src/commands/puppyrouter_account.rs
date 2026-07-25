@@ -1246,6 +1246,14 @@ pub async fn apply_puppyrouter_api_key(
 
     let full_key = fetch_token_key(&client, &session, token_id).await?;
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
+    let provider_id = puppyrouter_provider_id_for_app(&target_app)
+        .ok_or_else(|| "当前客户端没有可自动启用的 PuppyRouter 供应商。".to_string())?;
+    ProviderService::switch(state.inner(), target_app.clone(), provider_id).map_err(|error| {
+        format!(
+            "PuppyRouter API key 已保存，但重新启用 {} 供应商失败：{error}",
+            target_app.as_str()
+        )
+    })?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
@@ -1257,6 +1265,15 @@ pub async fn apply_puppyrouter_api_key(
     };
     set_selected_token_for_app(state.inner(), &target_app, selected)?;
     emit_universal_provider_synced(&app);
+    if let Err(error) = app.emit(
+        "provider-switched",
+        json!({
+            "appType": target_app.as_str(),
+            "providerId": provider_id,
+        }),
+    ) {
+        log::warn!("Failed to emit provider-switched after applying PuppyRouter API key: {error}");
+    }
 
     Ok(PuppyRouterApplyKeyResult {
         synced: true,
@@ -1295,6 +1312,29 @@ mod tests {
             "sk-abcd********wxyz"
         );
         assert_eq!(display_puppyrouter_api_key("   "), "");
+    }
+
+    #[test]
+    fn every_auto_apply_app_has_a_locked_puppyrouter_provider() {
+        for app_type in [
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Codex,
+            AppType::Gemini,
+            AppType::OpenCode,
+        ] {
+            assert!(is_auto_apply_app(&app_type));
+            assert!(
+                puppyrouter_provider_id_for_app(&app_type).is_some(),
+                "{} must resolve to a provider before the apply command switches it live",
+                app_type.as_str()
+            );
+        }
+
+        for app_type in [AppType::OpenClaw, AppType::Hermes] {
+            assert!(!is_auto_apply_app(&app_type));
+            assert!(puppyrouter_provider_id_for_app(&app_type).is_none());
+        }
     }
 
     #[test]

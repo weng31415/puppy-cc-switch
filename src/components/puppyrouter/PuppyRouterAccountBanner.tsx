@@ -527,6 +527,23 @@ export function PuppyRouterAccountBanner({
         queryKey: ["providers", activeApp],
         type: "all",
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["puppyrouterLiveConfigStatus", activeApp],
+      });
+      if (activeApp === "claude-desktop") {
+        await queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+        await queryClient.invalidateQueries({
+          queryKey: ["claudeDesktopStatus"],
+        });
+      }
+      if (activeApp === "opencode") {
+        await queryClient.invalidateQueries({
+          queryKey: ["opencodeLiveProviderIds"],
+        });
+        await queryClient.invalidateQueries({
+          queryKey: ["opencodeCurrentModel"],
+        });
+      }
     } catch (error) {
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
       toast.error(
