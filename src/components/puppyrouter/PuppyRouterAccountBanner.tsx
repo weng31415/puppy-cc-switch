@@ -1186,7 +1186,10 @@ export function PuppyRouterAccountBanner({
                           {accountGroups?.map((group) => (
                             <DropdownMenuItem
                               key={group.name}
-                              disabled={changingGroupKeyId !== null}
+                              disabled={
+                                changingGroupKeyId !== null ||
+                                apiKey.group === group.name
+                              }
                               onSelect={() =>
                                 void handleChangeKeyGroup(apiKey, group.name)
                               }
