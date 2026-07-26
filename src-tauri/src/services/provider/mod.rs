@@ -2009,10 +2009,10 @@ impl ProviderService {
         if Self::is_locked_provider_for_app(app_type, provider) {
             return;
         }
-        if is_restricted_provider_app(app_type) || matches!(app_type, AppType::OpenCode) {
-            if provider.sort_index.is_some_and(|sort_index| sort_index < 2) {
-                provider.sort_index = Some(2);
-            }
+        if (is_restricted_provider_app(app_type) || matches!(app_type, AppType::OpenCode))
+            && provider.sort_index.is_some_and(|sort_index| sort_index < 2)
+        {
+            provider.sort_index = Some(2);
         }
     }
 
