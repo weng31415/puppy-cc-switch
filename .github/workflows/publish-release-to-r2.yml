@@ -1,0 +1,125 @@
+name: Publish Release Assets to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub Release tag containing the verified desktop artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+          ls -lh release-assets
+
+      - name: Validate installers and generate latest.json
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          DOWNLOAD_BASE_URL: https://pub-46dbf53707f84a02979c772ef87254ab.r2.dev/downloads
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const dir = "release-assets";
+          const tag = process.env.RELEASE_TAG;
+          const version = tag.replace(/^v/, "").split("-")[0];
+          const baseUrl = process.env.DOWNLOAD_BASE_URL.replace(/\/+$/, "");
+          const files = fs.readdirSync(dir).sort();
+
+          const requireOne = (suffix) => {
+            const matches = files.filter((file) => file.endsWith(suffix));
+            if (matches.length !== 1) {
+              throw new Error(
+                `Expected exactly one ${suffix} asset, found ${matches.length}`,
+              );
+            }
+            return matches[0];
+          };
+
+          requireOne("-Windows.msi");
+          requireOne("-Windows-arm64.msi");
+          requireOne("-macOS-arm64.dmg");
+          requireOne("-Ubuntu-x86_64.deb");
+
+          const platforms = {};
+          const addPlatform = (key, filename) => {
+            const signaturePath = path.join(dir, `${filename}.sig`);
+            if (!fs.existsSync(signaturePath)) {
+              throw new Error(`Missing updater signature for ${filename}`);
+            }
+            platforms[key] = {
+              signature: fs.readFileSync(signaturePath, "utf8").trim(),
+              url: `${baseUrl}/${filename}`,
+            };
+          };
+
+          addPlatform("windows-x86_64", requireOne("-Windows.msi"));
+          addPlatform("windows-aarch64", requireOne("-Windows-arm64.msi"));
+          addPlatform("darwin-aarch64", requireOne("-macOS.tar.gz"));
+
+          const latest = {
+            version,
+            notes: `PuppyRouter App ${tag}`,
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+
+          fs.writeFileSync(
+            path.join(dir, "latest.json"),
+            `${JSON.stringify(latest, null, 2)}\n`,
+          );
+          console.log(fs.readFileSync(path.join(dir, "latest.json"), "utf8"));
+          NODE
+
+      - name: Upload release assets to Cloudflare R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || \
+             [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || \
+             [ -z "${R2_ACCOUNT_ID:-}" ] || \
+             [ -z "${R2_BUCKET:-}" ]; then
+            echo "Cloudflare R2 secrets are missing." >&2
+            exit 1
+          fi
+
+          python3 -m pip install --user awscli
+          export PATH="$HOME/.local/bin:$PATH"
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          aws s3 cp release-assets/ "s3://${R2_BUCKET}/downloads/" \
+            --recursive \
+            --exclude "latest.json" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=31536000, immutable"
+
+          aws s3 cp release-assets/latest.json \
+            "s3://${R2_BUCKET}/downloads/latest.json" \
+            --endpoint-url "$endpoint" \
+            --cache-control "no-cache, max-age=60" \
+            --content-type "application/json"
