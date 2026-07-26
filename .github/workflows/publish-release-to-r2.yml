@@ -41,7 +41,11 @@ jobs:
 
           const dir = "release-assets";
           const tag = process.env.RELEASE_TAG;
-          const version = tag.replace(/^v/, "").split("-")[0];
+          const versionMatch = tag.match(/v?(\d+\.\d+\.\d+)/);
+          if (!versionMatch) {
+            throw new Error(`Could not extract a semantic version from tag ${tag}`);
+          }
+          const version = versionMatch[1];
           const baseUrl = process.env.DOWNLOAD_BASE_URL.replace(/\/+$/, "");
           const files = fs.readdirSync(dir).sort();
 
