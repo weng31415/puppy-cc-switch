@@ -96,7 +96,7 @@ fn deeplink_import_codex_provider_builds_auth_and_config() {
 }
 
 #[test]
-fn deeplink_import_rejects_third_party_locked_app_provider() {
+fn deeplink_import_allows_third_party_provider_without_replacing_locked_defaults() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -105,13 +105,37 @@ fn deeplink_import_rejects_third_party_locked_app_provider() {
     let request = parse_deeplink_url(url).expect("parse deeplink url");
 
     let db = Arc::new(Database::memory().expect("create memory db"));
-    let state = AppState::new(db);
+    let state = AppState::new(db.clone());
 
-    let err = import_provider_from_deeplink(&state, request)
-        .expect_err("third-party locked app deeplink should be rejected");
-    let message = err.to_string();
+    let provider_id =
+        import_provider_from_deeplink(&state, request).expect("import third-party provider");
     assert!(
-        message.contains("Official and PuppyRouter") || message.contains("Official 和 PuppyRouter"),
-        "unexpected error: {message}"
+        provider_id.starts_with("thirdparty-"),
+        "unexpected custom provider id: {provider_id}"
     );
+
+    let providers = db.get_all_providers("codex").expect("get providers");
+    let provider = providers
+        .get(&provider_id)
+        .expect("third-party provider should be persisted");
+    assert_eq!(provider.name, "Third Party");
+    assert_ne!(provider.category.as_deref(), Some("official"));
+    assert_eq!(
+        provider
+            .settings_config
+            .pointer("/auth/OPENAI_API_KEY")
+            .and_then(|value| value.as_str()),
+        Some("sk-third-party-key")
+    );
+    assert!(
+        provider
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains("https://api.openai.example/v1"),
+        "third-party endpoint should remain in the imported provider"
+    );
+    assert_ne!(provider_id, "universal-codex-puppyrouter");
+    assert_ne!(provider_id, "codex-official");
 }

@@ -1323,11 +1323,12 @@ pub fn strip_codex_unified_session_bucket_from_settings(
 
 /// Route a Codex live write between full auth+config or config-only.
 ///
-/// Official providers only own OAuth login material in `auth.json`. Third-party
-/// providers move their API key into `config.toml` when the compatibility
-/// setting is enabled, while live `auth.json` is rewritten to either preserved
-/// OAuth login state or `{}`. A raw `OPENAI_API_KEY` is never treated as
-/// official login state.
+/// Official providers only own OAuth login material in `auth.json`. When an
+/// official provider does not store its own OAuth snapshot, the current live
+/// OAuth cache is preserved. Third-party providers move their API key into
+/// `config.toml` when the compatibility setting is enabled, while live
+/// `auth.json` is rewritten to either preserved OAuth login state or `{}`. A
+/// raw `OPENAI_API_KEY` is never treated as official login state.
 ///
 /// 统一会话开关开启时，官方配置在落盘前注入共享的 `custom` 路由
 /// （见 `inject_codex_unified_session_bucket`）。
@@ -1347,8 +1348,10 @@ pub fn write_codex_live_for_provider(
     let config_text = unified_official_config.as_deref().or(config_text);
 
     if category == Some("official") {
-        let official_auth = codex_oauth_auth_for_preservation(auth).unwrap_or_else(|| json!({}));
-        return write_codex_live_atomic(&official_auth, config_text);
+        if let Some(official_auth) = codex_oauth_auth_for_preservation(auth) {
+            return write_codex_live_atomic(&official_auth, config_text);
+        }
+        return write_codex_live_config_with_preserved_oauth_auth(config_text);
     }
 
     if !crate::settings::preserve_codex_official_auth_on_switch() {

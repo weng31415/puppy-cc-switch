@@ -71,7 +71,7 @@ fn sync_claude_provider_writes_live_settings() {
 }
 
 #[test]
-fn sync_codex_provider_writes_config_without_touching_auth() {
+fn sync_codex_provider_writes_config_and_clears_non_oauth_auth() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     enable_codex_official_auth_preservation();
@@ -79,7 +79,7 @@ fn sync_codex_provider_writes_config_without_touching_auth() {
     let mut config = MultiAppConfig::default();
 
     // 注意：v3.7.0 后 MCP 同步由 McpService 独立处理，不再通过 provider 切换触发
-    // Codex provider 切换只写 config.toml；auth.json 保留用户登录态。
+    // Codex provider key 只写 config.toml；auth.json 只允许保留官方 OAuth 登录态。
 
     let provider_config = json!({
         "auth": {
@@ -107,8 +107,8 @@ fn sync_codex_provider_writes_config_without_touching_auth() {
     let config_path = cc_switch_lib::get_codex_config_path();
 
     assert!(
-        !auth_path.exists(),
-        "auth.json should not be created by provider switching at {}",
+        auth_path.exists(),
+        "auth.json should be normalized by provider switching at {}",
         auth_path.display()
     );
     assert!(
@@ -118,6 +118,12 @@ fn sync_codex_provider_writes_config_without_touching_auth() {
     );
 
     let toml_text = fs::read_to_string(&config_path).expect("read config.toml");
+    let live_auth: serde_json::Value = read_json_file(&auth_path).expect("read auth.json");
+    assert_eq!(
+        live_auth,
+        json!({}),
+        "without OAuth login material, auth.json must be cleared instead of storing the provider key"
+    );
     assert!(
         toml_text.contains("base_url"),
         "config.toml should contain base_url from provider config"

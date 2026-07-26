@@ -1629,6 +1629,7 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use std::env;
     use std::fs;
     use std::path::Path;
@@ -1788,6 +1789,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn write_live_with_common_config_approves_current_claude_api_key() {
         with_isolated_home(|home| {
             let claude_json_path = home.join(".claude.json");
@@ -1837,6 +1839,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn approve_claude_custom_api_key_skips_claude_desktop() {
         with_isolated_home(|home| {
             let claude_json_path = home.join(".claude.json");

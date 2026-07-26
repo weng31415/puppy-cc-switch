@@ -182,9 +182,9 @@ command = "say"
     let auth_value: serde_json::Value =
         read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
-        auth_value.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
-        Some("legacy-key"),
-        "Codex provider switching should preserve the existing live auth.json"
+        auth_value,
+        json!({}),
+        "API-key-only auth.json is not official login state and must be cleared"
     );
 
     let config_text =
@@ -453,10 +453,8 @@ requires_openai_auth = true
         Some("chatgpt")
     );
     assert!(
-        auth_value
-            .get("OPENAI_API_KEY")
-            .is_some_and(|v| v.is_null()),
-        "provider switching should keep OPENAI_API_KEY null in live auth.json"
+        auth_value.get("OPENAI_API_KEY").is_none(),
+        "provider switching must remove API credentials from preserved OAuth auth.json"
     );
     assert_eq!(
         auth_value
@@ -705,11 +703,12 @@ wire_api = "responses"
 }
 
 #[test]
-fn provider_service_switch_codex_default_preserves_official_auth() {
+fn provider_service_switch_codex_preserves_official_auth_when_enabled() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
-    // PuppyRouter defaults official auth preservation on, so switching API
-    // providers keeps ChatGPT OAuth for official plugins/remote operation.
+    enable_codex_official_auth_preservation();
+    // This opt-in mode keeps ChatGPT OAuth for official plugins/remote operation
+    // while the selected third-party provider key remains in config.toml.
     let _home = ensure_test_home();
 
     let live_auth = json!({
@@ -868,10 +867,8 @@ requires_openai_auth = true
         Some("chatgpt")
     );
     assert!(
-        auth_value
-            .get("OPENAI_API_KEY")
-            .is_some_and(|v| v.is_null()),
-        "official provider switching should keep OPENAI_API_KEY null"
+        auth_value.get("OPENAI_API_KEY").is_none(),
+        "official provider switching must remove API credentials from preserved OAuth auth.json"
     );
     assert_eq!(
         auth_value
