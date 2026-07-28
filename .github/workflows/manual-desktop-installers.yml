@@ -2,12 +2,23 @@ name: Manual Desktop Installers
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Installer target to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - ubuntu
 
 permissions:
   contents: read
 
 jobs:
   windows:
+    if: ${{ inputs.target == 'all' || inputs.target == 'windows' }}
     name: Build Windows MSI (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -117,6 +128,7 @@ jobs:
           if-no-files-found: error
 
   ubuntu:
+    if: ${{ inputs.target == 'all' || inputs.target == 'ubuntu' }}
     name: Build Ubuntu x86_64 deb
     runs-on: ubuntu-22.04
 
@@ -197,7 +209,7 @@ jobs:
           fi
 
       - name: Build Ubuntu deb
-        run: pnpm dlx @tauri-apps/cli@2.10.1 build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: pnpm dlx @tauri-apps/cli@2.10.1 build --ignore-version-mismatches --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: Verify and collect Ubuntu updater
         shell: bash

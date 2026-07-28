@@ -274,7 +274,7 @@ jobs:
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
-        run: pnpm dlx @tauri-apps/cli@2.10.1 build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: pnpm dlx @tauri-apps/cli@2.10.1 build --ignore-version-mismatches --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
