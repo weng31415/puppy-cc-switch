@@ -274,7 +274,7 @@ jobs:
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
-        run: pnpm tauri build --bundles appimage,deb,rpm --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: pnpm dlx @tauri-apps/cli@2.10.1 build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -524,36 +524,23 @@ jobs:
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME}"  # e.g., v3.5.0
           ARCH="${{ matrix.arch || 'x86_64' }}"
-          # AppImage
-          APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
-          if [ -n "$APPIMAGE" ]; then
-            NEW_APPIMAGE="PuppyRouter-App-${VERSION}-Linux-${ARCH}.AppImage"
-            cp "$APPIMAGE" "release-assets/$NEW_APPIMAGE"
-            if [ ! -f "$APPIMAGE.sig" ]; then
-              echo "❌ No signature found for Linux updater artifact: $APPIMAGE.sig" >&2
-              exit 1
-            fi
-            cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig"
-            echo "AppImage copied: $NEW_APPIMAGE"
-          else
-            echo "No AppImage found under target/release/bundle" >&2
+
+          DEB=$(find src-tauri/target/release/bundle -name "*.deb" -type f | head -1 || true)
+          if [ -z "$DEB" ]; then
+            echo "No Linux .deb found under target/release/bundle" >&2
+            exit 1
           fi
-          # 额外上传 .deb（用于手动安装）
-          DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
-          if [ -n "$DEB" ]; then
-            cp "$DEB" "release-assets/PuppyRouter-App-${VERSION}-Linux-${ARCH}.deb"
-            echo "Deb package copied: PuppyRouter-App-${VERSION}-Linux-${ARCH}.deb"
-          else
-            echo "No .deb found (optional)"
+          if [ ! -f "$DEB.sig" ]; then
+            echo "No updater signature found for $DEB" >&2
+            exit 1
           fi
-          # 额外上传 .rpm（用于 Fedora/RHEL/openSUSE 等）
-          RPM=$(find src-tauri/target/release/bundle -name "*.rpm" | head -1 || true)
-          if [ -n "$RPM" ]; then
-            cp "$RPM" "release-assets/PuppyRouter-App-${VERSION}-Linux-${ARCH}.rpm"
-            echo "RPM package copied: PuppyRouter-App-${VERSION}-Linux-${ARCH}.rpm"
-          else
-            echo "No .rpm found (optional)"
-          fi
+
+          scripts/verify-linux-deb-updater.sh "$DEB"
+
+          NEW_DEB="PuppyRouter-App-${VERSION}-Linux-${ARCH}.deb"
+          cp "$DEB" "release-assets/$NEW_DEB"
+          cp "$DEB.sig" "release-assets/$NEW_DEB.sig"
+          echo "DEB updater copied: $NEW_DEB"
 
       - name: List prepared assets
         shell: bash
@@ -642,10 +629,10 @@ jobs:
               addPlatform("windows-aarch64", filename);
             } else if (filename.endsWith("-Windows.msi")) {
               addPlatform("windows-x86_64", filename);
-            } else if (filename.endsWith("-Linux-arm64.AppImage")) {
-              addPlatform("linux-aarch64", filename);
-            } else if (filename.endsWith("-Linux-x86_64.AppImage")) {
-              addPlatform("linux-x86_64", filename);
+            } else if (filename.endsWith("-Linux-arm64.deb")) {
+              addPlatform("linux-aarch64-deb", filename);
+            } else if (filename.endsWith("-Linux-x86_64.deb")) {
+              addPlatform("linux-x86_64-deb", filename);
             }
           }
 
@@ -718,8 +705,8 @@ jobs:
             - **macOS**: `PuppyRouter-App-${{ github.ref_name }}-macOS.dmg`（推荐）或 `PuppyRouter-App-${{ github.ref_name }}-macOS.zip`（解压即用）
             - **Windows (x86_64)**: `PuppyRouter-App-${{ github.ref_name }}-Windows.msi`（安装版）或 `PuppyRouter-App-${{ github.ref_name }}-Windows-Portable.zip`（绿色版）
             - **Windows (ARM64)**: `PuppyRouter-App-${{ github.ref_name }}-Windows-arm64.msi`（安装版）或 `PuppyRouter-App-${{ github.ref_name }}-Windows-arm64-Portable.zip`（绿色版）
-            - **Linux (x86_64)**: `PuppyRouter-App-${{ github.ref_name }}-Linux-x86_64.AppImage` / `.deb` / `.rpm`
-            - **Linux (ARM64)**: `PuppyRouter-App-${{ github.ref_name }}-Linux-arm64.AppImage` / `.deb` / `.rpm`
+            - **Linux (x86_64)**: `PuppyRouter-App-${{ github.ref_name }}-Linux-x86_64.deb`
+            - **Linux (ARM64)**: `PuppyRouter-App-${{ github.ref_name }}-Linux-arm64.deb`
 
             ---
             macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。

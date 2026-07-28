@@ -15,6 +15,9 @@ jobs:
   publish:
     runs-on: ubuntu-22.04
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download GitHub Release assets
         shell: bash
         env:
@@ -62,7 +65,7 @@ jobs:
           requireOne("-Windows.msi");
           requireOne("-Windows-arm64.msi");
           requireOne("-macOS-arm64.dmg");
-          requireOne("-Ubuntu-x86_64.deb");
+          const linuxDeb = requireOne("-Ubuntu-x86_64.deb");
 
           const platforms = {};
           const addPlatform = (key, filename) => {
@@ -79,6 +82,7 @@ jobs:
           addPlatform("windows-x86_64", requireOne("-Windows.msi"));
           addPlatform("windows-aarch64", requireOne("-Windows-arm64.msi"));
           addPlatform("darwin-aarch64", requireOne("-macOS.tar.gz"));
+          addPlatform("linux-x86_64-deb", linuxDeb);
 
           const latest = {
             version,
@@ -93,6 +97,9 @@ jobs:
           );
           console.log(fs.readFileSync(path.join(dir, "latest.json"), "utf8"));
           NODE
+
+          linux_deb="$(find release-assets -maxdepth 1 -type f -name '*-Ubuntu-x86_64.deb' -print -quit)"
+          scripts/verify-linux-deb-updater.sh "$linux_deb"
 
       - name: Upload release assets to Cloudflare R2
         shell: bash

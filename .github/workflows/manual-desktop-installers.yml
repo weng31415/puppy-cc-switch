@@ -163,26 +163,70 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Ubuntu deb
-        run: pnpm tauri build --bundles deb
+      - name: Prepare Tauri updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_RAW:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY secret is missing" >&2
+            exit 1
+          fi
 
-      - name: Collect Ubuntu deb
+          key_path="$RUNNER_TEMP/tauri_signing.key"
+          raw="$TAURI_SIGNING_PRIVATE_KEY_RAW"
+          if echo "$raw" | head -n1 | grep -q '^untrusted comment:'; then
+            printf '%s\n' "$raw" > "$key_path"
+          elif decoded=$(printf '%s' "$raw" | (base64 --decode 2>/dev/null || base64 -D 2>/dev/null)) \
+            && echo "$decoded" | head -n1 | grep -q '^untrusted comment:'; then
+            printf '%s\n' "$decoded" > "$key_path"
+          elif echo "$raw" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+            encoded="$(printf '%s' "$raw" | tr -d '\r\n')"
+            printf '%s\n%s\n' "untrusted comment: tauri signing key" "$encoded" > "$key_path"
+          else
+            echo "TAURI_SIGNING_PRIVATE_KEY format is not recognized" >&2
+            exit 1
+          fi
+
+          key_b64="$(base64 < "$key_path" | tr -d '\r\n')"
+          echo "TAURI_SIGNING_PRIVATE_KEY=$key_b64" >> "$GITHUB_ENV"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Ubuntu deb
+        run: pnpm dlx @tauri-apps/cli@2.10.1 build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
+
+      - name: Verify and collect Ubuntu updater
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p release-assets
           version="v$(node -p "require('./package.json').version")-${GITHUB_SHA::7}"
-          deb="$(find src-tauri/target/release/bundle -name '*.deb' | head -1)"
+          deb="$(find src-tauri/target/release/bundle -name '*.deb' -type f | head -1)"
           if [ -z "$deb" ]; then
             echo "No Ubuntu .deb found under src-tauri/target/release/bundle" >&2
             exit 1
           fi
-          cp "$deb" "release-assets/PuppyRouter-App-${version}-Ubuntu-x86_64.deb"
+          if [ ! -f "$deb.sig" ]; then
+            echo "No updater signature found for $deb" >&2
+            exit 1
+          fi
+
+          scripts/verify-linux-deb-updater.sh "$deb"
+
+          destination="release-assets/PuppyRouter-App-${version}-Ubuntu-x86_64.deb"
+          cp "$deb" "$destination"
+          cp "$deb.sig" "$destination.sig"
           ls -lh release-assets
 
-      - name: Upload Ubuntu artifact
+      - name: Upload Ubuntu updater artifact
         uses: actions/upload-artifact@v7
         with:
           name: ubuntu-deb-x64
-          path: release-assets/*.deb
+          path: |
+            release-assets/*.deb
+            release-assets/*.deb.sig
           if-no-files-found: error
