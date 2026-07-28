@@ -22,6 +22,16 @@ fn default_true() -> bool {
     true
 }
 
+/// PuppyRouter 账户金额的显示货币。底层配额仍以美元为基准。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayCurrency {
+    #[default]
+    Auto,
+    Cny,
+    Usd,
+}
+
 /// 主页面显示的应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -398,6 +408,9 @@ pub struct AppSettings {
     pub common_config_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// PuppyRouter 账户金额显示货币：auto 跟随界面语言，或手动指定 cny/usd。
+    #[serde(default)]
+    pub display_currency: DisplayCurrency,
 
     // ===== 主页面显示的应用 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -511,6 +524,7 @@ impl Default for AppSettings {
             first_run_notice_confirmed: None,
             common_config_confirmed: None,
             language: None,
+            display_currency: DisplayCurrency::Auto,
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,

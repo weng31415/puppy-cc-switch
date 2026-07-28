@@ -41,9 +41,14 @@ import {
   usePuppyRouterAccountStatus,
   usePuppyRouterApiKeys,
 } from "@/lib/query/puppyrouterAccount";
+import { useSettingsQuery } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import {
+  formatDisplayAmountFromUsd,
+  formatQuotaForDisplay,
+} from "@/utils/displayCurrency";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import { PUPPYROUTER_PROVIDER_IDS } from "@/utils/lockedProviders";
 import {
@@ -110,17 +115,6 @@ function keyStatusLabel(t: TFunction, status: number) {
     default:
       return t("puppyrouterAccount.keyStatus.unknown");
   }
-}
-
-function formatUsdAmount(value: number) {
-  const formatted = Math.abs(value) >= 1 ? value.toFixed(2) : value.toFixed(4);
-  const trimmed = formatted.replace(/\.?0+$/, "");
-  return `$${trimmed === "-0" ? "0" : trimmed}`;
-}
-
-function formatQuotaUsd(quota: number, quotaPerUnit: number) {
-  const safeQuotaPerUnit = quotaPerUnit > 0 ? quotaPerUnit : 500000;
-  return formatUsdAmount(quota / safeQuotaPerUnit);
 }
 
 function chooseAutoApplyKey(keys: PuppyRouterApiKey[]) {
@@ -214,8 +208,9 @@ function readApiKeyFromSettings(
 export function PuppyRouterAccountBanner({
   activeApp,
 }: PuppyRouterAccountBannerProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const { data: settings } = useSettingsQuery();
   const {
     data: account,
     isLoading: isLoadingAccount,
@@ -262,6 +257,9 @@ export function PuppyRouterAccountBanner({
     balance?.quotaPerUnit && balance.quotaPerUnit > 0
       ? balance.quotaPerUnit
       : 500000;
+  const displayCurrency = settings?.displayCurrency ?? "auto";
+  const displayLanguage = i18n.resolvedLanguage || i18n.language || "en";
+  const usdExchangeRate = balance?.usdExchangeRate;
 
   const supportedApps = useMemo(
     () =>
@@ -993,7 +991,14 @@ export function PuppyRouterAccountBanner({
                 <span className="font-mono font-semibold text-foreground">
                   {isLoadingBalance && !balance
                     ? t("puppyrouterAccount.balanceLoading")
-                    : balance?.formattedBalance || "--"}
+                    : balance
+                      ? formatDisplayAmountFromUsd(
+                          balance.balanceUsd,
+                          displayCurrency,
+                          displayLanguage,
+                          usdExchangeRate,
+                        )
+                      : "--"}
                 </span>
                 <Button
                   type="button"
@@ -1178,7 +1183,8 @@ export function PuppyRouterAccountBanner({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent
                           align="start"
-                          className="w-64 border-primary/25"
+                          collisionPadding={12}
+                          className="z-[120] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] overflow-x-hidden overflow-y-auto overscroll-contain border-primary/25"
                         >
                           <DropdownMenuLabel>
                             {t("puppyrouterAccount.selectCloudGroup")}
@@ -1200,12 +1206,12 @@ export function PuppyRouterAccountBanner({
                                   <Check className="h-3.5 w-3.5 text-primary" />
                                 )}
                               </span>
-                              <span className="min-w-0">
-                                <span className="block font-medium">
+                              <span className="min-w-0 flex-1">
+                                <span className="block break-words font-medium">
                                   {group.name}
                                 </span>
                                 {group.description && (
-                                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                                  <span className="mt-0.5 block break-words text-xs text-muted-foreground">
                                     {group.description}
                                   </span>
                                 )}
@@ -1231,13 +1237,25 @@ export function PuppyRouterAccountBanner({
                         <div className="mt-0.5 truncate font-mono font-semibold text-foreground">
                           {apiKey.unlimitedQuota
                             ? t("puppyrouterAccount.keyUnlimitedQuota")
-                            : formatQuotaUsd(apiKey.remainQuota, quotaPerUnit)}
+                            : formatQuotaForDisplay(
+                                apiKey.remainQuota,
+                                quotaPerUnit,
+                                displayCurrency,
+                                displayLanguage,
+                                usdExchangeRate,
+                              )}
                         </div>
                       </div>
                       <div className="min-w-0 text-right">
                         <div>{t("puppyrouterAccount.keyUsedQuota")}</div>
                         <div className="mt-0.5 truncate font-mono font-semibold text-foreground">
-                          {formatQuotaUsd(apiKey.usedQuota, quotaPerUnit)}
+                          {formatQuotaForDisplay(
+                            apiKey.usedQuota,
+                            quotaPerUnit,
+                            displayCurrency,
+                            displayLanguage,
+                            usdExchangeRate,
+                          )}
                         </div>
                       </div>
                     </div>

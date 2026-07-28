@@ -20,6 +20,7 @@ export interface PuppyRouterAccountBalance {
   usedQuota: number;
   quotaPerUnit: number;
   balanceUsd: number;
+  usdExchangeRate: number;
   formattedBalance: string;
   updatedAt: number;
 }

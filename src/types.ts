@@ -371,6 +371,8 @@ export interface Settings {
   commonConfigConfirmed?: boolean;
   // 首选语言（可选，默认中文）
   language?: "en" | "zh" | "zh-TW" | "ja";
+  // PuppyRouter 账户金额显示货币；auto 跟随界面语言
+  displayCurrency?: "auto" | "cny" | "usd";
 
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;

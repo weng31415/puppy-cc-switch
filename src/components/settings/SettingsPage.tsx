@@ -35,6 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { settingsApi } from "@/lib/api";
 import { LanguageSettings } from "@/components/settings/LanguageSettings";
+import { CurrencySettings } from "@/components/settings/CurrencySettings";
 import { WindowSettings } from "@/components/settings/WindowSettings";
 import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
 import { SkillStorageLocationSettings } from "@/components/settings/SkillStorageLocationSettings";
@@ -254,6 +255,12 @@ export function SettingsPage({
                     <LanguageSettings
                       value={settings.language}
                       onChange={(lang) => handleAutoSave({ language: lang })}
+                    />
+                    <CurrencySettings
+                      value={settings.displayCurrency ?? "auto"}
+                      onChange={(displayCurrency) =>
+                        handleAutoSave({ displayCurrency })
+                      }
                     />
                     <AppVisibilitySettings
                       settings={settings}

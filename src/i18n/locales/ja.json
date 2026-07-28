@@ -533,6 +533,13 @@
     },
     "language": "言語",
     "languageHint": "切り替えるとすぐにプレビューされ、保存後に永続化されます。",
+    "displayCurrency": "表示通貨",
+    "displayCurrencyHint": "PuppyRouter の残高と API Key 上限の表示通貨を設定します。自動では、中国語の画面は CNY、その他の言語は USD を使用します。",
+    "displayCurrencyOption": {
+      "auto": "言語に合わせる",
+      "cny": "CNY (¥)",
+      "usd": "USD ($)"
+    },
     "theme": "テーマ",
     "themeHint": "アプリのテーマを選択します。すぐに反映されます。",
     "themeLight": "ライト",

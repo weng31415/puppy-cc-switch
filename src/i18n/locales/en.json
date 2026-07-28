@@ -533,6 +533,13 @@
     },
     "language": "Language",
     "languageHint": "Preview interface language immediately after switching, takes effect permanently after saving.",
+    "displayCurrency": "Billing currency",
+    "displayCurrencyHint": "Controls how PuppyRouter balances and API key quotas are displayed. Auto uses CNY for Chinese and USD for other interface languages.",
+    "displayCurrencyOption": {
+      "auto": "Follow language",
+      "cny": "CNY (¥)",
+      "usd": "USD ($)"
+    },
     "theme": "Theme",
     "themeHint": "Choose the appearance theme for the app, takes effect immediately.",
     "themeLight": "Light",

@@ -76,6 +76,7 @@ pub struct PuppyRouterAccountBalance {
     pub used_quota: i64,
     pub quota_per_unit: i64,
     pub balance_usd: f64,
+    pub usd_exchange_rate: f64,
     pub formatted_balance: String,
     pub updated_at: i64,
 }
@@ -187,6 +188,7 @@ struct SelfData {
 #[derive(Debug, Deserialize)]
 struct StatusData {
     quota_per_unit: Option<i64>,
+    usd_exchange_rate: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,6 +271,12 @@ fn normalize_quota_per_unit(value: Option<i64>) -> i64 {
     value
         .filter(|quota_per_unit| *quota_per_unit > 0)
         .unwrap_or(500_000)
+}
+
+fn normalize_usd_exchange_rate(value: Option<f64>) -> f64 {
+    value
+        .filter(|exchange_rate| exchange_rate.is_finite() && *exchange_rate > 0.0)
+        .unwrap_or(7.3)
 }
 
 fn http_client() -> reqwest::Client {
@@ -1022,6 +1030,7 @@ pub async fn get_puppyrouter_account_balance(
     let quota = data.quota.unwrap_or_default();
     let used_quota = data.used_quota.unwrap_or_default();
     let quota_per_unit = normalize_quota_per_unit(status.quota_per_unit);
+    let usd_exchange_rate = normalize_usd_exchange_rate(status.usd_exchange_rate);
     let balance_usd = quota as f64 / quota_per_unit as f64;
 
     Ok(PuppyRouterAccountBalance {
@@ -1029,6 +1038,7 @@ pub async fn get_puppyrouter_account_balance(
         used_quota,
         quota_per_unit,
         balance_usd,
+        usd_exchange_rate,
         formatted_balance: format_usd_balance(balance_usd),
         updated_at: now_timestamp(),
     })

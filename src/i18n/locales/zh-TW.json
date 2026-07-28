@@ -533,6 +533,13 @@
     },
     "language": "介面語言",
     "languageHint": "切換後立即預覽介面語言，儲存後永久生效。",
+    "displayCurrency": "計費貨幣",
+    "displayCurrencyHint": "控制 PuppyRouter 帳戶餘額和 API Key 額度的顯示方式。自動模式下，中文介面顯示人民幣，其他語言顯示美元。",
+    "displayCurrencyOption": {
+      "auto": "跟隨語言",
+      "cny": "人民幣 (¥)",
+      "usd": "美元 ($)"
+    },
     "theme": "外觀主題",
     "themeHint": "選擇應用程式的外觀主題，立即生效。",
     "themeLight": "淺色",
