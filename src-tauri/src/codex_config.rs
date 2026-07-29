@@ -363,6 +363,62 @@ fn default_codex_context_window(model: &str, configured_default: Option<u64>) ->
     })
 }
 
+fn ensure_codex_reasoning_effort(
+    entry_obj: &mut serde_json::Map<String, Value>,
+    effort: &str,
+    description: &str,
+) {
+    let levels = entry_obj
+        .entry("supported_reasoning_levels".to_string())
+        .or_insert_with(|| json!([]));
+    if !levels.is_array() {
+        *levels = json!([]);
+    }
+
+    let Some(levels) = levels.as_array_mut() else {
+        return;
+    };
+    if levels.iter().any(|level| {
+        level
+            .get("effort")
+            .and_then(Value::as_str)
+            .is_some_and(|existing| existing == effort)
+    }) {
+        return;
+    }
+
+    levels.push(json!({
+        "effort": effort,
+        "description": description,
+    }));
+}
+
+fn apply_codex_native_reasoning_levels(
+    entry_obj: &mut serde_json::Map<String, Value>,
+    model: &str,
+) {
+    if !is_gpt_5_6_model(model) {
+        return;
+    }
+
+    ensure_codex_reasoning_effort(
+        entry_obj,
+        "max",
+        "Maximum reasoning depth for the hardest problems",
+    );
+
+    let normalized = model.trim().to_ascii_lowercase().replace('_', "-");
+    let supports_ultra = ["gpt-5.6-sol", "gpt5.6-sol", "gpt-5.6-terra", "gpt5.6-terra"]
+        .contains(&normalized.as_str());
+    if supports_ultra {
+        ensure_codex_reasoning_effort(
+            entry_obj,
+            "ultra",
+            "Maximum reasoning with automatic task delegation",
+        );
+    }
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
     model: &str,
@@ -385,6 +441,7 @@ fn codex_catalog_model_entry(
     entry_obj.insert("service_tiers".to_string(), json!([]));
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
+    apply_codex_native_reasoning_levels(entry_obj, model);
 
     entry
 }
@@ -2290,6 +2347,94 @@ base_url = "https://production.api/v1"
                 .is_some_and(|value| value.is_null()),
             "generated third-party entries should not inherit GPT-5.5 launch messaging"
         );
+    }
+
+    #[test]
+    fn codex_model_catalog_exposes_native_gpt_5_6_reasoning_levels() {
+        let template = json!({
+            "slug": "gpt-5.5",
+            "supported_reasoning_levels": [
+                { "effort": "low", "description": "Low" },
+                { "effort": "medium", "description": "Medium" },
+                { "effort": "high", "description": "High" },
+                { "effort": "xhigh", "description": "Extra high" }
+            ]
+        });
+        let specs = vec![
+            CodexCatalogModelSpec {
+                model: "gpt-5.6-sol".to_string(),
+                display_name: "Sol".to_string(),
+                context_window: 272_000,
+            },
+            CodexCatalogModelSpec {
+                model: "gpt-5.6_terra".to_string(),
+                display_name: "Terra".to_string(),
+                context_window: 272_000,
+            },
+            CodexCatalogModelSpec {
+                model: "gpt-5.6-luna".to_string(),
+                display_name: "Luna".to_string(),
+                context_window: 272_000,
+            },
+            CodexCatalogModelSpec {
+                model: "gpt-5.6-custom".to_string(),
+                display_name: "Custom".to_string(),
+                context_window: 272_000,
+            },
+            CodexCatalogModelSpec {
+                model: "gpt-5.5".to_string(),
+                display_name: "GPT-5.5".to_string(),
+                context_window: 128_000,
+            },
+        ];
+
+        let catalog = codex_model_catalog_from_specs(&specs, &template);
+        let models = catalog["models"].as_array().expect("models");
+        let efforts = |index: usize| {
+            models[index]["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|level| level["effort"].as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            efforts(0),
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+        assert_eq!(
+            efforts(1),
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+        assert_eq!(efforts(2), vec!["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(3), vec!["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(4), vec!["low", "medium", "high", "xhigh"]);
+    }
+
+    #[test]
+    fn codex_model_catalog_does_not_duplicate_native_reasoning_levels() {
+        let template = json!({
+            "slug": "gpt-5.6-sol",
+            "supported_reasoning_levels": [
+                { "effort": "max", "description": "Native max" },
+                { "effort": "ultra", "description": "Native ultra" }
+            ]
+        });
+        let specs = vec![CodexCatalogModelSpec {
+            model: "gpt-5.6-sol".to_string(),
+            display_name: "Sol".to_string(),
+            context_window: 272_000,
+        }];
+
+        let catalog = codex_model_catalog_from_specs(&specs, &template);
+        let levels = catalog["models"][0]["supported_reasoning_levels"]
+            .as_array()
+            .expect("reasoning levels");
+
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0]["description"], "Native max");
+        assert_eq!(levels[1]["description"], "Native ultra");
     }
 
     #[test]

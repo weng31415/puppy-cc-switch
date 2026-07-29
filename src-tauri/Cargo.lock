@@ -4021,7 +4021,7 @@ dependencies = [
 
 [[package]]
 name = "puppyrouter-app"
-version = "3.18.4"
+version = "3.18.5"
 dependencies = [
  "anyhow",
  "arboard",
