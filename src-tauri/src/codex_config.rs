@@ -1084,9 +1084,9 @@ pub fn extract_codex_experimental_bearer_token(config_text: &str) -> Option<Stri
     let token = match provider_id.as_deref() {
         Some(id) if is_custom_codex_model_provider_id(id) => doc
             .get("model_providers")
-            .and_then(|item| item.as_table())
+            .and_then(toml_edit::Item::as_table_like)
             .and_then(|table| table.get(id))
-            .and_then(|item| item.as_table())
+            .and_then(toml_edit::Item::as_table_like)
             .and_then(|table| table.get("experimental_bearer_token"))
             .and_then(|item| item.as_str())
             .or_else(top_level_token),
@@ -1127,13 +1127,13 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
 
     if let Some(model_providers) = doc
         .get_mut("model_providers")
-        .and_then(|item| item.as_table_mut())
+        .and_then(toml_edit::Item::as_table_like_mut)
     {
         if let Some(provider_table) = model_providers
             .get_mut(provider_id.as_str())
-            .and_then(|item| item.as_table_mut())
+            .and_then(toml_edit::Item::as_table_like_mut)
         {
-            provider_table["experimental_bearer_token"] = toml_edit::value(token);
+            provider_table.insert("experimental_bearer_token", toml_edit::value(token));
             return Ok(doc.to_string());
         }
     }
@@ -1157,9 +1157,9 @@ pub fn remove_codex_experimental_bearer_token_if(
     if let Some(provider_id) = active_codex_model_provider_id(&doc) {
         if let Some(provider_table) = doc
             .get_mut("model_providers")
-            .and_then(|item| item.as_table_mut())
+            .and_then(toml_edit::Item::as_table_like_mut)
             .and_then(|table| table.get_mut(provider_id.as_str()))
-            .and_then(|item| item.as_table_mut())
+            .and_then(toml_edit::Item::as_table_like_mut)
         {
             let should_remove = provider_table
                 .get("experimental_bearer_token")
@@ -1516,26 +1516,49 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
                 .map(str::to_string);
 
             if let Some(provider_key) = model_provider {
-                // Ensure [model_providers] table exists
-                if doc.get("model_providers").is_none() {
+                // Inline tables are valid TOML. Treat them as table-like so an
+                // edit stays in the active provider section rather than falling
+                // through to an ignored top-level field.
+                if doc
+                    .get("model_providers")
+                    .is_none_or(|item| item.as_table_like().is_none())
+                {
+                    if doc
+                        .get("model_providers")
+                        .is_some_and(|item| !item.is_none())
+                    {
+                        log::warn!(
+                            "Codex config.toml model_providers is not a table; resetting it"
+                        );
+                    }
                     doc["model_providers"] = toml_edit::table();
                 }
 
-                if let Some(model_providers) = doc["model_providers"].as_table_mut() {
+                if let Some(model_providers) = doc
+                    .get_mut("model_providers")
+                    .and_then(toml_edit::Item::as_table_like_mut)
+                {
                     // Ensure [model_providers.<provider_key>] table exists
                     if !model_providers.contains_key(&provider_key) {
-                        model_providers[&provider_key] = toml_edit::table();
+                        model_providers.insert(&provider_key, toml_edit::table());
                     }
 
-                    if let Some(provider_table) = model_providers[&provider_key].as_table_mut() {
+                    if let Some(provider_table) = model_providers
+                        .get_mut(&provider_key)
+                        .and_then(toml_edit::Item::as_table_like_mut)
+                    {
                         if trimmed.is_empty() {
                             provider_table.remove(field);
                         } else {
-                            provider_table[field] = toml_edit::value(trimmed);
+                            provider_table.insert(field, toml_edit::value(trimmed));
                         }
                         return Ok(doc.to_string());
                     }
                 }
+
+                log::warn!(
+                    "Codex config.toml [model_providers.{provider_key}] is not a table; writing {field} at the top level"
+                );
             }
 
             // Fallback: no model_provider or structure mismatch → top-level field
@@ -1575,11 +1598,11 @@ pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) ->
     if let Some(provider_key) = model_provider {
         if let Some(model_providers) = doc
             .get_mut("model_providers")
-            .and_then(|v| v.as_table_mut())
+            .and_then(toml_edit::Item::as_table_like_mut)
         {
             if let Some(provider_table) = model_providers
                 .get_mut(provider_key.as_str())
-                .and_then(|v| v.as_table_mut())
+                .and_then(toml_edit::Item::as_table_like_mut)
             {
                 let should_remove = provider_table
                     .get("base_url")
@@ -2917,6 +2940,44 @@ model_catalog_json = "puppyrouter-app-model-catalog.json"
         assert!(
             parsed.get("model_catalog_json").is_none(),
             "None arm should remove relative puppyrouter-app-owned field"
+        );
+    }
+
+    #[test]
+    fn inline_model_provider_tables_receive_live_endpoint_and_bearer_updates() {
+        let input = r#"model_provider = "puppyrouter"
+model_providers = { puppyrouter = { name = "PuppyRouter", base_url = "https://old.example/v1" } }
+"#;
+
+        let endpoint_updated =
+            update_codex_toml_field(input, "base_url", "https://puppyrouter.com/v1")
+                .expect("update inline provider endpoint");
+        let parsed: toml::Value =
+            toml::from_str(&endpoint_updated).expect("parse endpoint-updated config");
+        assert_eq!(
+            parsed["model_providers"]["puppyrouter"]["base_url"].as_str(),
+            Some("https://puppyrouter.com/v1")
+        );
+        assert!(
+            parsed.get("base_url").is_none(),
+            "the endpoint must not fall through to a top-level field"
+        );
+
+        let token_updated =
+            set_codex_experimental_bearer_token(&endpoint_updated, "sk-puppyrouter")
+                .expect("set provider-scoped bearer token");
+        assert_eq!(
+            extract_codex_experimental_bearer_token(&token_updated).as_deref(),
+            Some("sk-puppyrouter")
+        );
+
+        let token_removed = remove_codex_experimental_bearer_token_if(&token_updated, |token| {
+            token == "sk-puppyrouter"
+        })
+        .expect("remove provider-scoped bearer token");
+        assert!(
+            extract_codex_experimental_bearer_token(&token_removed).is_none(),
+            "the provider-scoped token must be removable from an inline table"
         );
     }
 }

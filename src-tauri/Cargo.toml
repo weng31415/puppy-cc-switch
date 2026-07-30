@@ -1,6 +1,6 @@
 [package]
 name = "puppyrouter-app"
-version = "3.18.5"
+version = "3.19.0"
 description = "Official PuppyRouter desktop client for AI app provider configuration"
 authors = ["Jason Young"]
 license = "MIT"

@@ -68,6 +68,7 @@ describe("useDirectorySettings", () => {
       if (app === "claude") return "/remote/claude";
       if (app === "codex") return "/remote/codex";
       if (app === "gemini") return "/remote/gemini";
+      if (app === "grokbuild") return "/remote/grokbuild";
       if (app === "opencode") return "/remote/opencode";
       if (app === "openclaw") return "/remote/openclaw";
       return "/remote/hermes";
@@ -90,6 +91,7 @@ describe("useDirectorySettings", () => {
       claude: "/remote/claude",
       codex: "/remote/codex",
       gemini: "/remote/gemini",
+      grokbuild: "/remote/grokbuild",
       opencode: "/remote/opencode",
       openclaw: "/remote/openclaw",
       hermes: "/remote/hermes",
@@ -212,7 +214,9 @@ describe("useDirectorySettings", () => {
     });
     expect(result.current.resolvedDirs.claude).toBe("/home/mock/.claude");
     expect(result.current.resolvedDirs.codex).toBe("/home/mock/.codex");
-    expect(result.current.resolvedDirs.appConfig).toBe("/home/mock/.puppyrouter-app");
+    expect(result.current.resolvedDirs.appConfig).toBe(
+      "/home/mock/.puppyrouter-app",
+    );
   });
 
   it("updates openclaw directory when browsing succeeds", async () => {

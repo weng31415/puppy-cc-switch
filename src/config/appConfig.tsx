@@ -20,13 +20,20 @@ export const APP_IDS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
   "openclaw",
   "hermes",
 ];
 
-/** App IDs shown in Skills panels (excludes OpenClaw — it doesn't support Skills) */
-export const SKILLS_APP_IDS: AppId[] = [
+/** Apps supported by the unified MCP and Skills management panels. */
+export type UnifiedFeatureAppId = Exclude<
+  AppId,
+  "claude-desktop" | "grokbuild" | "openclaw"
+>;
+
+/** App IDs shown in Skills panels. */
+export const SKILLS_APP_IDS: UnifiedFeatureAppId[] = [
   "claude",
   "codex",
   "gemini",
@@ -34,8 +41,8 @@ export const SKILLS_APP_IDS: AppId[] = [
   "hermes",
 ];
 
-/** App IDs shown in MCP panels (excludes OpenClaw) */
-export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
+/** App IDs shown in MCP panels. */
+export const MCP_APP_IDS: UnifiedFeatureAppId[] = [...SKILLS_APP_IDS];
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   claude: {
@@ -69,6 +76,21 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
       "bg-blue-500/10 ring-1 ring-blue-500/20 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400",
     badgeClass:
       "bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 border-0 gap-1.5",
+  },
+  grokbuild: {
+    label: "Grok Build",
+    icon: (
+      <ProviderIcon
+        icon="grok"
+        name="Grok Build"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-amber-500/10 ring-1 ring-amber-500/20 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300",
+    badgeClass:
+      "bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 border-0 gap-1.5",
   },
   opencode: {
     label: "OpenCode",

@@ -33,12 +33,24 @@ pub fn import_skill_from_deeplink(
     }
     let owner = parts[0].to_string();
     let name = parts[1].to_string();
+    let branch = request.branch.unwrap_or_else(|| "main".to_string());
+
+    // Deep links are untrusted and branch is embedded in an archive URL.
+    // Validate before persisting so malformed values cannot linger in
+    // skill_repos even though download_repo validates again at use time.
+    crate::services::skill::SkillService::validate_repo_ref(&owner, &name, &branch).map_err(
+        |_| {
+            AppError::InvalidInput(format!(
+                "Invalid skill repository reference: '{owner}/{name}' branch '{branch}'"
+            ))
+        },
+    )?;
 
     // Create SkillRepo
     let repo = SkillRepo {
         owner: owner.clone(),
         name: name.clone(),
-        branch: request.branch.unwrap_or_else(|| "main".to_string()),
+        branch,
         enabled: request.enabled.unwrap_or(true),
     };
 

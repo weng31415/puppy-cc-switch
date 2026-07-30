@@ -288,6 +288,13 @@ pub(crate) fn build_provider_from_request(
         AppType::Claude | AppType::ClaudeDesktop => build_claude_settings(request),
         AppType::Codex => build_codex_settings(request),
         AppType::Gemini => build_gemini_settings(request),
+        AppType::GrokBuild => {
+            return Err(AppError::localized(
+                "deeplink.grokbuild.unsupported",
+                "Grok Build 暂不支持通过深链接导入供应商。",
+                "Grok Build does not support provider import through deep links.",
+            ));
+        }
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
@@ -393,8 +400,10 @@ fn build_provider_meta(request: &DeepLinkImportRequest) -> Result<Option<Provide
         String::new()
     };
 
-    // Determine enabled state: explicit param > has code > false
-    let enabled = request.usage_enabled.unwrap_or(!code.is_empty());
+    // A deeplink can carry JavaScript, but carrying code is not the user's
+    // decision to enable it. Keep imported scripts disabled unless the link
+    // explicitly asks for enablement and the user confirms the import.
+    let enabled = request.usage_enabled.unwrap_or(false);
 
     let usage_script = UsageScript {
         enabled,

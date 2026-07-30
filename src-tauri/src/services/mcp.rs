@@ -124,6 +124,9 @@ impl McpService {
             AppType::Gemini => {
                 mcp::sync_single_server_to_gemini(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::GrokBuild => {
+                log::debug!("Grok Build MCP is intentionally unsupported, skipping sync");
+            }
             AppType::OpenCode => {
                 mcp::sync_single_server_to_opencode(
                     &Default::default(),
@@ -166,6 +169,9 @@ impl McpService {
             }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
+            AppType::GrokBuild => {
+                log::debug!("Grok Build MCP is intentionally unsupported, skipping removal");
+            }
             AppType::OpenCode => {
                 mcp::remove_server_from_opencode(id)?;
             }
@@ -185,7 +191,10 @@ impl McpService {
         let servers = Self::get_all_servers(state)?;
 
         for app in AppType::all() {
-            if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
+            if matches!(
+                app,
+                AppType::OpenClaw | AppType::ClaudeDesktop | AppType::GrokBuild
+            ) {
                 continue;
             }
 

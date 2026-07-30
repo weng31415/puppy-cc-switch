@@ -286,11 +286,15 @@ fn launch_custom(
     }
 
     let cmd_str = command;
-    let dir_str = cwd.unwrap_or(".");
+    // The working directory comes from session history. It must be quoted
+    // before it is interpolated into a shell command. This protects the
+    // placeholder only when it is used as an unquoted shell word; a future
+    // custom-terminal UI should pass argv elements instead of shell snippets.
+    let dir_str = shell_escape(cwd.unwrap_or("."));
 
     let final_cmd_line = template
         .replace("{command}", cmd_str)
-        .replace("{cwd}", dir_str);
+        .replace("{cwd}", &dir_str);
 
     // Execute via sh -c
     let status = Command::new("sh")
@@ -316,8 +320,10 @@ fn build_shell_command(command: &str, cwd: Option<&str>) -> String {
 }
 
 fn shell_escape(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
+    // Double quotes still allow `$VAR`, `$(...)`, and backtick expansion.
+    // POSIX single quotes prevent all expansion; an embedded quote uses the
+    // close-escape-reopen sequence.
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn escape_osascript(value: &str) -> String {
@@ -377,6 +383,35 @@ mod tests {
         );
 
         // Verify shell_escape works correctly for paths with spaces
-        assert_eq!(shell_escape(cwd), "\"/tmp/project dir\"");
+        assert_eq!(shell_escape(cwd), "'/tmp/project dir'");
+    }
+
+    #[test]
+    fn shell_escape_neutralizes_command_substitution_in_directory_names() {
+        assert_eq!(shell_escape("/tmp/$(id -un)"), "'/tmp/$(id -un)'");
+        assert_eq!(shell_escape("/tmp/`id -un`"), "'/tmp/`id -un`'");
+        assert_eq!(shell_escape("/tmp/$HOME"), "'/tmp/$HOME'");
+    }
+
+    #[test]
+    fn shell_escape_handles_embedded_single_quote() {
+        assert_eq!(shell_escape("/tmp/it's"), r"'/tmp/it'\''s'");
+    }
+
+    #[test]
+    fn shell_escape_survives_the_osascript_layer() {
+        let escaped = shell_escape("/tmp/it's");
+        let for_applescript = escape_osascript(&escaped);
+
+        assert_eq!(for_applescript, r"'/tmp/it'\\''s'");
+        assert_eq!(for_applescript.replace(r"\\", r"\"), escaped);
+    }
+
+    #[test]
+    fn build_shell_command_quotes_the_cwd_it_prefixes() {
+        assert_eq!(
+            build_shell_command("claude --resume x", Some("/tmp/$(id -un)")),
+            "cd '/tmp/$(id -un)' && claude --resume x"
+        );
     }
 }

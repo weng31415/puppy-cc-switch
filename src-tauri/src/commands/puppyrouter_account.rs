@@ -646,6 +646,7 @@ fn is_auto_apply_app(app_type: &AppType) -> bool {
             | AppType::ClaudeDesktop
             | AppType::Codex
             | AppType::Gemini
+            | AppType::GrokBuild
             | AppType::OpenCode
     )
 }
@@ -656,6 +657,7 @@ fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
         AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
         AppType::Codex => Some("universal-codex-puppyrouter"),
         AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        AppType::GrokBuild => Some("universal-grokbuild-puppyrouter"),
         AppType::OpenCode => Some(PUPPYROUTER_UNIVERSAL_ID),
         AppType::OpenClaw | AppType::Hermes => None,
     }
@@ -849,6 +851,16 @@ fn puppyrouter_provider_for_app(
     if matches!(app_type, AppType::OpenCode) {
         return Ok(puppyrouter_opencode_provider(api_key));
     }
+    if matches!(app_type, AppType::GrokBuild) {
+        let existing = state
+            .db
+            .get_provider_by_id("universal-grokbuild-puppyrouter", app_type.as_str())
+            .map_err(|error| error.to_string())?;
+        return Ok(ProviderService::puppyrouter_grokbuild_provider(
+            api_key,
+            existing.as_ref(),
+        ));
+    }
 
     let mut universal = ProviderService::get_universal(state, PUPPYROUTER_UNIVERSAL_ID)
         .map_err(|e| e.to_string())?
@@ -879,6 +891,7 @@ fn puppyrouter_provider_for_app(
         AppType::Gemini => universal
             .to_gemini_provider()
             .ok_or_else(|| "PuppyRouter 未启用 Gemini 配置。".to_string()),
+        AppType::GrokBuild => unreachable!("handled before universal provider lookup"),
         AppType::OpenCode => unreachable!("OpenCode handled above"),
         AppType::OpenClaw | AppType::Hermes => {
             Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string())
@@ -916,6 +929,12 @@ async fn save_puppyrouter_provider_for_app(
             .get_or_insert_with(ProviderMeta::default)
             .live_config_managed = Some(false);
     }
+    if matches!(app_type, AppType::GrokBuild) {
+        provider
+            .meta
+            .get_or_insert_with(ProviderMeta::default)
+            .provider_type = Some("puppyrouter".to_string());
+    }
 
     if matches!(app_type, AppType::Codex) {
         if let Err(err) = refresh_codex_model_catalog_from_puppyrouter(&mut provider, api_key).await
@@ -950,12 +969,16 @@ fn puppyrouter_provider_api_key_for_app(
     Ok((!api_key.trim().is_empty()).then_some(api_key))
 }
 
-fn emit_universal_provider_synced(app: &AppHandle) {
+fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType) {
     let _ = app.emit(
         "universal-provider-synced",
         serde_json::json!({
             "action": "sync",
             "id": PUPPYROUTER_UNIVERSAL_ID,
+            // Applying a cloud key updates the local PuppyRouter provider only.
+            // The actual client config is written later by an explicit Enable.
+            "localOnly": true,
+            "appType": target_app.as_str(),
         }),
     );
 }
@@ -1256,14 +1279,6 @@ pub async fn apply_puppyrouter_api_key(
 
     let full_key = fetch_token_key(&client, &session, token_id).await?;
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
-    let provider_id = puppyrouter_provider_id_for_app(&target_app)
-        .ok_or_else(|| "当前客户端没有可自动启用的 PuppyRouter 供应商。".to_string())?;
-    ProviderService::switch(state.inner(), target_app.clone(), provider_id).map_err(|error| {
-        format!(
-            "PuppyRouter API key 已保存，但重新启用 {} 供应商失败：{error}",
-            target_app.as_str()
-        )
-    })?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
@@ -1274,16 +1289,7 @@ pub async fn apply_puppyrouter_api_key(
         applied_at: now_timestamp(),
     };
     set_selected_token_for_app(state.inner(), &target_app, selected)?;
-    emit_universal_provider_synced(&app);
-    if let Err(error) = app.emit(
-        "provider-switched",
-        json!({
-            "appType": target_app.as_str(),
-            "providerId": provider_id,
-        }),
-    ) {
-        log::warn!("Failed to emit provider-switched after applying PuppyRouter API key: {error}");
-    }
+    emit_universal_provider_synced(&app, &target_app);
 
     Ok(PuppyRouterApplyKeyResult {
         synced: true,
@@ -1297,6 +1303,47 @@ pub async fn apply_puppyrouter_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::Database;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    struct TestHomeGuard {
+        _dir: TempDir,
+        original_home: Option<OsString>,
+        original_test_home: Option<OsString>,
+    }
+
+    impl TestHomeGuard {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("create temporary home");
+            let original_home = std::env::var_os("HOME");
+            let original_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload isolated settings");
+
+            Self {
+                _dir: dir,
+                original_home,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TestHomeGuard {
+        fn drop(&mut self) {
+            match self.original_home.take() {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.original_test_home.take() {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = crate::settings::reload_settings();
+        }
+    }
 
     #[test]
     fn normalize_puppyrouter_api_key_adds_sk_prefix_once() {
@@ -1331,12 +1378,13 @@ mod tests {
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::GrokBuild,
             AppType::OpenCode,
         ] {
             assert!(is_auto_apply_app(&app_type));
             assert!(
                 puppyrouter_provider_id_for_app(&app_type).is_some(),
-                "{} must resolve to a provider before the apply command switches it live",
+                "{} must resolve to a local PuppyRouter provider before applying a cloud key",
                 app_type.as_str()
             );
         }
@@ -1345,6 +1393,108 @@ mod tests {
             assert!(!is_auto_apply_app(&app_type));
             assert!(puppyrouter_provider_id_for_app(&app_type).is_none());
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn grokbuild_cloud_key_flows_one_way_until_explicit_enable() {
+        let _home = TestHomeGuard::new();
+        let state = AppState::new(Arc::new(Database::memory().expect("create database")));
+        ProviderService::ensure_locked_puppyrouter_defaults(&state)
+            .expect("seed locked Grok Build providers");
+
+        let official_snapshot = "[settings]\ntheme = \"dark\"\n";
+        crate::grok_config::write_grok_live_settings(&json!({
+            "config": official_snapshot,
+        }))
+        .expect("seed official Grok Build live config");
+
+        save_puppyrouter_provider_for_app(&state, &AppType::GrokBuild, "sk-cloud-selected")
+            .await
+            .expect("stage cloud key in local PuppyRouter provider");
+
+        assert_eq!(
+            crate::grok_config::read_grok_live_settings().expect("read unchanged live config")
+                ["config"],
+            official_snapshot,
+            "applying a cloud key must not enable or rewrite Grok Build"
+        );
+
+        let staged = state
+            .db
+            .get_provider_by_id(
+                "universal-grokbuild-puppyrouter",
+                AppType::GrokBuild.as_str(),
+            )
+            .expect("read staged provider")
+            .expect("staged PuppyRouter provider");
+        assert_eq!(
+            staged.resolve_usage_credentials(&AppType::GrokBuild).1,
+            "sk-cloud-selected"
+        );
+
+        ProviderService::switch(
+            &state,
+            AppType::GrokBuild,
+            "universal-grokbuild-puppyrouter",
+        )
+        .expect("explicitly enable PuppyRouter");
+        let enabled =
+            crate::grok_config::read_grok_live_settings().expect("read enabled Grok Build config");
+        assert_eq!(
+            crate::grok_config::extract_credentials(
+                enabled["config"].as_str().expect("enabled config text")
+            )
+            .map(|(_, key)| key)
+            .as_deref(),
+            Some("sk-cloud-selected")
+        );
+
+        crate::grok_config::write_grok_live_settings(&json!({
+            "config": crate::grok_config::build_puppyrouter_config(
+                enabled["config"].as_str(),
+                "sk-wrong-live",
+            ),
+        }))
+        .expect("simulate an externally modified live key");
+
+        ProviderService::switch(
+            &state,
+            AppType::GrokBuild,
+            crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+        )
+        .expect("switch to Grok Official");
+        ProviderService::switch(
+            &state,
+            AppType::GrokBuild,
+            "universal-grokbuild-puppyrouter",
+        )
+        .expect("switch back to PuppyRouter");
+
+        let saved = state
+            .db
+            .get_provider_by_id(
+                "universal-grokbuild-puppyrouter",
+                AppType::GrokBuild.as_str(),
+            )
+            .expect("read preserved provider")
+            .expect("preserved PuppyRouter provider");
+        assert_eq!(
+            saved.resolve_usage_credentials(&AppType::GrokBuild).1,
+            "sk-cloud-selected",
+            "live config must never flow back into the locked PuppyRouter provider"
+        );
+
+        let restored = crate::grok_config::read_grok_live_settings()
+            .expect("read restored PuppyRouter live config");
+        assert_eq!(
+            crate::grok_config::extract_credentials(
+                restored["config"].as_str().expect("restored config text")
+            )
+            .map(|(_, key)| key)
+            .as_deref(),
+            Some("sk-cloud-selected")
+        );
     }
 
     #[test]

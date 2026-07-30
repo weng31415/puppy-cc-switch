@@ -46,6 +46,9 @@ export interface ProxyTakeoverStatus {
   "claude-desktop"?: boolean;
   codex: boolean;
   gemini: boolean;
+  // Grok Build is intentionally not proxy-enabled. Keep this optional so
+  // shared AppId-aware UI can safely read a missing backend status entry.
+  grokbuild?: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;

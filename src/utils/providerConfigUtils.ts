@@ -9,11 +9,27 @@ const isPlainObject = (value: unknown): value is Record<string, any> => {
   return Object.prototype.toString.call(value) === "[object Object]";
 };
 
+const FORBIDDEN_MERGE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+const sanitizeSnippet = (value: any): any => {
+  if (Array.isArray(value)) return value.map(sanitizeSnippet);
+  if (!isPlainObject(value)) return value;
+
+  const cleaned: Record<string, any> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_MERGE_KEYS.has(key)) continue;
+    cleaned[key] = sanitizeSnippet(child);
+  }
+  return cleaned;
+};
+
 const deepMerge = (
   target: Record<string, any>,
   source: Record<string, any>,
 ): Record<string, any> => {
   Object.entries(source).forEach(([key, value]) => {
+    if (FORBIDDEN_MERGE_KEYS.has(key)) return;
+
     if (isPlainObject(value)) {
       if (!isPlainObject(target[key])) {
         target[key] = {};
@@ -32,6 +48,7 @@ const deepRemove = (
   source: Record<string, any>,
 ) => {
   Object.entries(source).forEach(([key, value]) => {
+    if (FORBIDDEN_MERGE_KEYS.has(key)) return;
     if (!(key in target)) return;
 
     if (isPlainObject(value) && isPlainObject(target[key])) {
@@ -50,9 +67,11 @@ const deepRemove = (
 const isSubset = (target: any, source: any): boolean => {
   if (isPlainObject(source)) {
     if (!isPlainObject(target)) return false;
-    return Object.entries(source).every(([key, value]) =>
-      isSubset(target[key], value),
-    );
+    return Object.entries(source).every(([key, value]) => {
+      if (FORBIDDEN_MERGE_KEYS.has(key)) return false;
+      if (!Object.prototype.hasOwnProperty.call(target, key)) return false;
+      return isSubset(target[key], value);
+    });
   }
 
   if (Array.isArray(source)) {
@@ -142,8 +161,10 @@ export const hasCommonConfigSnippet = (
   try {
     if (!snippetString.trim()) return false;
     const config = jsonString ? JSON.parse(jsonString) : {};
-    const snippet = JSON.parse(snippetString);
-    if (!isPlainObject(snippet)) return false;
+    const parsed = JSON.parse(snippetString);
+    if (!isPlainObject(parsed)) return false;
+    const snippet = sanitizeSnippet(parsed);
+    if (Object.keys(snippet).length === 0) return false;
     return isSubset(config, snippet);
   } catch (err) {
     return false;
@@ -393,7 +414,12 @@ export const hasTomlCommonConfigSnippet = (
 
   try {
     const config = parseToml(normalizeTomlText(tomlString || ""));
-    const snippet = parseToml(normalizeTomlText(snippetString));
+    const snippet = sanitizeSnippet(
+      parseToml(normalizeTomlText(snippetString)),
+    );
+    if (!isPlainObject(snippet) || Object.keys(snippet).length === 0) {
+      return false;
+    }
     return isSubset(config, snippet);
   } catch {
     // Fallback to text-based matching if TOML parsing fails

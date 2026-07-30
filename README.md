@@ -6,7 +6,7 @@
 
 **PuppyRouter 官方桌面客户端**
 
-在一个原生桌面应用中登录 PuppyRouter、查看余额和 API Key，并快速配置 Codex、Claude Code、Claude Desktop、Gemini CLI 与 OpenCode。
+在一个原生桌面应用中登录 PuppyRouter、查看余额和 API Key，并快速配置 Codex、Claude Code、Claude Desktop、Gemini CLI、Grok Build 与 OpenCode。
 
 [![Release](https://img.shields.io/github/v/release/weng31415/puppy-cc-switch?label=version&color=f5b942)](https://github.com/weng31415/puppy-cc-switch/releases)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-171717)](https://puppyrouter.com/client)
@@ -21,14 +21,14 @@
 
 PuppyRouter App 是基于 Tauri 2 构建的跨平台 AI 客户端配置工具。它将不同应用分散在 JSON、TOML 和环境变量中的 API 配置集中到一个可视化界面，并针对 PuppyRouter 提供完整的账户与 Key 集成。
 
-无需手动编辑配置文件。选择应用、选择 API Key，然后点击应用即可完成本地 PuppyRouter provider 与目标应用 live config 的同步。
+无需手动编辑配置文件。选择应用和 API Key 后，Key 会先保存到该应用的本地 PuppyRouter provider；再点击启用，才会将配置写入目标应用。
 
 ## 主要功能
 
 - **PuppyRouter 浏览器登录**：通过 PuppyRouter 网站的 Google 登录完成授权，桌面端不接触 Google 密码。
 - **API Key 自动同步**：读取当前账户可用 Key、所属分组、剩余额度和使用额度。
-- **按应用独立配置**：Codex、Claude Code、Claude Desktop、Gemini CLI 和 OpenCode 可以分别选择不同 Key。
-- **应用并启用**：更新 PuppyRouter App 本地 provider 后，立即走统一启用流程写入目标应用配置。
+- **按应用独立配置**：Codex、Claude Code、Claude Desktop、Gemini CLI、Grok Build 和 OpenCode 可以分别选择不同 Key。
+- **分阶段应用**：点击 Key 只更新当前应用的本地 PuppyRouter provider；显式点击启用后才写入目标应用 live config。
 - **云端分组修改**：在客户端内调整指定 Key 的分组，并对同分组操作进行拦截。
 - **配置诊断**：检查云端 Key、本地 PuppyRouter provider 和目标应用 live config 三层信息是否一致。
 - **官方登录切换**：保留不可删除的 PuppyRouter 与 Official provider，并支持切回官方登录方式。
@@ -45,6 +45,7 @@ PuppyRouter App 是基于 Tauri 2 构建的跨平台 AI 客户端配置工具。
 | Claude Code           |    是    | 支持 API Key、endpoint 与禁用 Key 清理        |
 | Claude Desktop        |    是    | 使用 Claude Desktop 第三方 provider 配置模式  |
 | Gemini CLI            |    是    | 支持兼容 provider 配置                        |
+| Grok Build            |    是    | 支持 Responses provider 与独立 config.toml    |
 | OpenCode              |    是    | 支持 OpenCode provider 配置                   |
 | OpenClaw              |   手动   | 可查看 Key，但第三方应用兼容性无法长期保证    |
 | Hermes                |   手动   | 可查看 Key，但需要用户手动配置 provider       |
@@ -68,10 +69,11 @@ Windows 用户不确定架构时应选择 x64。Windows ARM64 安装包仅适用
 
 1. 安装并打开 PuppyRouter App。
 2. 在应用顶部完成 PuppyRouter 登录。
-3. 选择 Codex、Claude Code、Claude Desktop、Gemini CLI 或 OpenCode。
+3. 选择 Codex、Claude Code、Claude Desktop、Gemini CLI、Grok Build 或 OpenCode。
 4. 点击需要使用的 API Key。
-5. PuppyRouter App 会将该 Key 应用到当前选中的应用并启用 PuppyRouter provider。
-6. 完全退出目标应用后重新打开，使新配置完整生效。
+5. 确认 Key 已应用到当前应用的本地 PuppyRouter provider。
+6. 点击 PuppyRouter provider 的启用按钮，将配置写入目标应用。
+7. 完全退出目标应用后重新打开，使新配置完整生效。
 
 更完整的图文教程请阅读：
 

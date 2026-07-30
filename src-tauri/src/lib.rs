@@ -13,6 +13,7 @@ mod deeplink;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod grok_config;
 pub mod hermes_config;
 mod init_status;
 mod lightweight;
@@ -1059,6 +1060,15 @@ pub fn run() {
                     } else {
                         log::info!("Live 配置已恢复");
                     }
+                }
+
+                if let Err(e) =
+                    crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
+                        &state,
+                    )
+                    .await
+                {
+                    log::warn!("Failed to scrub leaked Gemini shared credentials: {e}");
                 }
 
                 initialize_common_config_snippets(&state);

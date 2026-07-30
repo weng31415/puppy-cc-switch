@@ -184,8 +184,9 @@ impl ProviderType {
                 }
                 ProviderType::Gemini
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy, fallback to Codex-like type
+            AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+                // These apps are rejected by ProxyService before routing reaches
+                // an adapter. Keep this total match for shared helper callers.
                 ProviderType::Codex
             }
         }
@@ -238,8 +239,9 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Claude | AppType::ClaudeDesktop => Box::new(ClaudeAdapter::new()),
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-            // These apps don't support proxy, fallback to Codex adapter
+        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            // ProxyService rejects Grok Build/OpenCode/OpenClaw/Hermes. This
+            // fallback keeps the shared adapter helper exhaustive.
             Box::new(CodexAdapter::new())
         }
     }

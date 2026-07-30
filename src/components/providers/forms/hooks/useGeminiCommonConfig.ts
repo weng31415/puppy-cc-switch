@@ -9,7 +9,58 @@ const GEMINI_COMMON_ENV_FORBIDDEN_KEYS = [
   "GOOGLE_GEMINI_BASE_URL",
   "GEMINI_API_KEY",
 ] as const;
-type GeminiForbiddenEnvKey = (typeof GEMINI_COMMON_ENV_FORBIDDEN_KEYS)[number];
+
+const SENSITIVE_EXACT = [
+  "APIKEY",
+  "API_KEY",
+  "TOKEN",
+  "SECRET",
+  "PASSWORD",
+  "CREDENTIALS",
+];
+const SENSITIVE_SUFFIXES = [
+  "_KEY",
+  "_API_KEY",
+  "_ACCESS_KEY",
+  "_ACCESS_KEY_ID",
+  "_KEY_ID",
+  "_PRIVATE_KEY",
+  "_APIKEY",
+  "_ACCESSKEY",
+  "_SECRETKEY",
+  "_APITOKEN",
+  "_AUTH_TOKEN",
+  "_TOKEN",
+  "_PAT",
+  "_PWD",
+  "_PASS",
+  "_PASSPHRASE",
+  "_CREDS",
+];
+const SENSITIVE_CONTAINS = [
+  "SECRET",
+  "PASSWORD",
+  "PASSWD",
+  "CREDENTIAL",
+  "PRIVATE_KEY",
+  "BEARER_TOKEN",
+];
+
+function isForbiddenCommonEnvKey(name: string): boolean {
+  if (
+    GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(
+      name as (typeof GEMINI_COMMON_ENV_FORBIDDEN_KEYS)[number],
+    )
+  ) {
+    return true;
+  }
+  const upper = name.toUpperCase();
+  return (
+    SENSITIVE_EXACT.includes(upper) ||
+    SENSITIVE_SUFFIXES.some((suffix) => upper.endsWith(suffix)) ||
+    SENSITIVE_CONTAINS.some((part) => upper.includes(part))
+  );
+}
 
 interface UseGeminiCommonConfigProps {
   envValue: string;
@@ -90,9 +141,7 @@ export function useGeminiCommonConfig({
       }
 
       const keys = Object.keys(parsed);
-      const forbiddenKeys = keys.filter((key) =>
-        GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(key as GeminiForbiddenEnvKey),
-      );
+      const forbiddenKeys = keys.filter(isForbiddenCommonEnvKey);
       if (forbiddenKeys.length > 0) {
         return {
           env: {},

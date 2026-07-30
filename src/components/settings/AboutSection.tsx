@@ -426,12 +426,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           : "";
 
       if (!displayVersion) {
-        await settingsApi.openExternal("https://www.puppyrouter.com/client");
+        await settingsApi.openExternal("https://puppyrouter.com/client");
         return;
       }
 
       await settingsApi.openExternal(
-        `https://www.puppyrouter.com/client?version=${encodeURIComponent(displayVersion)}`,
+        `https://puppyrouter.com/client?version=${encodeURIComponent(displayVersion)}`,
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
@@ -859,7 +859,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               variant="outline"
               size="sm"
               onClick={() =>
-                settingsApi.openExternal("https://www.puppyrouter.com")
+                settingsApi.openExternal("https://puppyrouter.com")
               }
               className="h-8 gap-1.5 text-xs"
             >
@@ -872,7 +872,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               size="sm"
               onClick={() =>
                 settingsApi.openExternal(
-                  "https://github.com/farion1231/puppyrouter-app",
+                  "https://github.com/weng31415/puppy-cc-switch",
                 )
               }
               className="h-8 gap-1.5 text-xs"

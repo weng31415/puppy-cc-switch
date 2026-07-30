@@ -347,7 +347,11 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             }
             _ => false,
         },
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => false,
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::ClaudeDesktop => false,
     }
 }
 
@@ -417,9 +421,11 @@ pub(crate) fn remove_common_config_from_settings(
             }
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
 
@@ -474,9 +480,11 @@ fn apply_common_config_to_settings(
             }
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
 
@@ -801,6 +809,9 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             // Delegate to write_gemini_live which handles env file writing correctly
             write_gemini_live(provider)?;
         }
+        AppType::GrokBuild => {
+            crate::grok_config::write_grok_provider_live(provider)?;
+        }
         AppType::OpenCode => {
             // OpenCode uses additive mode - write provider to config
             use crate::opencode_config;
@@ -1111,6 +1122,7 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
                 "config": config_obj
             }))
         }
+        AppType::GrokBuild => crate::grok_config::read_grok_live_settings(),
         AppType::OpenCode => {
             use crate::opencode_config::{get_opencode_config_path, read_opencode_config};
 
@@ -1194,6 +1206,47 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 
     let settings_config = match app_type {
         AppType::Codex => crate::codex_config::read_codex_live_settings()?,
+        AppType::GrokBuild => {
+            let settings = crate::grok_config::read_grok_live_settings()?;
+            let config = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            if crate::grok_config::is_official_live_config(config) {
+                state.db.ensure_official_seed_by_id(
+                    crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                    AppType::GrokBuild,
+                )?;
+                let mut provider = state
+                    .db
+                    .get_provider_by_id(
+                        crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                        AppType::GrokBuild.as_str(),
+                    )?
+                    .ok_or_else(|| {
+                        AppError::Message(
+                            "Grok Build official provider seed was not created".to_string(),
+                        )
+                    })?;
+                provider.settings_config = settings;
+                state
+                    .db
+                    .save_provider(AppType::GrokBuild.as_str(), &provider)?;
+                state.db.set_current_provider(
+                    AppType::GrokBuild.as_str(),
+                    crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                )?;
+                crate::settings::set_current_provider(
+                    &AppType::GrokBuild,
+                    Some(crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID),
+                )?;
+                return Ok(true);
+            }
+
+            crate::grok_config::validate_config_toml(config)?;
+            settings
+        }
         AppType::Claude => {
             let settings_path = get_claude_settings_path();
             if !settings_path.exists() {

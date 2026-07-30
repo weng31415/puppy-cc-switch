@@ -345,6 +345,63 @@ pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
 
 /// 将单个 MCP 服务器同步到 Codex live 配置
 /// 始终使用 Codex 官方格式 [mcp_servers]，并清理可能存在的错误格式 [mcp.servers]
+fn upsert_mcp_server_table(
+    doc: &mut toml_edit::DocumentMut,
+    id: &str,
+    table: toml_edit::Table,
+) -> Result<(), AppError> {
+    if doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .is_none()
+    {
+        if doc.get("mcp_servers").is_some_and(|item| !item.is_none()) {
+            log::warn!("Codex config.toml mcp_servers is not a table; resetting it");
+        }
+        doc["mcp_servers"] = toml_edit::table();
+    }
+
+    let servers = doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or_else(|| {
+            AppError::McpValidation("Codex config.toml mcp_servers is not a table".to_string())
+        })?;
+    servers.insert(id, toml_edit::Item::Table(table));
+    Ok(())
+}
+
+fn remove_mcp_server_from_doc(doc: &mut toml_edit::DocumentMut, id: &str) {
+    if let Some(item) = doc.get_mut("mcp_servers") {
+        let user_authored = !item.is_none();
+        match item.as_table_like_mut() {
+            Some(servers) => {
+                servers.remove(id);
+            }
+            None if user_authored => {
+                log::warn!(
+                    "Codex config.toml mcp_servers is not a table; cannot remove MCP server '{id}'"
+                );
+            }
+            None => {}
+        }
+    }
+
+    if let Some(mcp_table) = doc
+        .get_mut("mcp")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        if let Some(servers) = mcp_table
+            .get_mut("servers")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            if servers.remove(id).is_some() {
+                log::warn!("Removed MCP server '{id}' from legacy [mcp.servers] config");
+            }
+        }
+    }
+}
+
 pub fn sync_single_server_to_codex(
     _config: &MultiAppConfig,
     id: &str,
@@ -353,8 +410,6 @@ pub fn sync_single_server_to_codex(
     if !should_sync_codex_mcp() {
         return Ok(());
     }
-    use toml_edit::Item;
-
     // 读取现有的 config.toml
     let config_path = crate::codex_config::get_codex_config_path();
 
@@ -379,16 +434,11 @@ pub fn sync_single_server_to_codex(
         }
     }
 
-    // 确保 [mcp_servers] 表存在
-    if !doc.contains_key("mcp_servers") {
-        doc["mcp_servers"] = toml_edit::table();
-    }
-
     // 将 JSON 服务器规范转换为 TOML 表
     let toml_table = json_server_to_toml_table(server_spec)?;
 
     // 使用唯一正确的格式：[mcp_servers]
-    doc["mcp_servers"][id] = Item::Table(toml_table);
+    upsert_mcp_server_table(&mut doc, id, toml_table)?;
 
     // 写回文件
     let new_text = doc.to_string();
@@ -421,19 +471,7 @@ pub fn remove_server_from_codex(id: &str) -> Result<(), AppError> {
         }
     };
 
-    // 从正确的位置删除：[mcp_servers]
-    if let Some(mcp_servers) = doc.get_mut("mcp_servers").and_then(|s| s.as_table_mut()) {
-        mcp_servers.remove(id);
-    }
-
-    // 同时清理可能存在于错误位置的数据：[mcp.servers]（如果存在）
-    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|t| t.as_table_mut()) {
-        if let Some(servers) = mcp_table.get_mut("servers").and_then(|s| s.as_table_mut()) {
-            if servers.remove(id).is_some() {
-                log::warn!("从错误的 MCP 格式 [mcp.servers] 中清理了服务器 '{id}'");
-            }
-        }
-    }
+    remove_mcp_server_from_doc(&mut doc, id);
 
     // 写回文件
     let new_text = doc.to_string();

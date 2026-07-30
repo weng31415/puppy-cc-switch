@@ -4,6 +4,7 @@ use super::mcp::parse_mcp_apps;
 use super::parser::parse_deeplink_url;
 use super::prompt::import_prompt_from_deeplink;
 use super::provider::parse_and_merge_config;
+use super::skill::import_skill_from_deeplink;
 use super::utils::{infer_homepage_from_endpoint, validate_url};
 use super::DeepLinkImportRequest;
 use crate::AppType;
@@ -119,6 +120,32 @@ fn test_parse_missing_required_field() {
         .unwrap_err()
         .to_string()
         .contains("Missing 'name' parameter"));
+}
+
+#[test]
+fn test_skill_deeplink_rejects_unsafe_repository_branch() {
+    let _home = TestHomeGuard::new();
+    let db = Arc::new(Database::memory().expect("create database"));
+    let state = AppState::new(db.clone());
+    let request = DeepLinkImportRequest {
+        version: "v1".to_string(),
+        resource: "skill".to_string(),
+        repo: Some("owner/repository".to_string()),
+        branch: Some("../../../releases/download/v1/evil".to_string()),
+        ..Default::default()
+    };
+
+    let error = import_skill_from_deeplink(&state, request)
+        .expect_err("unsafe repository branches must be rejected before persistence");
+    assert!(error
+        .to_string()
+        .contains("Invalid skill repository reference"));
+    assert!(
+        db.get_skill_repos()
+            .expect("read skill repositories")
+            .is_empty(),
+        "invalid deeplink must not leave a database record"
+    );
 }
 
 // =============================================================================
@@ -307,6 +334,55 @@ fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
     assert!(script.enabled);
     assert_eq!(script.api_key, None);
     assert_eq!(script.base_url, None);
+}
+
+#[test]
+fn test_deeplink_usage_script_defaults_to_disabled() {
+    use super::provider::build_provider_from_request;
+
+    let script_code = "return { remaining: 1 };";
+    let request = DeepLinkImportRequest {
+        version: "v1".to_string(),
+        resource: "provider".to_string(),
+        app: Some("claude".to_string()),
+        name: Some("Test Claude".to_string()),
+        homepage: Some("https://example.com".to_string()),
+        endpoint: Some("https://api.example.com/v1".to_string()),
+        api_key: Some("sk-main".to_string()),
+        icon: None,
+        model: None,
+        notes: None,
+        haiku_model: None,
+        sonnet_model: None,
+        opus_model: None,
+        config: None,
+        config_format: None,
+        config_url: None,
+        apps: None,
+        repo: None,
+        directory: None,
+        branch: None,
+        content: None,
+        description: None,
+        enabled: None,
+        usage_enabled: None,
+        usage_script: Some(BASE64_STANDARD.encode(script_code)),
+        usage_api_key: None,
+        usage_base_url: None,
+        usage_access_token: None,
+        usage_user_id: None,
+        usage_auto_interval: None,
+    };
+
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should be created");
+
+    assert!(!script.enabled);
+    assert_eq!(script.code, script_code);
 }
 
 #[test]

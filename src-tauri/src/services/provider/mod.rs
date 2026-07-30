@@ -7,6 +7,8 @@ mod gemini_auth;
 mod live;
 mod usage;
 
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::Deserialize;
@@ -98,7 +100,11 @@ const PUPPYROUTER_PROVIDER_TYPE: &str = "puppyrouter";
 fn is_restricted_provider_app(app_type: &AppType) -> bool {
     matches!(
         app_type,
-        AppType::Claude | AppType::ClaudeDesktop | AppType::Codex | AppType::Gemini
+        AppType::Claude
+            | AppType::ClaudeDesktop
+            | AppType::Codex
+            | AppType::Gemini
+            | AppType::GrokBuild
     )
 }
 
@@ -108,6 +114,7 @@ fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
         AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
         AppType::Codex => Some("universal-codex-puppyrouter"),
         AppType::Gemini => Some("universal-gemini-puppyrouter"),
+        AppType::GrokBuild => Some("universal-grokbuild-puppyrouter"),
         AppType::OpenCode => Some(PUPPYROUTER_UNIVERSAL_ID),
         _ => None,
     }
@@ -119,6 +126,7 @@ fn official_seed_id_for_app(app_type: &AppType) -> Option<&'static str> {
         AppType::ClaudeDesktop => Some(crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID),
         AppType::Codex => Some("codex-official"),
         AppType::Gemini => Some("gemini-official"),
+        AppType::GrokBuild => Some(crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID),
         _ => None,
     }
 }
@@ -260,6 +268,71 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn grokbuild_puppyrouter_update_preserves_the_selected_cloud_key() {
+        let existing = ProviderService::puppyrouter_grokbuild_provider("sk-selected", None);
+        let mut incoming = existing.clone();
+        incoming.settings_config = json!({
+            "config": r#"[models]
+default = "grok-custom"
+
+[model."grok-custom"]
+model = "grok-custom"
+base_url = "https://wrong.example.com/v1"
+name = "Wrong"
+api_key = "sk-wrong"
+api_backend = "chat_completions"
+context_window = 320000
+"#
+        });
+
+        ProviderService::normalize_grokbuild_puppyrouter_config(&mut incoming, Some(&existing));
+
+        let config = incoming.settings_config["config"]
+            .as_str()
+            .expect("normalized config");
+        let selected =
+            crate::grok_config::extract_model_config(config).expect("normalized model config");
+
+        assert_eq!(selected.model, "grok-custom");
+        assert_eq!(selected.context_window, 320000);
+        assert_eq!(selected.base_url, crate::grok_config::PUPPYROUTER_BASE_URL);
+        assert_eq!(selected.name, crate::grok_config::PUPPYROUTER_PROVIDER_NAME);
+        assert_eq!(selected.api_key.as_deref(), Some("sk-selected"));
+        assert_eq!(
+            selected.api_backend,
+            crate::grok_config::DEFAULT_API_BACKEND
+        );
+        assert!(!config.contains("sk-wrong"));
+    }
+
+    #[test]
+    fn grokbuild_keeps_locked_puppyrouter_and_official_providers() {
+        with_test_home(|state, _| {
+            ProviderService::ensure_locked_puppyrouter_defaults(state)
+                .expect("ensure locked Grok Build providers");
+
+            let providers = state
+                .db
+                .get_all_providers(AppType::GrokBuild.as_str())
+                .expect("read Grok Build providers");
+            let puppyrouter = providers
+                .get("universal-grokbuild-puppyrouter")
+                .expect("PuppyRouter provider");
+            let official = providers
+                .get(crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID)
+                .expect("official provider");
+
+            assert_eq!(puppyrouter.sort_index, Some(0));
+            assert_eq!(official.sort_index, Some(1));
+            assert_eq!(official.category.as_deref(), Some("official"));
+            assert!(ProviderService::is_locked_provider_for_app(
+                &AppType::GrokBuild,
+                official
+            ));
+        });
     }
 
     fn codex_settings(base_url: &str, api_key: &str) -> Value {
@@ -792,6 +865,125 @@ base_url = "http://localhost:8080"
         assert!(
             extracted.contains("http://localhost:8080"),
             "should keep mcp_servers.* base_url"
+        );
+    }
+
+    #[test]
+    fn extract_gemini_common_config_strips_all_credentials() {
+        let settings = json!({
+            "env": {
+                "GEMINI_API_KEY": "gemini-key",
+                "GOOGLE_API_KEY": "google-key",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/credentials.json",
+                "PROXY_AUTH_TOKEN": "proxy-token",
+                "GEMINI_TIMEOUT_MS": "30000"
+            }
+        });
+
+        let snippet =
+            ProviderService::extract_gemini_common_config(&settings).expect("extract config");
+        let value: Value = serde_json::from_str(&snippet).expect("valid JSON");
+        let env = value.as_object().expect("object");
+        assert_eq!(env.get("GEMINI_TIMEOUT_MS"), Some(&json!("30000")));
+        for key in [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "PROXY_AUTH_TOKEN",
+        ] {
+            assert!(!env.contains_key(key), "{key} must not be shared");
+        }
+    }
+
+    #[test]
+    fn sensitive_config_key_matching_keeps_normal_runtime_options() {
+        for key in [
+            "GOOGLE_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "PROXY_AUTH_TOKEN",
+            "GITHUB_PAT",
+        ] {
+            assert!(
+                ProviderService::is_sensitive_config_key(key),
+                "{key} must be treated as sensitive"
+            );
+        }
+        for key in ["PATH", "GEMINI_TIMEOUT_MS", "MAX_THINKING_TOKENS"] {
+            assert!(
+                !ProviderService::is_sensitive_config_key(key),
+                "{key} must remain shareable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_common_config_removes_only_matching_leaked_values() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        db.set_config_snippet(
+            "gemini",
+            Some(
+                json!({
+                    "GOOGLE_API_KEY": "leaked-key",
+                    "GEMINI_TIMEOUT_MS": "30000"
+                })
+                .to_string(),
+            ),
+        )
+        .expect("seed snippet");
+
+        let leaked_provider = Provider::with_id(
+            "leaked".into(),
+            "Leaked".into(),
+            json!({ "env": { "GOOGLE_API_KEY": "leaked-key", "GEMINI_TIMEOUT_MS": "30000" } }),
+            None,
+        );
+        let owned_provider = Provider::with_id(
+            "owned".into(),
+            "Owned".into(),
+            json!({ "env": { "GOOGLE_API_KEY": "owned-key", "GEMINI_TIMEOUT_MS": "30000" } }),
+            None,
+        );
+        db.save_provider("gemini", &leaked_provider)
+            .expect("save leaked provider");
+        db.save_provider("gemini", &owned_provider)
+            .expect("save owned provider");
+        crate::gemini_config::write_gemini_env_atomic(&HashMap::from([
+            ("GOOGLE_API_KEY".to_string(), "leaked-key".to_string()),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://127.0.0.1:7890".to_string(),
+            ),
+        ]))
+        .expect("seed Gemini env");
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub leaked credentials");
+
+        let snippet = db
+            .get_config_snippet("gemini")
+            .expect("read snippet")
+            .expect("clean snippet");
+        assert!(!snippet.contains("leaked-key"));
+        assert!(snippet.contains("GEMINI_TIMEOUT_MS"));
+
+        let providers = db.get_all_providers("gemini").expect("providers");
+        assert!(providers["leaked"].settings_config["env"]
+            .get("GOOGLE_API_KEY")
+            .is_none());
+        assert_eq!(
+            providers["owned"].settings_config["env"]["GOOGLE_API_KEY"],
+            json!("owned-key")
+        );
+        let live = crate::gemini_config::read_gemini_env().expect("read Gemini env");
+        assert!(!live.contains_key("GOOGLE_API_KEY"));
+        assert_eq!(
+            live.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7890")
         );
     }
 
@@ -1997,7 +2189,14 @@ impl ProviderService {
             provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
             provider.category = Some("aggregator".to_string());
             provider.sort_index = Some(0);
-            provider.icon = Some("openai".to_string());
+            provider.icon = Some(
+                if matches!(app_type, AppType::GrokBuild) {
+                    "grok"
+                } else {
+                    "openai"
+                }
+                .to_string(),
+            );
             provider.icon_color = Some("#F59E0B".to_string());
         } else if Self::is_official_provider_for_app(app_type, provider) {
             provider.category = Some("official".to_string());
@@ -2005,14 +2204,54 @@ impl ProviderService {
         }
     }
 
+    fn normalize_grokbuild_puppyrouter_config(
+        provider: &mut Provider,
+        existing: Option<&Provider>,
+    ) {
+        let incoming_config = provider
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str);
+        let existing_api_key = existing
+            .map(|existing| existing.resolve_usage_credentials(&AppType::GrokBuild).1)
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+        let incoming_api_key = provider
+            .resolve_usage_credentials(&AppType::GrokBuild)
+            .1
+            .trim()
+            .to_string();
+        let api_key = existing_api_key
+            .filter(|key| !key.is_empty())
+            .unwrap_or(incoming_api_key);
+
+        provider.settings_config = serde_json::json!({
+            "config": crate::grok_config::build_puppyrouter_config(incoming_config, &api_key),
+        });
+        provider
+            .meta
+            .get_or_insert_with(ProviderMeta::default)
+            .provider_type = Some(PUPPYROUTER_PROVIDER_TYPE.to_string());
+    }
+
+    fn first_custom_sort_index(app_type: &AppType) -> Option<usize> {
+        match app_type {
+            app if is_restricted_provider_app(app) || matches!(app, AppType::OpenCode) => Some(2),
+            _ => None,
+        }
+    }
+
     fn normalize_custom_provider_sort_for_app(app_type: &AppType, provider: &mut Provider) {
         if Self::is_locked_provider_for_app(app_type, provider) {
             return;
         }
-        if (is_restricted_provider_app(app_type) || matches!(app_type, AppType::OpenCode))
-            && provider.sort_index.is_some_and(|sort_index| sort_index < 2)
-        {
-            provider.sort_index = Some(2);
+        if let Some(first_custom_index) = Self::first_custom_sort_index(app_type) {
+            if provider
+                .sort_index
+                .is_some_and(|sort_index| sort_index < first_custom_index)
+            {
+                provider.sort_index = Some(first_custom_index);
+            }
         }
     }
 
@@ -2151,6 +2390,44 @@ impl ProviderService {
         Some(provider)
     }
 
+    pub(crate) fn puppyrouter_grokbuild_provider(
+        api_key: &str,
+        existing: Option<&Provider>,
+    ) -> Provider {
+        let existing_config = existing
+            .and_then(|provider| provider.settings_config.get("config"))
+            .and_then(Value::as_str);
+        let config = crate::grok_config::build_puppyrouter_config(existing_config, api_key);
+        let mut provider = Provider::with_id(
+            "universal-grokbuild-puppyrouter".to_string(),
+            PUPPYROUTER_NAME.to_string(),
+            serde_json::json!({ "config": config }),
+            Some(PUPPYROUTER_BASE_URL.to_string()),
+        );
+        provider.category = Some("aggregator".to_string());
+        provider.sort_index = Some(0);
+        provider.icon = Some("grok".to_string());
+        provider.icon_color = Some("#F59E0B".to_string());
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some(PUPPYROUTER_PROVIDER_TYPE.to_string()),
+            ..ProviderMeta::default()
+        });
+
+        if let Some(existing) = existing {
+            provider.created_at = existing.created_at;
+            provider.notes = existing.notes.clone();
+            provider.in_failover_queue = existing.in_failover_queue;
+            let mut meta = existing
+                .meta
+                .clone()
+                .unwrap_or_else(|| provider.meta.take().unwrap_or_default());
+            meta.provider_type = Some(PUPPYROUTER_PROVIDER_TYPE.to_string());
+            provider.meta = Some(meta);
+        }
+
+        provider
+    }
+
     fn enforce_locked_provider_sorting_for_app(
         state: &AppState,
         app_type: &AppType,
@@ -2180,6 +2457,7 @@ impl ProviderService {
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::GrokBuild,
         ] {
             if let Some(seed_id) = official_seed_id_for_app(&app_type) {
                 state
@@ -2198,6 +2476,7 @@ impl ProviderService {
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::GrokBuild,
             AppType::OpenCode,
         ] {
             Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
@@ -2386,6 +2665,14 @@ impl ProviderService {
                 ));
             }
             Self::normalize_locked_provider_for_app(&app_type, &mut provider);
+            if matches!(app_type, AppType::GrokBuild)
+                && Self::is_puppyrouter_provider_for_app(&app_type, &provider)
+            {
+                Self::normalize_grokbuild_puppyrouter_config(
+                    &mut provider,
+                    existing_provider.as_ref(),
+                );
+            }
             if !Self::is_allowed_provider_for_app(&app_type, &provider) {
                 return Err(AppError::localized(
                     "provider.locked.custom_cannot_be_official",
@@ -3148,6 +3435,7 @@ impl ProviderService {
             AppType::ClaudeDesktop => Ok(String::new()),
             AppType::Codex => Self::extract_codex_common_config(&provider.settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
+            AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
@@ -3164,10 +3452,56 @@ impl ProviderService {
             AppType::ClaudeDesktop => Ok(String::new()),
             AppType::Codex => Self::extract_codex_common_config(settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
+            AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
         }
+    }
+
+    pub(crate) fn is_sensitive_config_key(name: &str) -> bool {
+        let upper = name.to_ascii_uppercase();
+        const SENSITIVE_EXACT: &[&str] = &[
+            "APIKEY",
+            "API_KEY",
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIALS",
+        ];
+        const SENSITIVE_SUFFIXES: &[&str] = &[
+            "_KEY",
+            "_API_KEY",
+            "_ACCESS_KEY",
+            "_ACCESS_KEY_ID",
+            "_KEY_ID",
+            "_PRIVATE_KEY",
+            "_APIKEY",
+            "_ACCESSKEY",
+            "_SECRETKEY",
+            "_APITOKEN",
+            "_AUTH_TOKEN",
+            "_TOKEN",
+            "_PAT",
+            "_PWD",
+            "_PASS",
+            "_PASSPHRASE",
+            "_CREDS",
+        ];
+        const SENSITIVE_CONTAINS: &[&str] = &[
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "CREDENTIAL",
+            "PRIVATE_KEY",
+            "BEARER_TOKEN",
+        ];
+
+        SENSITIVE_EXACT.contains(&upper.as_str())
+            || SENSITIVE_SUFFIXES
+                .iter()
+                .any(|suffix| upper.ends_with(suffix))
+            || SENSITIVE_CONTAINS.iter().any(|part| upper.contains(part))
     }
 
     /// Extract common config for Claude (JSON format)
@@ -3201,8 +3535,16 @@ impl ProviderService {
 
         // Remove env fields
         if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
+            let sensitive: Vec<String> = env
+                .keys()
+                .filter(|key| Self::is_sensitive_config_key(key))
+                .cloned()
+                .collect();
             for key in ENV_EXCLUDES {
                 env.remove(*key);
+            }
+            for key in sensitive {
+                env.remove(&key);
             }
             // If env is empty after removal, remove the env object itself
             if env.is_empty() {
@@ -3212,8 +3554,16 @@ impl ProviderService {
 
         // Remove top-level fields
         if let Some(obj) = config.as_object_mut() {
+            let sensitive: Vec<String> = obj
+                .keys()
+                .filter(|key| Self::is_sensitive_config_key(key))
+                .cloned()
+                .collect();
             for key in TOP_LEVEL_EXCLUDES {
                 obj.remove(*key);
+            }
+            for key in sensitive {
+                obj.remove(&key);
             }
         }
 
@@ -3282,7 +3632,7 @@ impl ProviderService {
         let mut snippet = serde_json::Map::new();
         if let Some(env) = env {
             for (key, value) in env {
-                if key == "GOOGLE_GEMINI_BASE_URL" || key == "GEMINI_API_KEY" {
+                if key == "GOOGLE_GEMINI_BASE_URL" || Self::is_sensitive_config_key(key) {
                     continue;
                 }
                 let Value::String(v) = value else {
@@ -3301,6 +3651,124 @@ impl ProviderService {
 
         serde_json::to_string_pretty(&Value::Object(snippet))
             .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+    }
+
+    /// One-time cleanup for credentials that older versions allowed into the
+    /// Gemini shared snippet. Cleanup is value-aware so a provider's own,
+    /// differently valued credential is preserved.
+    pub async fn scrub_leaked_gemini_common_config(state: &AppState) -> Result<(), AppError> {
+        const FLAG: &str = "gemini_common_config_credentials_scrubbed_v1";
+        const AUDIT_KEY: &str = "gemini_common_config_scrub_audit_v1";
+        let app = AppType::Gemini;
+
+        if state.db.get_bool_flag(FLAG)? {
+            return Ok(());
+        }
+
+        let Some(snippet_text) = state.db.get_config_snippet(app.as_str())? else {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        };
+        let Ok(Value::Object(entries)) = serde_json::from_str::<Value>(&snippet_text) else {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        };
+
+        let mut leaked = serde_json::Map::new();
+        let mut clean = serde_json::Map::new();
+        for (key, value) in entries {
+            if Self::is_sensitive_config_key(&key) {
+                leaked.insert(key, value);
+            } else {
+                clean.insert(key, value);
+            }
+        }
+        if leaked.is_empty() {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        }
+
+        let leaked_keys: Vec<String> = leaked.keys().cloned().collect();
+        let leaked_value = Value::Object(leaked);
+        let leaked_text = serde_json::to_string(&leaked_value)
+            .map_err(|error| AppError::Message(format!("Serialization failed: {error}")))?;
+
+        let providers = state.db.get_all_providers(app.as_str())?;
+        let mut pending = Vec::new();
+        for (id, provider) in providers {
+            let cleaned = live::remove_common_config_from_settings(
+                &app,
+                &provider.settings_config,
+                &leaked_text,
+            )?;
+            if cleaned != provider.settings_config {
+                pending.push((id, provider, cleaned));
+            }
+        }
+
+        let audit = serde_json::json!({
+            "removedFromSnippet": leaked_keys,
+            "providers": pending.iter().map(|(id, provider, cleaned)| {
+                let before = provider.settings_config.get("env").and_then(Value::as_object);
+                let after = cleaned.get("env").and_then(Value::as_object);
+                let removed_keys = before
+                    .map(|env| env.keys()
+                        .filter(|key| !after.is_some_and(|after| after.contains_key(*key)))
+                        .cloned()
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default();
+                serde_json::json!({ "id": id, "removedKeys": removed_keys })
+            }).collect::<Vec<_>>(),
+        });
+        if state.db.get_setting(AUDIT_KEY)?.is_none() {
+            let audit_text = serde_json::to_string(&audit)
+                .map_err(|error| AppError::Message(format!("Serialization failed: {error}")))?;
+            state.db.set_setting(AUDIT_KEY, &audit_text)?;
+        }
+
+        for (id, mut provider, cleaned) in pending {
+            provider.settings_config = cleaned;
+            state.db.save_provider(app.as_str(), &provider)?;
+            log::info!("Removed leaked Gemini shared credential from provider '{id}'");
+        }
+
+        if let Some(backup) = state.db.get_live_backup(app.as_str()).await? {
+            let original: Value =
+                serde_json::from_str(&backup.original_config).map_err(|error| {
+                    AppError::Message(format!(
+                        "Invalid Gemini live backup during credential scrub: {error}"
+                    ))
+                })?;
+            let cleaned = live::remove_common_config_from_settings(&app, &original, &leaked_text)?;
+            if cleaned != original {
+                let serialized = serde_json::to_string(&cleaned)
+                    .map_err(|error| AppError::Message(format!("Serialization failed: {error}")))?;
+                state.db.save_live_backup(app.as_str(), &serialized).await?;
+            }
+        }
+
+        let leaked_env: HashMap<String, String> = leaked_value
+            .as_object()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::gemini_config::remove_gemini_env_entries(&leaked_env)?;
+
+        if clean.is_empty() {
+            state.db.set_config_snippet(app.as_str(), None)?;
+        } else {
+            let snippet = serde_json::to_string_pretty(&Value::Object(clean))
+                .map_err(|error| AppError::Message(format!("Serialization failed: {error}")))?;
+            state.db.set_config_snippet(app.as_str(), Some(snippet))?;
+        }
+        state.db.set_setting(FLAG, "true")?;
+        Ok(())
     }
 
     /// Extract common config for OpenCode (JSON format)
@@ -3420,7 +3888,8 @@ impl ProviderService {
                 {
                     Self::normalize_locked_provider_for_app(&app_type, provider);
                 } else {
-                    provider.sort_index = Some(update.sort_index.max(2));
+                    let first_custom_index = Self::first_custom_sort_index(&app_type).unwrap_or(0);
+                    provider.sort_index = Some(update.sort_index.max(first_custom_index));
                 }
                 state.db.save_provider(app_type.as_str(), provider)?;
             }
@@ -3530,6 +3999,24 @@ impl ProviderService {
             AppType::Gemini => {
                 use crate::gemini_config::validate_gemini_settings;
                 validate_gemini_settings(&provider.settings_config)?
+            }
+            AppType::GrokBuild => {
+                let config = provider
+                    .settings_config
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.config.missing",
+                            "Grok Build 配置缺少 config 字段",
+                            "Grok Build configuration is missing the config field",
+                        )
+                    })?;
+                if provider.category.as_deref() == Some("official") {
+                    crate::grok_config::validate_official_config_toml(config)?;
+                } else {
+                    crate::grok_config::validate_config_toml(config)?;
+                }
             }
             AppType::OpenCode => {
                 // OpenCode uses a different config structure: { npm, options, models }
@@ -3711,6 +4198,28 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
+            AppType::GrokBuild => {
+                let config = provider
+                    .settings_config
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.config.missing",
+                            "Grok Build 配置缺少 config 字段",
+                            "Grok Build configuration is missing the config field",
+                        )
+                    })?;
+                let (base_url, api_key) = crate::grok_config::extract_credentials(config)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.credentials.missing",
+                            "Grok Build 配置缺少 Base URL 或 API Key",
+                            "Grok Build configuration is missing the base URL or API key",
+                        )
+                    })?;
+                Ok((api_key, base_url))
+            }
             AppType::OpenCode => {
                 // OpenCode uses options.apiKey and options.baseURL
                 let options = provider
@@ -3859,7 +4368,6 @@ pub struct ProviderSortUpdate {
 // ============================================================================
 
 use crate::provider::UniversalProvider;
-use std::collections::HashMap;
 
 impl ProviderService {
     /// 获取所有统一供应商
@@ -4008,6 +4516,21 @@ impl ProviderService {
             let _ = state.db.delete_provider("gemini", &gemini_id);
         }
 
+        let existing_grok = state.db.get_provider_by_id(
+            "universal-grokbuild-puppyrouter",
+            AppType::GrokBuild.as_str(),
+        )?;
+        let existing_grok_api_key = existing_grok
+            .as_ref()
+            .map(|provider| provider.resolve_usage_credentials(&AppType::GrokBuild).1)
+            .and_then(|api_key| Self::normalize_puppyrouter_api_key_for_storage(&api_key))
+            .unwrap_or_else(|| provider.api_key.clone());
+        let grok_provider =
+            Self::puppyrouter_grokbuild_provider(&existing_grok_api_key, existing_grok.as_ref());
+        state
+            .db
+            .save_provider(AppType::GrokBuild.as_str(), &grok_provider)?;
+
         if let Some(mut desktop_provider) = Self::puppyrouter_claude_desktop_provider(&provider) {
             if let Some(existing) = state
                 .db
@@ -4058,6 +4581,7 @@ impl ProviderService {
             AppType::ClaudeDesktop,
             AppType::Codex,
             AppType::Gemini,
+            AppType::GrokBuild,
             AppType::OpenCode,
         ] {
             Self::enforce_locked_provider_sorting_for_app(state, &app_type)?;
@@ -4107,6 +4631,16 @@ impl ProviderService {
             }
             AppType::Gemini => {
                 Self::set_nested_string(settings, "env", "GEMINI_API_KEY", api_key);
+            }
+            AppType::GrokBuild => {
+                let Some(config) = settings.get("config").and_then(Value::as_str) else {
+                    return;
+                };
+                if let Ok(updated) = crate::grok_config::update_api_key(config, &api_key) {
+                    if let Some(root) = settings.as_object_mut() {
+                        root.insert("config".to_string(), Value::String(updated));
+                    }
+                }
             }
             AppType::OpenCode => {
                 Self::set_nested_string(settings, "options", "apiKey", api_key);

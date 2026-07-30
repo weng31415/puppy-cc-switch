@@ -236,6 +236,69 @@ fn codex_startup_import_skips_when_only_official_seed_exists() {
 }
 
 #[test]
+fn grokbuild_startup_import_preserves_official_state_without_creating_default() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let config_path = home.join(".grok").join("config.toml");
+    std::fs::create_dir_all(
+        config_path
+            .parent()
+            .expect("Grok Build config has a parent directory"),
+    )
+    .expect("create Grok Build config directory");
+    std::fs::write(&config_path, "[settings]\ntheme = \"dark\"\n")
+        .expect("seed official Grok Build config");
+
+    let state = create_test_state().expect("create test state");
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("import official Grok Build state");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get Grok Build providers after import");
+    assert_eq!(providers.len(), 1);
+    assert!(
+        !providers.contains_key("default"),
+        "official Grok Build state must not become a custom default provider"
+    );
+    let official = providers
+        .get("grokbuild-official")
+        .expect("official Grok Build provider");
+    assert_eq!(official.category.as_deref(), Some("official"));
+    assert_eq!(
+        official
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str()),
+        Some("[settings]\ntheme = \"dark\"\n"),
+        "the existing official config snapshot must be retained"
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_provider(AppType::GrokBuild.as_str())
+            .expect("get current Grok Build provider")
+            .as_deref(),
+        Some("grokbuild-official")
+    );
+
+    ProviderService::ensure_locked_puppyrouter_defaults(&state)
+        .expect("ensure PuppyRouter and Official providers");
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get sorted Grok Build providers");
+    assert_eq!(
+        providers["universal-grokbuild-puppyrouter"].sort_index,
+        Some(0)
+    );
+    assert_eq!(providers["grokbuild-official"].sort_index, Some(1));
+}
+
+#[test]
 fn switch_provider_updates_codex_live_and_state() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

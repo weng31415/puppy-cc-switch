@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const DOWNLOAD_URL = "https://www.puppyrouter.com/client";
+const DOWNLOAD_URL = "https://puppyrouter.com/client";
 
 interface DatabaseUpgradeProps {
   payload: {

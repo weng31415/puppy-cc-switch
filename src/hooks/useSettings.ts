@@ -110,6 +110,7 @@ export function useSettings(): UseSettingsResult {
       claude: sanitizeDir(data?.claudeConfigDir),
       codex: sanitizeDir(data?.codexConfigDir),
       gemini: sanitizeDir(data?.geminiConfigDir),
+      grokbuild: sanitizeDir(data?.grokConfigDir),
       opencode: sanitizeDir(data?.opencodeConfigDir),
       openclaw: sanitizeDir(data?.openclawConfigDir),
       hermes: sanitizeDir(data?.hermesConfigDir),
@@ -187,6 +188,7 @@ export function useSettings(): UseSettingsResult {
         const sanitizedClaudeDir = sanitizeDir(mergedSettings.claudeConfigDir);
         const sanitizedCodexDir = sanitizeDir(mergedSettings.codexConfigDir);
         const sanitizedGeminiDir = sanitizeDir(mergedSettings.geminiConfigDir);
+        const sanitizedGrokbuildDir = sanitizeDir(mergedSettings.grokConfigDir);
         const sanitizedOpencodeDir = sanitizeDir(
           mergedSettings.opencodeConfigDir,
         );
@@ -204,6 +206,7 @@ export function useSettings(): UseSettingsResult {
           claudeConfigDir: sanitizedClaudeDir,
           codexConfigDir: sanitizedCodexDir,
           geminiConfigDir: sanitizedGeminiDir,
+          grokConfigDir: sanitizedGrokbuildDir,
           opencodeConfigDir: sanitizedOpencodeDir,
           openclawConfigDir: sanitizedOpenclawDir,
           language: mergedSettings.language,
@@ -318,6 +321,7 @@ export function useSettings(): UseSettingsResult {
         const sanitizedClaudeDir = sanitizeDir(mergedSettings.claudeConfigDir);
         const sanitizedCodexDir = sanitizeDir(mergedSettings.codexConfigDir);
         const sanitizedGeminiDir = sanitizeDir(mergedSettings.geminiConfigDir);
+        const sanitizedGrokbuildDir = sanitizeDir(mergedSettings.grokConfigDir);
         const sanitizedOpencodeDir = sanitizeDir(
           mergedSettings.opencodeConfigDir,
         );
@@ -328,6 +332,7 @@ export function useSettings(): UseSettingsResult {
         const previousClaudeDir = sanitizeDir(data?.claudeConfigDir);
         const previousCodexDir = sanitizeDir(data?.codexConfigDir);
         const previousGeminiDir = sanitizeDir(data?.geminiConfigDir);
+        const previousGrokbuildDir = sanitizeDir(data?.grokConfigDir);
         const previousOpencodeDir = sanitizeDir(data?.opencodeConfigDir);
         const previousOpenclawDir = sanitizeDir(data?.openclawConfigDir);
         const {
@@ -341,6 +346,7 @@ export function useSettings(): UseSettingsResult {
           claudeConfigDir: sanitizedClaudeDir,
           codexConfigDir: sanitizedCodexDir,
           geminiConfigDir: sanitizedGeminiDir,
+          grokConfigDir: sanitizedGrokbuildDir,
           opencodeConfigDir: sanitizedOpencodeDir,
           openclawConfigDir: sanitizedOpenclawDir,
           language: mergedSettings.language,
@@ -427,6 +433,8 @@ export function useSettings(): UseSettingsResult {
         const claudeDirChanged = sanitizedClaudeDir !== previousClaudeDir;
         const codexDirChanged = sanitizedCodexDir !== previousCodexDir;
         const geminiDirChanged = sanitizedGeminiDir !== previousGeminiDir;
+        const grokbuildDirChanged =
+          sanitizedGrokbuildDir !== previousGrokbuildDir;
         const opencodeDirChanged = sanitizedOpencodeDir !== previousOpencodeDir;
         const openclawDirChanged = sanitizedOpenclawDir !== previousOpenclawDir;
         if (
@@ -434,6 +442,7 @@ export function useSettings(): UseSettingsResult {
           (claudeDirChanged ||
             codexDirChanged ||
             geminiDirChanged ||
+            grokbuildDirChanged ||
             opencodeDirChanged ||
             openclawDirChanged)
         ) {

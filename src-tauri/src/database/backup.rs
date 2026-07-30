@@ -15,6 +15,42 @@ use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- puppyrouter app SQLite 导出";
 
+/// PRAGMAs emitted by PuppyRouter App's SQL export. Other PRAGMAs are denied
+/// during import because some can redirect SQLite's file operations or weaken
+/// schema validation.
+const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
+
+/// Authorize only SQL that stays inside the temporary import database.
+///
+/// The export marker confirms the source format but is only a comment. An
+/// attacker could append `ATTACH`, `VACUUM INTO`, or a file-backed virtual
+/// table statement after a valid marker. SQLite's authorizer operates on the
+/// parsed statements, so it cannot be bypassed with comment, whitespace, or
+/// casing tricks.
+fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+
+    let escapes_temp_db = match context.action {
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => true,
+        AuthAction::CreateVtable { .. } | AuthAction::DropVtable { .. } => true,
+        AuthAction::Unknown { .. } => true,
+        AuthAction::Pragma { pragma_name, .. } => !IMPORT_ALLOWED_PRAGMAS
+            .iter()
+            .any(|allowed| pragma_name.eq_ignore_ascii_case(allowed)),
+        _ => false,
+    };
+
+    if escapes_temp_db {
+        log::warn!(
+            "Rejected unsafe SQL statement during import: {:?}",
+            context.action
+        );
+        Authorization::Deny
+    } else {
+        Authorization::Allow
+    }
+}
+
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_request_logs",
@@ -117,9 +153,15 @@ impl Database {
         let temp_conn =
             Connection::open(&temp_path).map_err(|e| AppError::Database(e.to_string()))?;
 
-        temp_conn
-            .execute_batch(sql_content)
-            .map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+        // Only untrusted external SQL runs under the authorizer. Schema
+        // maintenance immediately after this is application-owned SQL and
+        // should not be constrained by the import guard.
+        temp_conn.authorizer(Some(import_authorizer));
+        let batch_result = temp_conn.execute_batch(sql_content);
+        temp_conn.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        );
+        batch_result.map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
 
         // 补齐缺失表/索引并进行基础校验
         Self::create_tables_on_conn(&temp_conn)?;
@@ -689,10 +731,68 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, CC_SWITCH_SQL_EXPORT_HEADER};
     use crate::error::AppError;
     use crate::settings::{update_settings, AppSettings};
     use serial_test::serial;
+
+    #[test]
+    fn import_rejects_cross_file_statements_and_leaves_no_file_behind() -> Result<(), AppError> {
+        let cases: [(&str, &str); 2] = [
+            ("attach", "ATTACH DATABASE '{path}' AS evil;"),
+            ("vacuum-into", "VACUUM INTO '{path}';"),
+        ];
+
+        for (label, template) in cases {
+            let target =
+                std::env::temp_dir().join(format!("puppyrouter-import-authorizer-{label}.sqlite"));
+            let _ = std::fs::remove_file(&target);
+
+            let malicious = format!(
+                "{CC_SWITCH_SQL_EXPORT_HEADER}\n{}\n",
+                template.replace("{path}", &target.display().to_string())
+            );
+
+            let db = Database::memory()?;
+            let result = db.import_sql_string(&malicious);
+
+            assert!(result.is_err(), "{label} must be rejected");
+            assert!(
+                !target.exists(),
+                "rejected {label} must not create a file at {}",
+                target.display()
+            );
+
+            let _ = std::fs::remove_file(&target);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
+        let source = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('p1', 'claude', 'Provider One', '{}', '{}')",
+                [],
+            )?;
+        }
+        let exported = source.export_sql_string()?;
+
+        let target = Database::memory()?;
+        target.import_sql_string(&exported)?;
+
+        let conn = crate::database::lock_conn!(target.conn);
+        let name: String = conn.query_row(
+            "SELECT name FROM providers WHERE id = 'p1' AND app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(name, "Provider One");
+        Ok(())
+    }
 
     #[test]
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {

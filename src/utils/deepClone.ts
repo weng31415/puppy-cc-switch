@@ -15,6 +15,9 @@ function deepCloneFallback<T>(value: T): T {
 
   const cloned = {} as T;
   Object.keys(value).forEach((key) => {
+    // Assigning __proto__ mutates the clone's prototype instead of producing
+    // a normal data property. Keep the fallback consistent with structuredClone.
+    if (key === "__proto__") return;
     cloned[key as keyof T] = deepCloneFallback(value[key as keyof T]);
   });
   return cloned;

@@ -24,6 +24,7 @@ import {
   extractCodexWireApi,
   isCodexChatWireApi,
 } from "@/utils/providerConfigUtils";
+import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 import {
@@ -104,7 +105,11 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
   return false;
 }
 
-const extractApiUrl = (provider: Provider, fallbackText: string) => {
+const extractApiUrl = (
+  provider: Provider,
+  appId: AppId,
+  fallbackText: string,
+) => {
   if (provider.notes?.trim()) {
     return provider.notes.trim();
   }
@@ -124,6 +129,13 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
     }
 
     const baseUrl = (config as Record<string, any>)?.config;
+
+    if (appId === "grokbuild" && typeof baseUrl === "string") {
+      const extractedBaseUrl = extractGrokBuildBaseUrl(baseUrl);
+      if (extractedBaseUrl) {
+        return extractedBaseUrl;
+      }
+    }
 
     if (typeof baseUrl === "string" && baseUrl.includes("base_url")) {
       const extractedBaseUrl = extractCodexBaseUrl(baseUrl);
@@ -181,8 +193,8 @@ export function ProviderCard({
   });
 
   const displayUrl = useMemo(() => {
-    return extractApiUrl(provider, fallbackUrlText);
-  }, [provider, fallbackUrlText]);
+    return extractApiUrl(provider, appId, fallbackUrlText);
+  }, [provider, appId, fallbackUrlText]);
 
   const isClickableUrl = useMemo(() => {
     if (provider.notes?.trim()) {

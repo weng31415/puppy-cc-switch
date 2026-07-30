@@ -31,6 +31,7 @@ pub fn reset_test_fs() {
         ".codex",
         ".puppyrouter-app",
         ".gemini",
+        ".grok",
         ".config",
         ".openclaw",
         "profiles",

@@ -77,6 +77,7 @@ import { ClaudeFormFields } from "./ClaudeFormFields";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
+import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
@@ -256,6 +257,19 @@ export interface ProviderFormProps {
 export function ProviderForm(props: ProviderFormProps) {
   if (props.appId === "claude-desktop") {
     return <ClaudeDesktopProviderForm {...props} />;
+  }
+  if (props.appId === "grokbuild") {
+    return (
+      <GrokBuildProviderForm
+        providerId={props.providerId}
+        submitLabel={props.submitLabel}
+        onSubmit={props.onSubmit}
+        onCancel={props.onCancel}
+        onSubmittingChange={props.onSubmittingChange}
+        initialData={props.initialData}
+        showButtons={props.showButtons}
+      />
+    );
   }
 
   return <ProviderFormFull {...props} />;

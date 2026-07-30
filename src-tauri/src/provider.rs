@@ -164,6 +164,13 @@ impl Provider {
                 let api_key = first_non_empty(env, &["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
                 (base_url, api_key)
             }
+            // Grok Build uses an inline API key in config.toml. PuppyRouter
+            // deliberately does not resolve env_key / XAI_API_KEY fallbacks.
+            AppType::GrokBuild => settings
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(crate::grok_config::extract_credentials)
+                .unwrap_or_default(),
             // Hermes (config.yaml) flattens credentials at the top level, snake_case.
             AppType::Hermes => (
                 str_at(settings.get("base_url")),

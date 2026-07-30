@@ -13,10 +13,19 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, CornerDownRight } from "lucide-react";
 import { PromptConfirmation } from "./deeplink/PromptConfirmation";
 import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { ProviderIcon } from "./ProviderIcon";
+import { decodeBase64Utf8 } from "@/lib/utils/base64";
+import {
+  classifyEndpoint,
+  classifyEnvKey,
+  decodeDeeplinkPayload,
+  maskValue,
+  riskI18nKey,
+} from "@/utils/deeplinkRisk";
 
 interface DeeplinkError {
   url: string;
@@ -229,22 +238,10 @@ export function DeepLinkImportDialog() {
     raw: Record<string, unknown>;
   }
 
-  // Helper to decode base64 with UTF-8 support
-  const b64ToUtf8 = (str: string): string => {
-    try {
-      const binString = atob(str);
-      const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0) || 0);
-      return new TextDecoder().decode(bytes);
-    } catch (e) {
-      console.error("Failed to decode base64:", e);
-      return atob(str);
-    }
-  };
-
   const parsedConfig = useMemo((): ParsedConfig | null => {
     if (!request?.config) return null;
     try {
-      const decoded = b64ToUtf8(request.config);
+      const decoded = decodeBase64Utf8(request.config);
       const parsed = JSON.parse(decoded) as Record<string, unknown>;
 
       if (request.app === "claude") {
@@ -277,16 +274,28 @@ export function DeepLinkImportDialog() {
     }
   }, [request?.config, request?.app]);
 
-  // Helper to mask sensitive values
-  const maskValue = (key: string, value: string): string => {
-    const sensitiveKeys = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-    const isSensitive = sensitiveKeys.some((k) =>
-      key.toUpperCase().includes(k),
+  const EnvRow = ({ envKey, value }: { envKey: string; value: string }) => {
+    const risk = classifyEnvKey(envKey);
+    return (
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <span
+          className={`break-all font-mono ${
+            risk
+              ? "font-semibold text-yellow-700 dark:text-yellow-500"
+              : "text-muted-foreground"
+          }`}
+        >
+          {risk && (
+            <AlertTriangle
+              className="mr-1 inline h-3 w-3 align-text-bottom"
+              aria-hidden="true"
+            />
+          )}
+          {envKey}
+        </span>
+        <span className="break-all font-mono">{maskValue(envKey, value)}</span>
+      </div>
     );
-    if (isSensitive && value.length > 8) {
-      return `${value.substring(0, 8)}${"*".repeat(12)}`;
-    }
-    return value;
   };
 
   const getTitle = () => {
@@ -391,22 +400,45 @@ export function DeepLinkImportDialog() {
                       {t("deeplink.endpoint")}
                     </div>
                     <div className="col-span-2 text-sm break-all space-y-1">
-                      {request.endpoint?.split(",").map((ep, idx) => (
-                        <div
-                          key={idx}
-                          className={
-                            idx === 0 ? "font-medium" : "text-muted-foreground"
-                          }
-                        >
-                          {idx === 0 ? "🔹 " : "└ "}
-                          {ep.trim()}
-                          {idx === 0 && request.endpoint?.includes(",") && (
-                            <span className="text-xs text-muted-foreground ml-2">
-                              ({t("deeplink.primaryEndpoint")})
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                      {request.endpoint?.split(",").map((ep, idx) => {
+                        const endpointRisk = classifyEndpoint(ep.trim());
+                        return (
+                          <div
+                            key={idx}
+                            className={
+                              endpointRisk
+                                ? "font-semibold text-yellow-700 dark:text-yellow-500"
+                                : idx === 0
+                                  ? "font-medium"
+                                  : "text-muted-foreground"
+                            }
+                          >
+                            {idx > 0 && (
+                              <CornerDownRight
+                                className="mr-1 inline h-3 w-3 align-text-bottom"
+                                aria-hidden="true"
+                              />
+                            )}
+                            {endpointRisk && (
+                              <AlertTriangle
+                                className="mr-1 inline h-3 w-3 align-text-bottom"
+                                aria-hidden="true"
+                              />
+                            )}
+                            {ep.trim()}
+                            {idx === 0 && request.endpoint?.includes(",") && (
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                ({t("deeplink.primaryEndpoint")})
+                              </span>
+                            )}
+                            {endpointRisk && (
+                              <div className="mt-0.5 text-xs font-normal">
+                                {t(riskI18nKey(endpointRisk))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -527,17 +559,11 @@ export function DeepLinkImportDialog() {
                               <div className="space-y-1.5">
                                 {Object.entries(parsedConfig.env).map(
                                   ([key, value]) => (
-                                    <div
+                                    <EnvRow
                                       key={key}
-                                      className="grid grid-cols-2 gap-2 text-xs"
-                                    >
-                                      <span className="font-mono text-muted-foreground truncate">
-                                        {key}
-                                      </span>
-                                      <span className="font-mono truncate">
-                                        {maskValue(key, String(value))}
-                                      </span>
-                                    </div>
+                                      envKey={key}
+                                      value={String(value)}
+                                    />
                                   ),
                                 )}
                               </div>
@@ -554,17 +580,11 @@ export function DeepLinkImportDialog() {
                                     </div>
                                     {Object.entries(parsedConfig.auth).map(
                                       ([key, value]) => (
-                                        <div
+                                        <EnvRow
                                           key={key}
-                                          className="grid grid-cols-2 gap-2 text-xs pl-2"
-                                        >
-                                          <span className="font-mono text-muted-foreground truncate">
-                                            {key}
-                                          </span>
-                                          <span className="font-mono truncate">
-                                            {maskValue(key, String(value))}
-                                          </span>
-                                        </div>
+                                          envKey={key}
+                                          value={String(value)}
+                                        />
                                       ),
                                     )}
                                   </div>
@@ -590,17 +610,11 @@ export function DeepLinkImportDialog() {
                               <div className="space-y-1.5">
                                 {Object.entries(parsedConfig.env).map(
                                   ([key, value]) => (
-                                    <div
+                                    <EnvRow
                                       key={key}
-                                      className="grid grid-cols-2 gap-2 text-xs"
-                                    >
-                                      <span className="font-mono text-muted-foreground truncate">
-                                        {key}
-                                      </span>
-                                      <span className="font-mono truncate">
-                                        {maskValue(key, String(value))}
-                                      </span>
-                                    </div>
+                                      envKey={key}
+                                      value={String(value)}
+                                    />
                                   ),
                                 )}
                               </div>
@@ -634,12 +648,12 @@ export function DeepLinkImportDialog() {
                         <div className="col-span-2 text-sm">
                           <span
                             className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
-                              request.usageEnabled !== false
+                              request.usageEnabled === true
                                 ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
                                 : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
                             }`}
                           >
-                            {request.usageEnabled !== false
+                            {request.usageEnabled === true
                               ? t("deeplink.usageScriptEnabled", {
                                   defaultValue: "已启用",
                                 })
@@ -648,6 +662,26 @@ export function DeepLinkImportDialog() {
                                 })}
                           </span>
                         </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium text-muted-foreground">
+                          {t("deeplink.usageScriptCode")}
+                        </div>
+                        <pre className="max-h-48 overflow-auto rounded border border-border-default bg-muted/40 p-2 font-mono text-xs whitespace-pre-wrap break-all">
+                          {decodeDeeplinkPayload(
+                            request.usageScript,
+                            decodeBase64Utf8,
+                          )}
+                        </pre>
+                      </div>
+
+                      <div className="flex items-start gap-2 text-sm text-yellow-600 dark:text-yellow-500">
+                        <AlertTriangle
+                          className="mt-0.5 h-4 w-4 shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span>{t("deeplink.usageScriptWarning")}</span>
                       </div>
 
                       {/* Usage API Key (if different from provider) */}

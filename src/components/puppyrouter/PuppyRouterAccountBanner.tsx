@@ -55,6 +55,10 @@ import {
   extractCodexBaseUrl,
   getApiKeyFromConfig,
 } from "@/utils/providerConfigUtils";
+import {
+  extractGrokBuildApiKey,
+  extractGrokBuildBaseUrl,
+} from "@/utils/grokBuildConfig";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -81,11 +85,12 @@ const AUTO_APPLY_APP_IDS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
 ];
 
 const MANUAL_ONLY_APP_IDS: AppId[] = ["openclaw", "hermes"];
-const PUPPYROUTER_WALLET_URL = "https://www.puppyrouter.com/console/topup";
+const PUPPYROUTER_WALLET_URL = "https://puppyrouter.com/console/topup";
 
 type DiagnoseFixAction = "cloud" | "live";
 
@@ -181,6 +186,9 @@ function readBaseUrlFromSettings(
   if (appId === "gemini") {
     return readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]);
   }
+  if (appId === "grokbuild") {
+    return extractGrokBuildBaseUrl(readStringPath(settings, ["config"]));
+  }
   if (appId === "opencode") {
     return readStringPath(
       resolveOpenCodeProviderSettings(settings, providerId),
@@ -200,6 +208,9 @@ function readApiKeyFromSettings(
       resolveOpenCodeProviderSettings(settings, providerId),
       ["options", "apiKey"],
     );
+  }
+  if (appId === "grokbuild") {
+    return extractGrokBuildApiKey(readStringPath(settings, ["config"]));
   }
   if (!isRecord(settings)) return "";
   return getApiKeyFromConfig(JSON.stringify(settings), appId);
@@ -525,23 +536,6 @@ export function PuppyRouterAccountBanner({
         queryKey: ["providers", activeApp],
         type: "all",
       });
-      await queryClient.invalidateQueries({
-        queryKey: ["puppyrouterLiveConfigStatus", activeApp],
-      });
-      if (activeApp === "claude-desktop") {
-        await queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
-        await queryClient.invalidateQueries({
-          queryKey: ["claudeDesktopStatus"],
-        });
-      }
-      if (activeApp === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeCurrentModel"],
-        });
-      }
     } catch (error) {
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
       toast.error(

@@ -7,6 +7,7 @@ export const PUPPYROUTER_PROVIDER_IDS: Partial<Record<AppId, string>> = {
   "claude-desktop": "universal-claude-desktop-puppyrouter",
   codex: "universal-codex-puppyrouter",
   gemini: "universal-gemini-puppyrouter",
+  grokbuild: "universal-grokbuild-puppyrouter",
   opencode: "puppyrouter",
 };
 
@@ -15,6 +16,7 @@ export const OFFICIAL_PROVIDER_IDS: Partial<Record<AppId, string>> = {
   "claude-desktop": "claude-desktop-official",
   codex: "codex-official",
   gemini: "gemini-official",
+  grokbuild: "grokbuild-official",
 };
 
 export const LOCKED_PROVIDER_APP_IDS: AppId[] = [
@@ -22,6 +24,7 @@ export const LOCKED_PROVIDER_APP_IDS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
 ];
 

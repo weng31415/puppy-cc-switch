@@ -56,7 +56,7 @@
   "puppyrouterAccount": {
     "loading": "正在读取 PuppyRouter 登录状态...",
     "notLoggedInTitle": "未登录 PuppyRouter，API Key 尚未自动同步",
-    "notLoggedInDescription": "登录后 puppyrouter app 会读取你的 PuppyRouter API key 和所属分组，并自动同步到 Claude Code、Claude Desktop、Codex、Gemini 和 OpenCode 的 PuppyRouter 供应商。",
+    "notLoggedInDescription": "登录后 puppyrouter app 会读取你的 PuppyRouter API key 和所属分组，并将所选 key 应用到 Claude Code、Claude Desktop、Codex、Gemini、Grok Build 和 OpenCode 的本地 PuppyRouter 供应商。需要另行启用供应商，才会写入客户端配置。",
     "loginCta": "登录并同步",
     "loggedIn": "已登录",
     "group": "分组：{{group}}",
@@ -65,8 +65,8 @@
     "selectCloudGroup": "选择云端分组",
     "groupChangeSuccess": "已将 {{name}} 的分组修改为 {{group}}",
     "groupChangeFailed": "修改云端分组失败：{{error}}",
-    "applyToApp": "应用并启用 {{app}}",
-    "appliedToApp": "已应用并启用 {{app}}",
+    "applyToApp": "应用到 {{app}}",
+    "appliedToApp": "已应用到 {{app}}",
     "manualApplyUnavailable": "需要手动配置",
     "balance": "余额",
     "balanceLoading": "读取中",
@@ -873,6 +873,8 @@
     "codexConfigDirDescription": "覆盖 Codex 配置目录。",
     "geminiConfigDir": "Gemini 配置目录",
     "geminiConfigDirDescription": "覆盖 Gemini 配置目录 (.env)。",
+    "grokConfigDir": "Grok Build 配置目录",
+    "grokConfigDirDescription": "覆盖 Grok Build 配置目录 (config.toml)。",
     "opencodeConfigDir": "OpenCode 配置目录",
     "opencodeConfigDirDescription": "覆盖 OpenCode 配置目录 (opencode.json)。",
     "openclawConfigDir": "OpenClaw 配置目录",
@@ -882,6 +884,7 @@
     "browsePlaceholderClaude": "例如：/home/<你的用户名>/.claude",
     "browsePlaceholderCodex": "例如：/home/<你的用户名>/.codex",
     "browsePlaceholderGemini": "例如：/home/<你的用户名>/.gemini",
+    "browsePlaceholderGrok": "例如：/home/<你的用户名>/.grok",
     "browsePlaceholderOpencode": "例如：/home/<你的用户名>/.config/opencode",
     "browsePlaceholderOpenclaw": "例如：/home/<你的用户名>/.openclaw",
     "browsePlaceholderHermes": "例如：/home/<你的用户名>/.hermes",
@@ -993,9 +996,34 @@
     "claude-desktop": "Claude Desktop",
     "codex": "Codex",
     "gemini": "Gemini",
+    "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
     "hermes": "Hermes"
+  },
+  "grokbuild": {
+    "form": {
+      "providerName": "供应商名称",
+      "modelId": "模型 ID",
+      "endpoint": "API 地址",
+      "apiKey": "API Key",
+      "contextWindow": "上下文窗口",
+      "puppyrouterEndpointLocked": "PuppyRouter 地址由应用统一管理。",
+      "puppyrouterApiKeyManaged": "由 PuppyRouter 管理",
+      "puppyrouterApiKeyManagedHint": "请在 PuppyRouter 账户面板中选择 API key。",
+      "officialTitle": "Grok 官方",
+      "officialDescription": "Grok Build 自行管理官方登录。启用此供应商会移除自定义模型路由，不会修改你的官方登录状态。",
+      "errors": {
+        "nameRequired": "请输入供应商名称",
+        "endpointRequired": "请输入 API 地址",
+        "endpointInvalid": "请输入有效的 HTTP 或 HTTPS 地址",
+        "modelRequired": "请输入模型 ID",
+        "contextWindowInvalid": "上下文窗口必须是正整数",
+        "apiKeyRequired": "请输入 API Key",
+        "configInvalid": "config.toml 无效：{{error}}",
+        "saveFailed": "保存 Grok Build 供应商失败：{{error}}"
+      }
+    }
   },
   "sessionManager": {
     "title": "会话管理",
@@ -2372,7 +2400,11 @@
       "title": "批量导入 MCP Servers",
       "targetApps": "目标应用",
       "serverCount": "MCP Servers ({{count}} 个)",
-      "enabledWarning": "导入后将立即写入所有指定应用的配置文件"
+      "enabledWarning": "导入后将立即写入所有指定应用的配置文件",
+      "command": "命令",
+      "args": "参数",
+      "env": "环境变量",
+      "url": "地址"
     },
     "prompt": {
       "title": "导入系统提示词",
@@ -2394,10 +2426,17 @@
     "usageScript": "用量查询",
     "usageScriptEnabled": "已启用",
     "usageScriptDisabled": "未启用",
+    "usageScriptCode": "用量脚本代码",
+    "usageScriptWarning": "该脚本会随供应商配置保存。除非链接明确请求启用，否则会保持未启用；导入前请完整查看代码。",
     "usageApiKey": "用量 API Key",
     "usageBaseUrl": "用量查询地址",
     "usageAutoInterval": "自动查询",
-    "usageAutoIntervalValue": "每 {{minutes}} 分钟"
+    "usageAutoIntervalValue": "每 {{minutes}} 分钟",
+    "risk": {
+      "envHijack": "该配置包含可能改变进程加载代码或信任证书方式的环境变量。请仅从可信来源导入。",
+      "privateEndpoint": "该地址指向本机或内网。仅在它是你自己的本地服务时导入。",
+      "shellCommand": "该配置会通过 shell 执行完整命令。导入前请检查每一个命令参数。"
+    }
   },
   "iconPicker": {
     "search": "搜索图标",

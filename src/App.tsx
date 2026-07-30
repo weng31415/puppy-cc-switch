@@ -130,6 +130,7 @@ import {
   isPuppyRouterProviderId,
 } from "@/utils/lockedProviders";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 
 type View =
   | "providers"
@@ -153,6 +154,10 @@ interface SyncStatusUpdatedPayload {
   error?: string;
 }
 
+interface UniversalProviderSyncedPayload {
+  localOnly?: boolean;
+}
+
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
@@ -162,6 +167,7 @@ const VALID_APPS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
   "openclaw",
   "hermes",
@@ -199,6 +205,7 @@ const PUPPYROUTER_CONFIG_STATUS_APPS: AppId[] = [
   "claude-desktop",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
 ];
 
@@ -264,6 +271,11 @@ async function readPuppyRouterLiveConfigured(appId: AppId): Promise<boolean> {
       readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]),
     );
   }
+  if (appId === "grokbuild") {
+    return isPuppyRouterUrl(
+      extractGrokBuildBaseUrl(readStringPath(settings, ["config"])),
+    );
+  }
 
   return true;
 }
@@ -321,6 +333,7 @@ function App() {
     "claude-desktop": true,
     codex: true,
     gemini: true,
+    grokbuild: true,
     opencode: true,
     openclaw: true,
     hermes: true,
@@ -331,6 +344,7 @@ function App() {
     if (visibleApps["claude-desktop"]) return "claude-desktop";
     if (visibleApps.codex) return "codex";
     if (visibleApps.gemini) return "gemini";
+    if (visibleApps.grokbuild) return "grokbuild";
     if (visibleApps.opencode) return "opencode";
     if (visibleApps.openclaw) return "openclaw";
     if (visibleApps.hermes) return "hermes";
@@ -357,6 +371,17 @@ function App() {
       setCurrentView("providers");
     }
   }, [sharedFeatureApp, currentView]);
+
+  useEffect(() => {
+    if (
+      activeApp === "grokbuild" &&
+      ["prompts", "skills", "skillsDiscovery", "mcp", "sessions"].includes(
+        currentView,
+      )
+    ) {
+      setCurrentView("providers");
+    }
+  }, [activeApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [usageProvider, setUsageProvider] = useState<Provider | null>(null);
@@ -463,7 +488,10 @@ function App() {
       currentView === "openclawAgents");
   const { data: openclawHealthWarnings = [] } =
     useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
+  const hasSkillsSupport =
+    sharedFeatureApp !== "openclaw" && sharedFeatureApp !== "grokbuild";
+  const hasPromptsSupport = sharedFeatureApp !== "grokbuild";
+  const hasMcpSupport = sharedFeatureApp !== "grokbuild";
   const hasSessionSupport =
     sharedFeatureApp === "claude" ||
     sharedFeatureApp === "codex" ||
@@ -473,7 +501,10 @@ function App() {
     sharedFeatureApp === "hermes";
 
   const shouldShowRestartNotice = (appId: AppId) =>
-    appId === "claude" || appId === "codex" || appId === "claude-desktop";
+    appId === "claude" ||
+    appId === "codex" ||
+    appId === "claude-desktop" ||
+    appId === "grokbuild";
 
   const openRestartNoticeForProvider = (provider: Provider, appId: AppId) => {
     if (!shouldShowRestartNotice(appId) || !isLockedProvider(provider, appId)) {
@@ -582,17 +613,22 @@ function App() {
     };
   }, [activeApp, refetch]);
 
-  useTauriEvent("universal-provider-synced", async () => {
-    await queryClient.invalidateQueries({ queryKey: ["providers"] });
-    await queryClient.invalidateQueries({
-      queryKey: ["puppyrouterLiveConfigStatus"],
-    });
-    try {
-      await providersApi.updateTrayMenu();
-    } catch (error) {
-      console.error("[App] Failed to update tray menu", error);
-    }
-  });
+  useTauriEvent<UniversalProviderSyncedPayload | null | undefined>(
+    "universal-provider-synced",
+    async (payload) => {
+      await queryClient.invalidateQueries({ queryKey: ["providers"] });
+      if (!payload?.localOnly) {
+        await queryClient.invalidateQueries({
+          queryKey: ["puppyrouterLiveConfigStatus"],
+        });
+      }
+      try {
+        await providersApi.updateTrayMenu();
+      } catch (error) {
+        console.error("[App] Failed to update tray menu", error);
+      }
+    },
+  );
 
   useTauriEvent<SyncStatusUpdatedPayload | null | undefined>(
     "webdav-sync-status-updated",
@@ -1342,7 +1378,9 @@ function App() {
       ? "Codex"
       : restartNotice?.appId === "claude-desktop"
         ? "Claude Desktop"
-        : "Claude Code";
+        : restartNotice?.appId === "grokbuild"
+          ? "Grok Build"
+          : "Claude Code";
   const restartNoticeManager = isWindows()
     ? t("providerRestartNotice.taskManager", {
         defaultValue: "任务管理器",
@@ -1582,7 +1620,8 @@ function App() {
               {currentView === "providers" &&
                 activeApp !== "opencode" &&
                 activeApp !== "openclaw" &&
-                activeApp !== "hermes" && (
+                activeApp !== "hermes" &&
+                activeApp !== "grokbuild" && (
                   <div
                     className="flex shrink-0 items-center gap-1.5"
                     style={{ WebkitAppRegion: "no-drag" } as any}
@@ -1942,9 +1981,15 @@ function App() {
                                     size="sm"
                                     aria-label={t("prompts.manage")}
                                     onClick={() => setCurrentView("prompts")}
-                                    className={compactHeaderButtonClass}
+                                    className={cn(
+                                      headerButtonClass,
+                                      "transition-all duration-200 ease-in-out overflow-hidden",
+                                      hasPromptsSupport
+                                        ? "opacity-100 w-8 scale-100 px-2"
+                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
+                                    )}
                                   >
-                                    <Book className="w-4 h-4" />
+                                    <Book className="flex-shrink-0 w-4 h-4" />
                                   </Button>,
                                 )}
                                 {renderHeaderTooltip(
@@ -1972,7 +2017,13 @@ function App() {
                                     size="sm"
                                     aria-label={t("mcp.title")}
                                     onClick={() => setCurrentView("mcp")}
-                                    className={compactHeaderButtonClass}
+                                    className={cn(
+                                      headerButtonClass,
+                                      "transition-all duration-200 ease-in-out overflow-hidden",
+                                      hasMcpSupport
+                                        ? "opacity-100 w-8 scale-100 px-2"
+                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
+                                    )}
                                   >
                                     <McpIcon size={16} />
                                   </Button>,

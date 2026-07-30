@@ -56,7 +56,7 @@
   "puppyrouterAccount": {
     "loading": "正在讀取 PuppyRouter 登入狀態...",
     "notLoggedInTitle": "尚未登入 PuppyRouter，API Key 尚未自動同步",
-    "notLoggedInDescription": "登入後 puppyrouter app 會讀取你的 PuppyRouter API key 和所屬分組，並自動同步到 Claude Code、Claude Desktop、Codex、Gemini 和 OpenCode 的 PuppyRouter 供應商。",
+    "notLoggedInDescription": "登入後 puppyrouter app 會讀取你的 PuppyRouter API key 和所屬分組，並將所選 key 套用到 Claude Code、Claude Desktop、Codex、Gemini、Grok Build 和 OpenCode 的本機 PuppyRouter 供應商。需要另行啟用供應商，才會寫入用戶端設定。",
     "loginCta": "登入並同步",
     "loggedIn": "已登入",
     "group": "分組：{{group}}",
@@ -65,8 +65,8 @@
     "selectCloudGroup": "選擇雲端分組",
     "groupChangeSuccess": "已將 {{name}} 的分組修改為 {{group}}",
     "groupChangeFailed": "修改雲端分組失敗：{{error}}",
-    "applyToApp": "套用並啟用 {{app}}",
-    "appliedToApp": "已套用並啟用 {{app}}",
+    "applyToApp": "套用到 {{app}}",
+    "appliedToApp": "已套用到 {{app}}",
     "manualApplyUnavailable": "需要手動設定",
     "balance": "餘額",
     "balanceLoading": "讀取中",
@@ -873,6 +873,8 @@
     "codexConfigDirDescription": "覆寫 Codex 設定目錄。",
     "geminiConfigDir": "Gemini 設定目錄",
     "geminiConfigDirDescription": "覆寫 Gemini 設定目錄 (.env)。",
+    "grokConfigDir": "Grok Build 設定目錄",
+    "grokConfigDirDescription": "覆寫 Grok Build 設定目錄 (config.toml)。",
     "opencodeConfigDir": "OpenCode 設定目錄",
     "opencodeConfigDirDescription": "覆寫 OpenCode 設定目錄 (opencode.json)。",
     "openclawConfigDir": "OpenClaw 設定目錄",
@@ -882,6 +884,7 @@
     "browsePlaceholderClaude": "例如：/home/<您的帳號>/.claude",
     "browsePlaceholderCodex": "例如：/home/<您的帳號>/.codex",
     "browsePlaceholderGemini": "例如：/home/<您的帳號>/.gemini",
+    "browsePlaceholderGrok": "例如：/home/<您的帳號>/.grok",
     "browsePlaceholderOpencode": "例如：/home/<您的帳號>/.config/opencode",
     "browsePlaceholderOpenclaw": "例如：/home/<您的帳號>/.openclaw",
     "browsePlaceholderHermes": "例如：/home/<您的帳號>/.hermes",
@@ -993,9 +996,34 @@
     "claude-desktop": "Claude Desktop",
     "codex": "Codex",
     "gemini": "Gemini",
+    "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
     "hermes": "Hermes"
+  },
+  "grokbuild": {
+    "form": {
+      "providerName": "供應商名稱",
+      "modelId": "模型 ID",
+      "endpoint": "API 位址",
+      "apiKey": "API Key",
+      "contextWindow": "上下文視窗",
+      "puppyrouterEndpointLocked": "PuppyRouter 位址由應用程式統一管理。",
+      "puppyrouterApiKeyManaged": "由 PuppyRouter 管理",
+      "puppyrouterApiKeyManagedHint": "請在 PuppyRouter 帳戶面板中選擇 API key。",
+      "officialTitle": "Grok 官方",
+      "officialDescription": "Grok Build 會自行管理官方登入。啟用此供應商會移除自訂模型路由，不會修改你的官方登入狀態。",
+      "errors": {
+        "nameRequired": "請輸入供應商名稱",
+        "endpointRequired": "請輸入 API 位址",
+        "endpointInvalid": "請輸入有效的 HTTP 或 HTTPS 位址",
+        "modelRequired": "請輸入模型 ID",
+        "contextWindowInvalid": "上下文視窗必須是正整數",
+        "apiKeyRequired": "請輸入 API Key",
+        "configInvalid": "config.toml 無效：{{error}}",
+        "saveFailed": "儲存 Grok Build 供應商失敗：{{error}}"
+      }
+    }
   },
   "sessionManager": {
     "title": "工作階段管理",
@@ -2372,7 +2400,11 @@
       "title": "批次匯入 MCP Servers",
       "targetApps": "目標應用程式",
       "serverCount": "MCP Servers ({{count}} 個)",
-      "enabledWarning": "匯入後將立即寫入所有指定應用程式的設定檔"
+      "enabledWarning": "匯入後將立即寫入所有指定應用程式的設定檔",
+      "command": "命令",
+      "args": "參數",
+      "env": "環境變數",
+      "url": "位址"
     },
     "prompt": {
       "title": "匯入系統提示詞",
@@ -2394,10 +2426,17 @@
     "usageScript": "用量查詢",
     "usageScriptEnabled": "已啟用",
     "usageScriptDisabled": "未啟用",
+    "usageScriptCode": "用量腳本程式碼",
+    "usageScriptWarning": "此腳本會隨供應商設定保存。除非連結明確要求啟用，否則會保持未啟用；匯入前請完整查看程式碼。",
     "usageApiKey": "用量 API Key",
     "usageBaseUrl": "用量查詢位址",
     "usageAutoInterval": "自動查詢",
-    "usageAutoIntervalValue": "每 {{minutes}} 分鐘"
+    "usageAutoIntervalValue": "每 {{minutes}} 分鐘",
+    "risk": {
+      "envHijack": "此設定包含可能改變處理程序載入程式碼或信任憑證方式的環境變數。請僅從可信來源匯入。",
+      "privateEndpoint": "此位址指向本機或內部網路。僅在它是你自己的本機服務時匯入。",
+      "shellCommand": "此設定會透過 shell 執行完整命令。匯入前請檢查每一個命令參數。"
+    }
   },
   "iconPicker": {
     "search": "搜尋圖示",

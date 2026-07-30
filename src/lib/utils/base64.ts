@@ -1,19 +1,16 @@
+function toStandardBase64Alphabet(value: string): string {
+  return value.replace(/ /g, "+").replace(/-/g, "+").replace(/_/g, "/");
+}
+
 /**
- * Decode Base64 encoded UTF-8 string
+ * Decode Base64 encoded UTF-8 string.
  *
- * This function handles various Base64 edge cases that can occur when
- * Base64 strings are passed through URLs:
- * - Spaces (URL parsing may convert '+' to space)
- * - Missing padding ('=' characters)
- * - Different Base64 variants
- *
- * @param str - Base64 encoded string
- * @returns Decoded UTF-8 string
+ * Accepts standard and URL-safe Base64 so the confirmation UI sees the same
+ * payload that the Rust deeplink parser will import.
  */
 export function decodeBase64Utf8(str: string): string {
   try {
-    // Clean up the input: replace spaces with + (URL parsing may convert + to space)
-    let cleaned = str.trim().replace(/ /g, "+");
+    let cleaned = toStandardBase64Alphabet(str.trim());
 
     // Try to decode with standard Base64 first
     try {
@@ -34,7 +31,7 @@ export function decodeBase64Utf8(str: string): string {
     console.error("Base64 decode error:", e, "Input:", str);
     // Last resort fallback using deprecated but sometimes working method
     try {
-      return decodeURIComponent(escape(atob(str.replace(/ /g, "+"))));
+      return decodeURIComponent(escape(atob(toStandardBase64Alphabet(str))));
     } catch {
       // If all else fails, return original string
       return str;

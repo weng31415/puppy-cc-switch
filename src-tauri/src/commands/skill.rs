@@ -301,6 +301,10 @@ pub fn get_skill_repos(app_state: State<'_, AppState>) -> Result<Vec<SkillRepo>,
 /// 添加技能仓库
 #[tauri::command]
 pub fn add_skill_repo(repo: SkillRepo, app_state: State<'_, AppState>) -> Result<bool, String> {
+    // Repository coordinates are later embedded in a GitHub archive URL. Keep
+    // malformed values out of the database so users get an immediate error.
+    SkillService::validate_repo_ref(&repo.owner, &repo.name, &repo.branch)
+        .map_err(|error| error.to_string())?;
     app_state
         .db
         .save_skill_repo(&repo)
