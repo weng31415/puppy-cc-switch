@@ -222,7 +222,7 @@ pub fn write_gemini_env_text_atomic(content: &str) -> Result<(), AppError> {
         }
     }
 
-    write_text_file(&path, &content)?;
+    write_text_file(&path, content)?;
 
     // 设置文件权限为 600（仅所有者可读写）
     #[cfg(unix)]

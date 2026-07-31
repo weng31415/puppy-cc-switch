@@ -967,7 +967,7 @@ impl SkillService {
                 });
 
                 let remote_skill_dir = match remote_match {
-                    Some(rs) => match Self::resolve_skill_source_dir(&temp_dir, &rs.directory) {
+                    Some(rs) => match Self::resolve_skill_source_dir(temp_dir, &rs.directory) {
                         Some(path) => path,
                         None => continue,
                     },
