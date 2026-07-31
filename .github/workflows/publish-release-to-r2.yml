@@ -31,72 +31,17 @@ jobs:
             --dir release-assets
           ls -lh release-assets
 
-      - name: Validate installers and generate latest.json
+      - name: Validate installers and generate release manifests
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           DOWNLOAD_BASE_URL: https://pub-46dbf53707f84a02979c772ef87254ab.r2.dev/downloads
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require("fs");
-          const path = require("path");
-
-          const dir = "release-assets";
-          const tag = process.env.RELEASE_TAG;
-          const versionMatch = tag.match(/v?(\d+\.\d+\.\d+)/);
-          if (!versionMatch) {
-            throw new Error(`Could not extract a semantic version from tag ${tag}`);
-          }
-          const version = versionMatch[1];
-          const baseUrl = process.env.DOWNLOAD_BASE_URL.replace(/\/+$/, "");
-          const files = fs.readdirSync(dir).sort();
-
-          const requireOne = (suffix) => {
-            const matches = files.filter((file) => file.endsWith(suffix));
-            if (matches.length !== 1) {
-              throw new Error(
-                `Expected exactly one ${suffix} asset, found ${matches.length}`,
-              );
-            }
-            return matches[0];
-          };
-
-          requireOne("-Windows.msi");
-          requireOne("-Windows-arm64.msi");
-          requireOne("-macOS-arm64.dmg");
-          const linuxDeb = requireOne("-Ubuntu-x86_64.deb");
-
-          const platforms = {};
-          const addPlatform = (key, filename) => {
-            const signaturePath = path.join(dir, `${filename}.sig`);
-            if (!fs.existsSync(signaturePath)) {
-              throw new Error(`Missing updater signature for ${filename}`);
-            }
-            platforms[key] = {
-              signature: fs.readFileSync(signaturePath, "utf8").trim(),
-              url: `${baseUrl}/${filename}`,
-            };
-          };
-
-          addPlatform("windows-x86_64", requireOne("-Windows.msi"));
-          addPlatform("windows-aarch64", requireOne("-Windows-arm64.msi"));
-          addPlatform("darwin-aarch64", requireOne("-macOS.tar.gz"));
-          addPlatform("linux-x86_64-deb", linuxDeb);
-
-          const latest = {
-            version,
-            notes: `PuppyRouter App ${tag}`,
-            pub_date: new Date().toISOString(),
-            platforms,
-          };
-
-          fs.writeFileSync(
-            path.join(dir, "latest.json"),
-            `${JSON.stringify(latest, null, 2)}\n`,
-          );
-          console.log(fs.readFileSync(path.join(dir, "latest.json"), "utf8"));
-          NODE
+          node scripts/generate-release-manifests.mjs \
+            --dir=release-assets \
+            --release="$RELEASE_TAG" \
+            --base-url="$DOWNLOAD_BASE_URL"
 
           linux_deb="$(find release-assets -maxdepth 1 -type f -name '*-Ubuntu-x86_64.deb' -print -quit)"
           scripts/verify-linux-deb-updater.sh "$linux_deb"
@@ -126,11 +71,14 @@ jobs:
           aws s3 cp release-assets/ "s3://${R2_BUCKET}/downloads/" \
             --recursive \
             --exclude "latest.json" \
+            --exclude "manual-latest.json" \
             --endpoint-url "$endpoint" \
             --cache-control "public, max-age=31536000, immutable"
 
-          aws s3 cp release-assets/latest.json \
-            "s3://${R2_BUCKET}/downloads/latest.json" \
-            --endpoint-url "$endpoint" \
-            --cache-control "no-cache, max-age=60" \
-            --content-type "application/json"
+          for manifest in latest.json manual-latest.json; do
+            aws s3 cp "release-assets/$manifest" \
+              "s3://${R2_BUCKET}/downloads/$manifest" \
+              --endpoint-url "$endpoint" \
+              --cache-control "no-cache, max-age=60" \
+              --content-type "application/json"
+          done
