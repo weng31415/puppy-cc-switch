@@ -40,7 +40,8 @@
     "deleting": "削除中...",
     "auto": "自動",
     "enabled": "有効",
-    "notSet": "未設定"
+    "notSet": "未設定",
+    "more": "その他のアプリ"
   },
   "firstRunNotice": {
     "title": "puppyrouter app へようこそ",

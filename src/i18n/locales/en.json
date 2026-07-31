@@ -40,7 +40,8 @@
     "deleting": "Deleting...",
     "auto": "Auto",
     "enabled": "Enabled",
-    "notSet": "Not Set"
+    "notSet": "Not Set",
+    "more": "More apps"
   },
   "firstRunNotice": {
     "title": "Welcome to puppyrouter app",

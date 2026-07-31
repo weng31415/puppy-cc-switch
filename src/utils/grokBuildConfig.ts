@@ -21,8 +21,7 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
 const asString = (value: unknown, fallback = "") =>
   typeof value === "string" ? value.trim() : fallback;
 
-const normalizeBaseUrl = (value: string) =>
-  value.trim().replace(/\/+$/, "");
+const normalizeBaseUrl = (value: string) => value.trim().replace(/\/+$/, "");
 
 function selectedModelConfig(configToml: string) {
   const root = asRecord(parseToml(configToml));
@@ -89,8 +88,7 @@ export function buildGrokBuildConfig(values: GrokBuildConfigValues): string {
         base_url: normalizeBaseUrl(values.baseUrl),
         name: values.name.trim(),
         api_key: values.apiKey.trim(),
-        api_backend:
-          values.apiBackend.trim() || GROK_BUILD_DEFAULT_API_BACKEND,
+        api_backend: values.apiBackend.trim() || GROK_BUILD_DEFAULT_API_BACKEND,
         context_window: contextWindow,
       },
     },
@@ -132,7 +130,9 @@ export function validateGrokBuildConfig(configToml: string): string | null {
   }
 }
 
-export function extractGrokBuildBaseUrl(configToml: string | undefined): string {
+export function extractGrokBuildBaseUrl(
+  configToml: string | undefined,
+): string {
   return parseGrokBuildConfig(configToml).baseUrl;
 }
 

@@ -124,6 +124,7 @@ vi.mock("@/components/AppSwitcher", () => ({
       <span>{activeApp}</span>
       <button onClick={() => onSwitch("claude")}>switch-claude</button>
       <button onClick={() => onSwitch("codex")}>switch-codex</button>
+      <button onClick={() => onSwitch("grokbuild")}>switch-grokbuild</button>
       <button onClick={() => onSwitch("openclaw")}>switch-openclaw</button>
     </div>
   ),
@@ -263,6 +264,24 @@ describe("App integration with MSW", () => {
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalled();
     });
+  });
+
+  it("hides the unsupported feature toolbar for Grok Build", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("provider-feature-actions")).toBeVisible();
+
+    fireEvent.click(screen.getByText("switch-grokbuild"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-feature-actions")).toHaveClass(
+        "hidden",
+      ),
+    );
   });
 
   it("duplicates openclaw providers with a generated key that avoids live-only ids", async () => {

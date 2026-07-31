@@ -54,7 +54,6 @@ import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
 import { hermesKeys, useOpenHermesWebUI } from "@/hooks/useHermes";
 import { hermesApi } from "@/lib/api/hermes";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
-import { useAutoCompact } from "@/hooks/useAutoCompact";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
@@ -398,9 +397,6 @@ function App() {
 
   const effectiveEditingProvider = useLastValidValue(editingProvider);
   const effectiveUsageProvider = useLastValidValue(usageProvider);
-
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const isToolbarCompact = useAutoCompact(toolbarRef);
 
   useUsageCacheBridge();
 
@@ -1484,7 +1480,7 @@ function App() {
       )}
 
       <header
-        className="glass-header fixed z-50 w-full transition-all duration-300"
+        className="glass-header fixed z-50 w-full"
         {...DRAG_REGION_ATTR}
         style={
           {
@@ -1640,11 +1636,11 @@ function App() {
                   </div>
                 )}
               <div
-                ref={toolbarRef}
-                className="flex flex-1 min-w-0 overflow-x-hidden items-center py-4 pr-2"
+                className="flex flex-1 min-w-0 items-center overflow-hidden py-4 pr-2"
+                data-testid="header-toolbar"
               >
                 <div
-                  className="flex shrink-0 items-center gap-1.5 ml-auto"
+                  className="ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-1.5 overflow-hidden"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
                   {renderHeaderTooltip(
@@ -1813,225 +1809,200 @@ function App() {
                         activeApp={activeApp}
                         onSwitch={setActiveApp}
                         visibleApps={visibleApps}
-                        compact={isToolbarCompact}
                       />
 
-                      <div className="flex items-center gap-1 p-1 rounded-xl border border-border bg-muted/80">
-                        <AnimatePresence mode="wait">
-                          <motion.div
-                            key={
-                              activeApp === "openclaw"
-                                ? "openclaw"
-                                : activeApp === "hermes"
-                                  ? "hermes"
-                                  : "default"
-                            }
-                            className="flex items-center gap-1"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.15 }}
-                          >
-                            {activeApp === "hermes" ? (
-                              <>
-                                {renderHeaderTooltip(
-                                  t("skills.manage"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("skills.manage")}
-                                    onClick={() => setCurrentView("skills")}
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <Wrench className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("hermes.memory.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("hermes.memory.title")}
-                                    onClick={() =>
-                                      setCurrentView("hermesMemory")
-                                    }
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <Brain className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("hermes.webui.open"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("hermes.webui.open")}
-                                    onClick={() => void openHermesWebUI()}
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <LayoutDashboard className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("mcp.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("mcp.title")}
-                                    onClick={() => setCurrentView("mcp")}
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <McpIcon size={16} />
-                                  </Button>,
-                                )}
-                              </>
-                            ) : activeApp === "openclaw" ? (
-                              <>
-                                {renderHeaderTooltip(
-                                  t("workspace.manage"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("workspace.manage")}
-                                    onClick={() => setCurrentView("workspace")}
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <FolderOpen className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("openclaw.env.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("openclaw.env.title")}
-                                    onClick={() =>
-                                      setCurrentView("openclawEnv")
-                                    }
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <KeyRound className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("openclaw.tools.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("openclaw.tools.title")}
-                                    onClick={() =>
-                                      setCurrentView("openclawTools")
-                                    }
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <Shield className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("openclaw.agents.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("openclaw.agents.title")}
-                                    onClick={() =>
-                                      setCurrentView("openclawAgents")
-                                    }
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <Cpu className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("sessionManager.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("sessionManager.title")}
-                                    onClick={() => setCurrentView("sessions")}
-                                    className={compactHeaderButtonClass}
-                                  >
-                                    <History className="w-4 h-4" />
-                                  </Button>,
-                                )}
-                              </>
-                            ) : (
-                              <>
-                                {renderHeaderTooltip(
-                                  t("skills.manage"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("skills.manage")}
-                                    onClick={() => setCurrentView("skills")}
-                                    className={cn(
-                                      headerButtonClass,
-                                      "transition-all duration-200 ease-in-out overflow-hidden",
-                                      hasSkillsSupport
-                                        ? "opacity-100 w-8 scale-100 px-2"
-                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                    )}
-                                  >
-                                    <Wrench className="flex-shrink-0 w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("prompts.manage"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("prompts.manage")}
-                                    onClick={() => setCurrentView("prompts")}
-                                    className={cn(
-                                      headerButtonClass,
-                                      "transition-all duration-200 ease-in-out overflow-hidden",
-                                      hasPromptsSupport
-                                        ? "opacity-100 w-8 scale-100 px-2"
-                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                    )}
-                                  >
-                                    <Book className="flex-shrink-0 w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("sessionManager.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("sessionManager.title")}
-                                    onClick={() => setCurrentView("sessions")}
-                                    className={cn(
-                                      headerButtonClass,
-                                      "transition-all duration-200 ease-in-out overflow-hidden",
-                                      hasSessionSupport
-                                        ? "opacity-100 w-8 scale-100 px-2"
-                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                    )}
-                                  >
-                                    <History className="flex-shrink-0 w-4 h-4" />
-                                  </Button>,
-                                )}
-                                {renderHeaderTooltip(
-                                  t("mcp.title"),
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label={t("mcp.title")}
-                                    onClick={() => setCurrentView("mcp")}
-                                    className={cn(
-                                      headerButtonClass,
-                                      "transition-all duration-200 ease-in-out overflow-hidden",
-                                      hasMcpSupport
-                                        ? "opacity-100 w-8 scale-100 px-2"
-                                        : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                    )}
-                                  >
-                                    <McpIcon size={16} />
-                                  </Button>,
-                                )}
-                              </>
-                            )}
-                          </motion.div>
-                        </AnimatePresence>
+                      <div
+                        className={cn(
+                          activeApp === "grokbuild"
+                            ? "hidden"
+                            : "flex items-center gap-1 p-1 rounded-xl border border-border bg-muted/80",
+                        )}
+                        data-testid="provider-feature-actions"
+                      >
+                        <div className="flex items-center gap-1">
+                          {activeApp === "hermes" ? (
+                            <>
+                              {renderHeaderTooltip(
+                                t("skills.manage"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("skills.manage")}
+                                  onClick={() => setCurrentView("skills")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <Wrench className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("hermes.memory.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("hermes.memory.title")}
+                                  onClick={() => setCurrentView("hermesMemory")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <Brain className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("hermes.webui.open"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("hermes.webui.open")}
+                                  onClick={() => void openHermesWebUI()}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <LayoutDashboard className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("mcp.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("mcp.title")}
+                                  onClick={() => setCurrentView("mcp")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <McpIcon size={16} />
+                                </Button>,
+                              )}
+                            </>
+                          ) : activeApp === "openclaw" ? (
+                            <>
+                              {renderHeaderTooltip(
+                                t("workspace.manage"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("workspace.manage")}
+                                  onClick={() => setCurrentView("workspace")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <FolderOpen className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("openclaw.env.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("openclaw.env.title")}
+                                  onClick={() => setCurrentView("openclawEnv")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <KeyRound className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("openclaw.tools.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("openclaw.tools.title")}
+                                  onClick={() =>
+                                    setCurrentView("openclawTools")
+                                  }
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <Shield className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("openclaw.agents.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("openclaw.agents.title")}
+                                  onClick={() =>
+                                    setCurrentView("openclawAgents")
+                                  }
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <Cpu className="w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("sessionManager.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("sessionManager.title")}
+                                  onClick={() => setCurrentView("sessions")}
+                                  className={compactHeaderButtonClass}
+                                >
+                                  <History className="w-4 h-4" />
+                                </Button>,
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {renderHeaderTooltip(
+                                t("skills.manage"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("skills.manage")}
+                                  onClick={() => setCurrentView("skills")}
+                                  className={cn(
+                                    headerButtonClass,
+                                    !hasSkillsSupport && "hidden",
+                                  )}
+                                >
+                                  <Wrench className="flex-shrink-0 w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("prompts.manage"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("prompts.manage")}
+                                  onClick={() => setCurrentView("prompts")}
+                                  className={cn(
+                                    headerButtonClass,
+                                    !hasPromptsSupport && "hidden",
+                                  )}
+                                >
+                                  <Book className="flex-shrink-0 w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("sessionManager.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("sessionManager.title")}
+                                  onClick={() => setCurrentView("sessions")}
+                                  className={cn(
+                                    headerButtonClass,
+                                    !hasSessionSupport && "hidden",
+                                  )}
+                                >
+                                  <History className="flex-shrink-0 w-4 h-4" />
+                                </Button>,
+                              )}
+                              {renderHeaderTooltip(
+                                t("mcp.title"),
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t("mcp.title")}
+                                  onClick={() => setCurrentView("mcp")}
+                                  className={cn(
+                                    headerButtonClass,
+                                    !hasMcpSupport && "hidden",
+                                  )}
+                                >
+                                  <McpIcon size={16} />
+                                </Button>,
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
 
                       {renderHeaderTooltip(

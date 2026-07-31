@@ -29,8 +29,7 @@ export function GrokBuildProviderForm({
 }: GrokBuildProviderFormProps) {
   const { t } = useTranslation();
   const isOfficial = initialData?.category === "official";
-  const isPuppyRouter =
-    providerId === PUPPYROUTER_PROVIDER_IDS.grokbuild;
+  const isPuppyRouter = providerId === PUPPYROUTER_PROVIDER_IDS.grokbuild;
   const initialConfigText =
     typeof initialData?.settingsConfig?.config === "string"
       ? initialData.settingsConfig.config
@@ -138,7 +137,9 @@ export function GrokBuildProviderForm({
     });
     const configError = validateGrokBuildConfig(config);
     if (configError && !isPuppyRouter) {
-      toast.error(t("grokbuild.form.errors.configInvalid", { error: configError }));
+      toast.error(
+        t("grokbuild.form.errors.configInvalid", { error: configError }),
+      );
       return;
     }
 
