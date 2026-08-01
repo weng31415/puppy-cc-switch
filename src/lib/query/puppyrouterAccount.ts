@@ -9,7 +9,7 @@ import {
 } from "@/lib/api/puppyrouterAccount";
 import type { AppId } from "@/lib/api/types";
 
-export const PUPPYROUTER_ACCOUNT_STATUS_CACHE_MS = Infinity;
+export const PUPPYROUTER_ACCOUNT_STATUS_CACHE_MS = 15 * 60 * 1000;
 export const PUPPYROUTER_ACCOUNT_BALANCE_CACHE_MS = 5 * 60 * 1000;
 export const PUPPYROUTER_API_KEYS_CACHE_MS = 10 * 60 * 1000;
 export const PUPPYROUTER_ACCOUNT_GC_MS = 30 * 60 * 1000;
@@ -70,10 +70,16 @@ export function updateAllPuppyRouterApiKeyGroupCaches(
   );
 }
 
-export function clearPuppyRouterAccountCache(queryClient: QueryClient) {
+export function clearPuppyRouterAccountCache(
+  queryClient: QueryClient,
+  status: PuppyRouterAccountStatus = {
+    loggedIn: false,
+    sessionState: "signed_out",
+  },
+) {
   queryClient.setQueryData<PuppyRouterAccountStatus>(
     puppyrouterAccountKeys.status(),
-    { loggedIn: false },
+    status,
   );
   queryClient.removeQueries({ queryKey: puppyrouterAccountKeys.balance() });
   queryClient.removeQueries({ queryKey: puppyrouterAccountKeys.groups() });
@@ -98,7 +104,7 @@ export function usePuppyRouterAccountStatus() {
     queryFn: () => puppyrouterAccountApi.getStatus(),
     staleTime: PUPPYROUTER_ACCOUNT_STATUS_CACHE_MS,
     gcTime: PUPPYROUTER_ACCOUNT_GC_MS,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
     retry: false,
   });
 }

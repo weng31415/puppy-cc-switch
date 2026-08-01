@@ -9,10 +9,20 @@ export interface PuppyRouterAccountUser {
   status?: number;
 }
 
+export type PuppyRouterSessionState =
+  | "signed_out"
+  | "authenticated"
+  | "offline"
+  | "expired"
+  | "server_error";
+
 export interface PuppyRouterAccountStatus {
   loggedIn: boolean;
+  sessionState: PuppyRouterSessionState;
   user?: PuppyRouterAccountUser;
   loggedInAt?: number;
+  verifiedAt?: number;
+  message?: string;
 }
 
 export interface PuppyRouterAccountBalance {
@@ -95,40 +105,76 @@ export interface PuppyRouterGroupUpdateResult {
   crossGroupRetry: boolean;
 }
 
+export const PUPPYROUTER_SESSION_EXPIRED_EVENT = "puppyrouter-session-expired";
+export const PUPPYROUTER_SESSION_EXPIRED_ERROR = "PUPPYROUTER_SESSION_EXPIRED";
+
+function errorMessage(error: unknown) {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return String(error ?? "");
+}
+
+export function isPuppyRouterSessionExpiredError(error: unknown) {
+  return errorMessage(error).includes(PUPPYROUTER_SESSION_EXPIRED_ERROR);
+}
+
+async function invokePuppyRouterAccount<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    if (isPuppyRouterSessionExpiredError(error)) {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent(PUPPYROUTER_SESSION_EXPIRED_EVENT),
+        );
+      }
+      throw new Error(PUPPYROUTER_SESSION_EXPIRED_ERROR);
+    }
+    throw error;
+  }
+}
+
 export const puppyrouterAccountApi = {
   async getStatus(): Promise<PuppyRouterAccountStatus> {
-    return await invoke("get_puppyrouter_account_status");
+    return await invokePuppyRouterAccount("get_puppyrouter_account_status");
   },
 
   async getBalance(): Promise<PuppyRouterAccountBalance> {
-    return await invoke("get_puppyrouter_account_balance");
+    return await invokePuppyRouterAccount("get_puppyrouter_account_balance");
   },
 
   async beginLogin(): Promise<PuppyRouterLoginStart> {
-    return await invoke("begin_puppyrouter_account_login");
+    return await invokePuppyRouterAccount("begin_puppyrouter_account_login");
   },
 
   async pollLogin(deviceCode: string): Promise<PuppyRouterLoginPollResult> {
-    return await invoke("poll_puppyrouter_account_login", { deviceCode });
+    return await invokePuppyRouterAccount("poll_puppyrouter_account_login", {
+      deviceCode,
+    });
   },
 
   async logout(): Promise<boolean> {
-    return await invoke("logout_puppyrouter_account");
+    return await invokePuppyRouterAccount("logout_puppyrouter_account");
   },
 
   async listApiKeys(targetApp: string): Promise<PuppyRouterApiKeyList> {
-    return await invoke("list_puppyrouter_api_keys", { targetApp });
+    return await invokePuppyRouterAccount("list_puppyrouter_api_keys", {
+      targetApp,
+    });
   },
 
   async listGroups(): Promise<PuppyRouterAccountGroup[]> {
-    return await invoke("list_puppyrouter_account_groups");
+    return await invokePuppyRouterAccount("list_puppyrouter_account_groups");
   },
 
   async updateApiKeyGroup(
     tokenId: number,
     group: string,
   ): Promise<PuppyRouterGroupUpdateResult> {
-    return await invoke("update_puppyrouter_api_key_group", {
+    return await invokePuppyRouterAccount("update_puppyrouter_api_key_group", {
       tokenId,
       group,
     });
@@ -138,6 +184,9 @@ export const puppyrouterAccountApi = {
     tokenId: number,
     targetApp: string,
   ): Promise<PuppyRouterApplyKeyResult> {
-    return await invoke("apply_puppyrouter_api_key", { tokenId, targetApp });
+    return await invokePuppyRouterAccount("apply_puppyrouter_api_key", {
+      tokenId,
+      targetApp,
+    });
   },
 };

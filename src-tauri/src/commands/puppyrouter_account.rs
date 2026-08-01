@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use reqwest::header::{COOKIE, SET_COOKIE};
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -24,6 +24,7 @@ const DEFAULT_TOKEN_NAME: &str = "default_api_key";
 const CODEX_MODEL_CATALOG_LIMIT: usize = 200;
 const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const ACCOUNT_USER_AGENT: &str = "puppyrouter-app/1.0";
+const SESSION_EXPIRED_ERROR: &str = "PUPPYROUTER_SESSION_EXPIRED";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,10 +64,25 @@ struct StoredSelectedToken {
 #[serde(rename_all = "camelCase")]
 pub struct PuppyRouterAccountStatus {
     pub logged_in: bool,
+    pub session_state: PuppyRouterSessionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<PuppyRouterAccountUser>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logged_in_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PuppyRouterSessionState {
+    SignedOut,
+    Authenticated,
+    Offline,
+    Expired,
+    ServerError,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -321,6 +337,13 @@ fn clear_setting(state: &AppState, key: &str) -> Result<(), String> {
     state.db.set_setting(key, "").map_err(|e| e.to_string())
 }
 
+fn clear_account_auth_state(state: &AppState) -> Result<(), String> {
+    clear_setting(state, ACCOUNT_SESSION_SETTING)?;
+    clear_setting(state, LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
+    clear_setting(state, SELECTED_TOKEN_SETTING)?;
+    clear_setting(state, SELECTED_TOKEN_BY_APP_SETTING)
+}
+
 fn read_session(state: &AppState) -> Result<Option<StoredAccountSession>, String> {
     setting_json(state, ACCOUNT_SESSION_SETTING)
 }
@@ -329,14 +352,46 @@ fn account_status_from_session(session: Option<StoredAccountSession>) -> PuppyRo
     match session {
         Some(session) => PuppyRouterAccountStatus {
             logged_in: true,
+            session_state: PuppyRouterSessionState::Authenticated,
             user: Some(session.user),
             logged_in_at: Some(session.logged_in_at),
+            verified_at: Some(now_timestamp()),
+            message: None,
         },
         None => PuppyRouterAccountStatus {
             logged_in: false,
+            session_state: PuppyRouterSessionState::SignedOut,
             user: None,
             logged_in_at: None,
+            verified_at: None,
+            message: None,
         },
+    }
+}
+
+fn account_status_with_state(
+    session: StoredAccountSession,
+    session_state: PuppyRouterSessionState,
+    message: Option<String>,
+) -> PuppyRouterAccountStatus {
+    PuppyRouterAccountStatus {
+        logged_in: true,
+        session_state,
+        user: Some(session.user),
+        logged_in_at: Some(session.logged_in_at),
+        verified_at: None,
+        message,
+    }
+}
+
+fn expired_account_status() -> PuppyRouterAccountStatus {
+    PuppyRouterAccountStatus {
+        logged_in: false,
+        session_state: PuppyRouterSessionState::Expired,
+        user: None,
+        logged_in_at: None,
+        verified_at: None,
+        message: None,
     }
 }
 
@@ -395,6 +450,17 @@ async fn parse_api_response<T: DeserializeOwned>(
     Ok((api, set_cookie_header))
 }
 
+async fn parse_authenticated_api_response<T: DeserializeOwned>(
+    state: &AppState,
+    response: reqwest::Response,
+) -> Result<(ApiResponse<T>, String), String> {
+    if response.status() == StatusCode::UNAUTHORIZED {
+        clear_account_auth_state(state)?;
+        return Err(SESSION_EXPIRED_ERROR.to_string());
+    }
+    parse_api_response(response).await
+}
+
 fn ensure_api_success<T>(api: ApiResponse<T>) -> Result<T, String> {
     if api.success {
         api.data
@@ -428,6 +494,7 @@ fn login_data_to_user(
 }
 
 async fn auth_get<T: DeserializeOwned>(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
     path: &str,
@@ -438,11 +505,12 @@ async fn auth_get<T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_api_response::<T>(response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
     ensure_api_success(api)
 }
 
 async fn auth_post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
     path: &str,
@@ -455,11 +523,12 @@ async fn auth_post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_api_response::<T>(response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
     ensure_api_success(api)
 }
 
 async fn auth_patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
     path: &str,
@@ -472,11 +541,12 @@ async fn auth_patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_api_response::<T>(response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
     ensure_api_success(api)
 }
 
 async fn fetch_all_tokens(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
 ) -> Result<(Vec<TokenItem>, i64), String> {
@@ -487,7 +557,7 @@ async fn fetch_all_tokens(
 
     loop {
         let path = format!("/api/token/?p={page}&size={page_size}");
-        let page_info: PageInfo<TokenItem> = auth_get(client, session, &path).await?;
+        let page_info: PageInfo<TokenItem> = auth_get(state, client, session, &path).await?;
         total = page_info.total.unwrap_or(total);
 
         let items = page_info.items.unwrap_or_default();
@@ -508,11 +578,13 @@ async fn fetch_all_tokens(
 }
 
 async fn fetch_token_key(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
     token_id: i64,
 ) -> Result<String, String> {
     let data: TokenKeyData = auth_post_json(
+        state,
         client,
         session,
         &format!("/api/token/{token_id}/key"),
@@ -524,6 +596,7 @@ async fn fetch_token_key(
 }
 
 async fn fetch_token_key_map(
+    state: &AppState,
     client: &reqwest::Client,
     session: &StoredAccountSession,
     token_ids: &[i64],
@@ -532,6 +605,7 @@ async fn fetch_token_key_map(
 
     for chunk in token_ids.chunks(100) {
         let data: TokenKeysBatchData = auth_post_json(
+            state,
             client,
             session,
             "/api/token/batch/keys",
@@ -1035,10 +1109,55 @@ fn puppyrouter_opencode_provider(api_key: &str) -> Provider {
 }
 
 #[tauri::command]
-pub fn get_puppyrouter_account_status(
+pub async fn get_puppyrouter_account_status(
     state: State<'_, AppState>,
 ) -> Result<PuppyRouterAccountStatus, String> {
-    Ok(account_status_from_session(read_session(state.inner())?))
+    let Some(session) = read_session(state.inner())? else {
+        return Ok(account_status_from_session(None));
+    };
+
+    let client = http_client();
+    let response = match account_request(&client, Method::GET, "/api/user/self")
+        .header(COOKIE, session.cookie_header.as_str())
+        .header("New-Api-User", session.user.id.to_string())
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(account_status_with_state(
+                session,
+                PuppyRouterSessionState::Offline,
+                Some(format!("连接 PuppyRouter 失败: {error}")),
+            ));
+        }
+    };
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        clear_account_auth_state(state.inner())?;
+        return Ok(expired_account_status());
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Ok(account_status_with_state(
+            session,
+            PuppyRouterSessionState::ServerError,
+            Some(format!("PuppyRouter HTTP {status}")),
+        ));
+    }
+
+    match parse_api_response::<SelfData>(response)
+        .await
+        .and_then(|(api, _)| ensure_api_success(api))
+    {
+        Ok(_) => Ok(account_status_from_session(Some(session))),
+        Err(error) => Ok(account_status_with_state(
+            session,
+            PuppyRouterSessionState::ServerError,
+            Some(error),
+        )),
+    }
 }
 
 #[tauri::command]
@@ -1048,8 +1167,8 @@ pub async fn get_puppyrouter_account_balance(
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client();
-    let data: SelfData = auth_get(&client, &session, "/api/user/self").await?;
-    let status: StatusData = auth_get(&client, &session, "/api/status").await?;
+    let data: SelfData = auth_get(state.inner(), &client, &session, "/api/user/self").await?;
+    let status: StatusData = auth_get(state.inner(), &client, &session, "/api/status").await?;
     let quota = data.quota.unwrap_or_default();
     let used_quota = data.used_quota.unwrap_or_default();
     let quota_per_unit = normalize_quota_per_unit(status.quota_per_unit);
@@ -1142,10 +1261,7 @@ pub async fn poll_puppyrouter_account_login(
 
 #[tauri::command]
 pub fn logout_puppyrouter_account(state: State<'_, AppState>) -> Result<bool, String> {
-    clear_setting(state.inner(), ACCOUNT_SESSION_SETTING)?;
-    clear_setting(state.inner(), LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
-    clear_setting(state.inner(), SELECTED_TOKEN_SETTING)?;
-    clear_setting(state.inner(), SELECTED_TOKEN_BY_APP_SETTING)?;
+    clear_account_auth_state(state.inner())?;
     Ok(true)
 }
 
@@ -1158,7 +1274,7 @@ pub async fn list_puppyrouter_api_keys(
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client();
-    let (tokens, total) = fetch_all_tokens(&client, &session).await?;
+    let (tokens, total) = fetch_all_tokens(state.inner(), &client, &session).await?;
 
     let selected = selected_token_for_app(state.inner(), &target_app)?;
     let provider_api_key = puppyrouter_provider_api_key_for_app(state.inner(), &target_app)?;
@@ -1167,9 +1283,11 @@ pub async fn list_puppyrouter_api_keys(
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
     {
-        fetch_token_key_map(&client, &session, &token_ids)
-            .await
-            .unwrap_or_default()
+        match fetch_token_key_map(state.inner(), &client, &session, &token_ids).await {
+            Ok(keys) => keys,
+            Err(error) if error == SESSION_EXPIRED_ERROR => return Err(error),
+            Err(_) => HashMap::new(),
+        }
     } else {
         HashMap::new()
     };
@@ -1204,7 +1322,7 @@ pub async fn list_puppyrouter_account_groups(
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client();
     let groups: HashMap<String, AccountGroupData> =
-        auth_get(&client, &session, "/api/user/self/groups").await?;
+        auth_get(state.inner(), &client, &session, "/api/user/self/groups").await?;
     let mut groups = groups
         .into_iter()
         .map(|(name, data)| PuppyRouterAccountGroup {
@@ -1237,6 +1355,7 @@ pub async fn update_puppyrouter_api_key_group(
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client();
     let token: TokenItem = auth_patch_json(
+        state.inner(),
         &client,
         &session,
         &format!("/api/token/{token_id}/group"),
@@ -1267,7 +1386,7 @@ pub async fn apply_puppyrouter_api_key(
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
     let client = http_client();
-    let (tokens, _) = fetch_all_tokens(&client, &session).await?;
+    let (tokens, _) = fetch_all_tokens(state.inner(), &client, &session).await?;
     let token = tokens
         .into_iter()
         .find(|token| token.id == token_id)
@@ -1277,7 +1396,7 @@ pub async fn apply_puppyrouter_api_key(
         return Err("这个 PuppyRouter API key 当前不可用。".to_string());
     }
 
-    let full_key = fetch_token_key(&client, &session, token_id).await?;
+    let full_key = fetch_token_key(state.inner(), &client, &session, token_id).await?;
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
 
     let group = normalize_group(token.group.clone());
@@ -1343,6 +1462,59 @@ mod tests {
             }
             let _ = crate::settings::reload_settings();
         }
+    }
+
+    #[test]
+    fn account_status_serializes_stable_session_state_names() {
+        let expired = serde_json::to_value(expired_account_status()).expect("serialize status");
+        assert_eq!(expired["loggedIn"], false);
+        assert_eq!(expired["sessionState"], "expired");
+
+        let signed_out =
+            serde_json::to_value(account_status_from_session(None)).expect("serialize status");
+        assert_eq!(signed_out["loggedIn"], false);
+        assert_eq!(signed_out["sessionState"], "signed_out");
+    }
+
+    #[test]
+    fn clearing_expired_session_preserves_unrelated_local_configuration() {
+        let state = AppState::new(Arc::new(Database::memory().expect("create database")));
+        for key in [
+            ACCOUNT_SESSION_SETTING,
+            LEGACY_ACCOUNT_PENDING_SESSION_SETTING,
+            SELECTED_TOKEN_SETTING,
+            SELECTED_TOKEN_BY_APP_SETTING,
+        ] {
+            state
+                .db
+                .set_setting(key, r#"{"test":true}"#)
+                .expect("seed account metadata");
+        }
+        state
+            .db
+            .set_setting("unrelated_local_provider_config", "keep-me")
+            .expect("seed unrelated local configuration");
+
+        clear_account_auth_state(&state).expect("clear expired account session");
+
+        for key in [
+            ACCOUNT_SESSION_SETTING,
+            LEGACY_ACCOUNT_PENDING_SESSION_SETTING,
+            SELECTED_TOKEN_SETTING,
+            SELECTED_TOKEN_BY_APP_SETTING,
+        ] {
+            assert_eq!(
+                state.db.get_setting(key).expect("read account metadata"),
+                Some(String::new())
+            );
+        }
+        assert_eq!(
+            state
+                .db
+                .get_setting("unrelated_local_provider_config")
+                .expect("read unrelated local configuration"),
+            Some("keep-me".to_string())
+        );
     }
 
     #[test]

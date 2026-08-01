@@ -7,7 +7,11 @@ export { promptsApi } from "./prompts";
 export { skillsApi } from "./skills";
 export { usageApi } from "./usage";
 export { subscriptionApi } from "./subscription";
-export { puppyrouterAccountApi } from "./puppyrouterAccount";
+export {
+  puppyrouterAccountApi,
+  PUPPYROUTER_SESSION_EXPIRED_EVENT,
+  isPuppyRouterSessionExpiredError,
+} from "./puppyrouterAccount";
 export { vscodeApi } from "./vscode";
 export { proxyApi } from "./proxy";
 export { openclawApi } from "./openclaw";
@@ -19,6 +23,7 @@ export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
 export type {
   PuppyRouterAccountStatus,
+  PuppyRouterSessionState,
   PuppyRouterAccountUser,
   PuppyRouterAccountBalance,
   PuppyRouterApiKey,

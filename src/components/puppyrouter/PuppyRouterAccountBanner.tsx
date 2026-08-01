@@ -23,8 +23,10 @@ import { toast } from "sonner";
 
 import {
   puppyrouterAccountApi,
+  PUPPYROUTER_SESSION_EXPIRED_EVENT,
   providersApi,
   settingsApi,
+  isPuppyRouterSessionExpiredError,
   type AppId,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
@@ -226,16 +228,23 @@ export function PuppyRouterAccountBanner({
     data: account,
     isLoading: isLoadingAccount,
     isError: isAccountError,
+    isFetching: isCheckingAccount,
+    refetch: refetchAccountStatus,
   } = usePuppyRouterAccountStatus();
   const effectiveAccount =
-    account ?? (isAccountError ? { loggedIn: false } : null);
+    account ??
+    (isAccountError
+      ? { loggedIn: false, sessionState: "server_error" as const }
+      : null);
+  const sessionState = effectiveAccount?.sessionState ?? "signed_out";
   const isLoggedIn = effectiveAccount?.loggedIn ?? false;
+  const canLoadAccountData = isLoggedIn && sessionState === "authenticated";
   const { data: balance, isFetching: isBalanceFetching } =
-    usePuppyRouterAccountBalance(isLoggedIn);
+    usePuppyRouterAccountBalance(canLoadAccountData);
   const { data: accountGroups, isFetching: isGroupsFetching } =
-    usePuppyRouterAccountGroups(isLoggedIn);
+    usePuppyRouterAccountGroups(canLoadAccountData);
   const { data: keyList, isFetching: isKeysFetching } = usePuppyRouterApiKeys(
-    isLoggedIn,
+    canLoadAccountData,
     activeApp,
   );
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
@@ -262,6 +271,38 @@ export function PuppyRouterAccountBanner({
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isLoadingBalance = isBalanceFetching || isRefreshingBalance;
   const isLoadingKeys = isKeysFetching || isRefreshingKeys;
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      const current = queryClient.getQueryData<PuppyRouterAccountStatus>(
+        puppyrouterAccountKeys.status(),
+      );
+      if (current?.sessionState === "expired") return;
+
+      void queryClient.cancelQueries({
+        queryKey: puppyrouterAccountKeys.all,
+      });
+      clearPuppyRouterAccountCache(queryClient, {
+        loggedIn: false,
+        sessionState: "expired",
+      });
+      toast.error(t("puppyrouterAccount.sessionExpiredTitle"), {
+        description: t("puppyrouterAccount.sessionExpiredDescription"),
+        closeButton: true,
+      });
+    };
+
+    window.addEventListener(
+      PUPPYROUTER_SESSION_EXPIRED_EVENT,
+      handleSessionExpired,
+    );
+    return () => {
+      window.removeEventListener(
+        PUPPYROUTER_SESSION_EXPIRED_EVENT,
+        handleSessionExpired,
+      );
+    };
+  }, [queryClient, t]);
 
   const isManualOnlyApp = MANUAL_ONLY_APP_IDS.includes(activeApp);
   const quotaPerUnit =
@@ -316,6 +357,7 @@ export function PuppyRouterAccountBanner({
           }
         }
       } catch (error) {
+        if (isPuppyRouterSessionExpiredError(error)) return;
         console.error("[PuppyRouterAccountBanner] Failed to load keys", error);
         toast.error(
           t("puppyrouterAccount.loadKeysFailed", {
@@ -336,6 +378,7 @@ export function PuppyRouterAccountBanner({
       const result = await puppyrouterAccountApi.getBalance();
       queryClient.setQueryData(puppyrouterAccountKeys.balance(), result);
     } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
       console.error("[PuppyRouterAccountBanner] Failed to load balance", error);
       toast.error(
         t("puppyrouterAccount.loadBalanceFailed", {
@@ -537,6 +580,7 @@ export function PuppyRouterAccountBanner({
         type: "all",
       });
     } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
       toast.error(
         t("puppyrouterAccount.syncFailed", {
@@ -579,6 +623,7 @@ export function PuppyRouterAccountBanner({
         }),
       );
     } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
       console.error(
         "[PuppyRouterAccountBanner] Change key group failed",
         error,
@@ -811,6 +856,7 @@ export function PuppyRouterAccountBanner({
       });
       setIsDiagnoseOpen(true);
     } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
       setDiagnoseResult({
         appLabel: APP_ICON_MAP[activeApp].label,
         providerId,
@@ -866,6 +912,7 @@ export function PuppyRouterAccountBanner({
       });
       await handleDiagnosePuppyRouterConfig();
     } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
       toast.error(t("puppyrouterAccount.diagnoseFixFailed"), {
         description: extractErrorMessage(error),
         closeButton: true,
@@ -903,14 +950,54 @@ export function PuppyRouterAccountBanner({
 
   return (
     <section className="space-y-3">
-      {!effectiveAccount?.loggedIn ? (
+      {(sessionState === "offline" || sessionState === "server_error") && (
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-400/35 bg-amber-400/10 px-4 py-3 text-amber-50 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">
+                {t(
+                  sessionState === "offline"
+                    ? "puppyrouterAccount.offlineTitle"
+                    : "puppyrouterAccount.serverUnavailableTitle",
+                )}
+              </div>
+              <div className="mt-1 text-xs leading-5 text-amber-100/75">
+                {t(
+                  sessionState === "offline"
+                    ? "puppyrouterAccount.offlineDescription"
+                    : "puppyrouterAccount.serverUnavailableDescription",
+                )}
+              </div>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void refetchAccountStatus()}
+            disabled={isCheckingAccount}
+            className="shrink-0 border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/18"
+          >
+            <RefreshCw
+              className={cn(
+                "mr-2 h-4 w-4",
+                isCheckingAccount && "animate-spin",
+              )}
+            />
+            {t("puppyrouterAccount.retryStatusCheck")}
+          </Button>
+        </div>
+      )}
+
+      {!effectiveAccount?.loggedIn && sessionState !== "server_error" ? (
         <motion.div
-          className="relative overflow-hidden rounded-lg border border-amber-400/40 bg-[linear-gradient(110deg,#080808,#15120a_52%,#2a1d06)] px-4 py-4 text-amber-50 shadow-[0_0_28px_rgba(245,158,11,0.16)]"
+          className="relative overflow-hidden rounded-lg border border-amber-300/45 bg-[linear-gradient(110deg,#080808,#171208_52%,#302006)] px-4 py-4 text-amber-50 shadow-[0_0_28px_rgba(249,148,42,0.2)]"
           animate={{
             boxShadow: [
-              "0 0 18px rgba(245,158,11,0.14)",
-              "0 0 36px rgba(245,158,11,0.28)",
-              "0 0 18px rgba(245,158,11,0.14)",
+              "0 0 18px rgba(249,148,42,0.18)",
+              "0 0 38px rgba(249,148,42,0.34)",
+              "0 0 18px rgba(249,148,42,0.18)",
             ],
           }}
           transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
@@ -927,10 +1014,18 @@ export function PuppyRouterAccountBanner({
               </div>
               <div className="min-w-0">
                 <div className="text-sm font-semibold">
-                  {t("puppyrouterAccount.notLoggedInTitle")}
+                  {t(
+                    sessionState === "expired"
+                      ? "puppyrouterAccount.sessionExpiredTitle"
+                      : "puppyrouterAccount.notLoggedInTitle",
+                  )}
                 </div>
                 <div className="mt-1 max-w-3xl text-xs leading-5 text-amber-100/78">
-                  {t("puppyrouterAccount.notLoggedInDescription")}
+                  {t(
+                    sessionState === "expired"
+                      ? "puppyrouterAccount.sessionExpiredDescription"
+                      : "puppyrouterAccount.notLoggedInDescription",
+                  )}
                 </div>
               </div>
             </div>
@@ -944,7 +1039,7 @@ export function PuppyRouterAccountBanner({
             </Button>
           </div>
         </motion.div>
-      ) : (
+      ) : effectiveAccount?.loggedIn ? (
         <div className="rounded-lg border border-primary/25 bg-[linear-gradient(110deg,rgba(10,10,10,0.94),rgba(24,20,12,0.92))] px-4 py-4 shadow-sm shadow-primary/10">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
@@ -999,7 +1094,7 @@ export function PuppyRouterAccountBanner({
                   variant="ghost"
                   size="icon"
                   onClick={() => void loadBalance()}
-                  disabled={isLoadingBalance}
+                  disabled={isLoadingBalance || !canLoadAccountData}
                   title={t("puppyrouterAccount.refreshBalance")}
                   aria-label={t("puppyrouterAccount.refreshBalance")}
                   className="h-6 w-6 rounded-md"
@@ -1029,7 +1124,7 @@ export function PuppyRouterAccountBanner({
                 variant="outline"
                 size="sm"
                 onClick={() => void loadKeys()}
-                disabled={isLoadingKeys}
+                disabled={isLoadingKeys || !canLoadAccountData}
               >
                 {isLoadingKeys ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1043,7 +1138,7 @@ export function PuppyRouterAccountBanner({
                 variant="outline"
                 size="sm"
                 onClick={() => void handleDiagnosePuppyRouterConfig()}
-                disabled={isDiagnosing}
+                disabled={isDiagnosing || !canLoadAccountData}
                 title={t("puppyrouterAccount.diagnose")}
                 aria-label={t("puppyrouterAccount.diagnose")}
                 className="border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/18"
@@ -1113,7 +1208,7 @@ export function PuppyRouterAccountBanner({
                     className={cn(
                       "group flex min-h-[180px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
                       apiKey.active
-                        ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(245,158,11,0.16)]"
+                        ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(249,148,42,0.2)]"
                         : "border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/8",
                       !apiKey.usable && "opacity-55",
                     )}
@@ -1150,6 +1245,7 @@ export function PuppyRouterAccountBanner({
                           <button
                             type="button"
                             disabled={
+                              !canLoadAccountData ||
                               isGroupsFetching ||
                               !accountGroups?.length ||
                               changingGroupKeyId !== null
@@ -1259,6 +1355,7 @@ export function PuppyRouterAccountBanner({
                       variant="outline"
                       disabled={
                         isManualOnlyApp ||
+                        !canLoadAccountData ||
                         !apiKey.usable ||
                         applyingKeyId !== null
                       }
@@ -1290,6 +1387,10 @@ export function PuppyRouterAccountBanner({
                   </div>
                 ))}
               </div>
+            ) : !canLoadAccountData ? (
+              <div className="rounded-lg border border-amber-400/25 bg-amber-400/8 px-3 py-3 text-sm text-amber-100/75">
+                {t("puppyrouterAccount.accountDataUnavailable")}
+              </div>
             ) : (
               <div className="rounded-lg border border-border/70 bg-background/35 px-3 py-3 text-sm text-muted-foreground">
                 {t("puppyrouterAccount.noKeys")}
@@ -1297,7 +1398,7 @@ export function PuppyRouterAccountBanner({
             )}
           </div>
         </div>
-      )}
+      ) : null}
 
       <Dialog open={isDiagnoseOpen} onOpenChange={setIsDiagnoseOpen}>
         <DialogContent className="max-w-lg">
