@@ -173,4 +173,62 @@ describe("ClaudeFormFields", () => {
       );
     });
   });
+
+  it("按获取结果分别应用最新 Claude 角色模型并保留缺失角色", async () => {
+    const onModelChange = vi.fn();
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
+      { id: "claude-opus-4-8", ownedBy: null },
+      { id: "claude-opus-5", ownedBy: null },
+      { id: "claude-sonnet-4-6", ownedBy: null },
+      { id: "claude-sonnet-5", ownedBy: null },
+      { id: "claude-haiku-4-5-20251001", ownedBy: null },
+    ]);
+
+    renderCopilotForm({
+      isCopilotPreset: false,
+      usesOAuth: false,
+      shouldShowApiKey: true,
+      category: "aggregator",
+      apiKey: "sk-test",
+      baseUrl: "https://puppyrouter.com",
+      onModelChange,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "providerForm.fetchModels",
+      }),
+    );
+    await waitFor(() => {
+      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalled();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /一键设置|providerForm\.quickSetModels/,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /应用映射|providerForm\.quickSetConfirmButton/,
+      }),
+    );
+
+    expect(onModelChange).toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "claude-sonnet-5",
+    );
+    expect(onModelChange).toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "claude-opus-5",
+    );
+    expect(onModelChange).toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "claude-haiku-4-5-20251001",
+    );
+    expect(onModelChange).not.toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
+      expect.any(String),
+    );
+  });
 });

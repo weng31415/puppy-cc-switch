@@ -41,10 +41,11 @@ export interface UniversalProviderPreset {
  */
 const PUPPYROUTER_DEFAULT_MODELS: UniversalProviderModels = {
   claude: {
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     haikuModel: "claude-haiku-4-5-20251001",
-    sonnetModel: "claude-sonnet-4-6",
-    opusModel: "claude-opus-4-8",
+    sonnetModel: "claude-sonnet-5",
+    opusModel: "claude-opus-5",
+    fableModel: "claude-fable-5",
   },
   codex: {
     model: "gpt-5.5",

@@ -96,6 +96,10 @@ const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
 const PUPPYROUTER_NAME: &str = "PuppyRouter";
 const PUPPYROUTER_BASE_URL: &str = "https://puppyrouter.com";
 const PUPPYROUTER_PROVIDER_TYPE: &str = "puppyrouter";
+const PUPPYROUTER_CLAUDE_SONNET_MODEL: &str = "claude-sonnet-5";
+const PUPPYROUTER_CLAUDE_OPUS_MODEL: &str = "claude-opus-5";
+const PUPPYROUTER_CLAUDE_FABLE_MODEL: &str = "claude-fable-5";
+const PUPPYROUTER_CLAUDE_HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
 
 fn is_restricted_provider_app(app_type: &AppType) -> bool {
     matches!(
@@ -268,6 +272,69 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn puppyrouter_universal_provider_uses_current_claude_defaults() {
+        let provider = ProviderService::puppyrouter_universal_provider(None);
+        let claude = provider.models.claude.expect("Claude defaults");
+
+        assert_eq!(
+            claude.model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_SONNET_MODEL)
+        );
+        assert_eq!(
+            claude.sonnet_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_SONNET_MODEL)
+        );
+        assert_eq!(
+            claude.opus_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_OPUS_MODEL)
+        );
+        assert_eq!(
+            claude.fable_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_FABLE_MODEL)
+        );
+        assert_eq!(
+            claude.haiku_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_HAIKU_MODEL)
+        );
+    }
+
+    #[test]
+    fn puppyrouter_universal_provider_migrates_only_exact_legacy_defaults() {
+        let mut legacy = crate::provider::UniversalProvider::new(
+            "legacy".to_string(),
+            "Legacy".to_string(),
+            "custom".to_string(),
+            "https://legacy.example.com".to_string(),
+            "legacy-key".to_string(),
+        );
+        legacy.models.claude = Some(ClaudeModelConfig {
+            model: Some("claude-sonnet-4-6".to_string()),
+            haiku_model: Some("custom-haiku".to_string()),
+            sonnet_model: Some("claude-sonnet-4-6".to_string()),
+            opus_model: Some("claude-opus-4-8".to_string()),
+            fable_model: Some("custom-fable".to_string()),
+        });
+
+        let provider = ProviderService::puppyrouter_universal_provider(Some(legacy));
+        let claude = provider.models.claude.expect("migrated Claude defaults");
+
+        assert_eq!(
+            claude.model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_SONNET_MODEL)
+        );
+        assert_eq!(
+            claude.sonnet_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_SONNET_MODEL)
+        );
+        assert_eq!(
+            claude.opus_model.as_deref(),
+            Some(PUPPYROUTER_CLAUDE_OPUS_MODEL)
+        );
+        assert_eq!(claude.haiku_model.as_deref(), Some("custom-haiku"));
+        assert_eq!(claude.fable_model.as_deref(), Some("custom-fable"));
     }
 
     #[test]
@@ -2125,6 +2192,20 @@ experimental_bearer_token = "123"
 }
 
 impl ProviderService {
+    fn set_puppyrouter_model_default(
+        model: &mut Option<String>,
+        legacy_defaults: &[&str],
+        current_default: &str,
+    ) {
+        let should_replace = match model.as_deref().map(str::trim) {
+            None | Some("") => true,
+            Some(value) => legacy_defaults.contains(&value),
+        };
+        if should_replace {
+            *model = Some(current_default.to_string());
+        }
+    }
+
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
         if matches!(app_type, AppType::Claude) {
             let mut v = provider.settings_config.clone();
@@ -2349,18 +2430,31 @@ impl ProviderService {
 
         let models = &mut provider.models;
         let claude = models.claude.get_or_insert_with(ClaudeModelConfig::default);
-        claude
-            .model
-            .get_or_insert_with(|| "claude-sonnet-4-6".to_string());
-        claude
-            .haiku_model
-            .get_or_insert_with(|| "claude-haiku-4-5-20251001".to_string());
-        claude
-            .sonnet_model
-            .get_or_insert_with(|| "claude-sonnet-4-6".to_string());
-        claude
-            .opus_model
-            .get_or_insert_with(|| "claude-opus-4-8".to_string());
+        Self::set_puppyrouter_model_default(
+            &mut claude.model,
+            &["claude-sonnet-4-6"],
+            PUPPYROUTER_CLAUDE_SONNET_MODEL,
+        );
+        Self::set_puppyrouter_model_default(
+            &mut claude.haiku_model,
+            &[],
+            PUPPYROUTER_CLAUDE_HAIKU_MODEL,
+        );
+        Self::set_puppyrouter_model_default(
+            &mut claude.sonnet_model,
+            &["claude-sonnet-4-6"],
+            PUPPYROUTER_CLAUDE_SONNET_MODEL,
+        );
+        Self::set_puppyrouter_model_default(
+            &mut claude.opus_model,
+            &["claude-opus-4-8"],
+            PUPPYROUTER_CLAUDE_OPUS_MODEL,
+        );
+        Self::set_puppyrouter_model_default(
+            &mut claude.fable_model,
+            &[],
+            PUPPYROUTER_CLAUDE_FABLE_MODEL,
+        );
 
         let codex = models.codex.get_or_insert_with(CodexModelConfig::default);
         codex.model.get_or_insert_with(|| "gpt-5.5".to_string());

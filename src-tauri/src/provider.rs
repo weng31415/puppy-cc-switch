@@ -604,6 +604,10 @@ pub struct ClaudeModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "opusModel")]
     pub opus_model: Option<String>,
+    /// Fable 默认模型
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "fableModel")]
+    pub fable_model: Option<String>,
 }
 
 /// Codex 模型配置
@@ -731,6 +735,9 @@ impl UniversalProvider {
         let opus = models
             .and_then(|m| m.opus_model.clone())
             .unwrap_or_else(|| model.clone());
+        let fable = models
+            .and_then(|m| m.fable_model.clone())
+            .unwrap_or_else(|| opus.clone());
 
         let settings_config = serde_json::json!({
             "env": {
@@ -740,6 +747,7 @@ impl UniversalProvider {
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku,
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet,
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": opus,
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": fable,
             }
         });
 
@@ -1121,6 +1129,7 @@ mod tests {
             haiku_model: Some("claude-haiku".to_string()),
             sonnet_model: Some("claude-sonnet".to_string()),
             opus_model: Some("claude-opus".to_string()),
+            fable_model: Some("claude-fable".to_string()),
         });
 
         let provider = universal.to_claude_provider().expect("claude provider");
@@ -1155,6 +1164,13 @@ mod tests {
                 .pointer("/env/ANTHROPIC_DEFAULT_OPUS_MODEL")
                 .and_then(|item| item.as_str()),
             Some("claude-opus")
+        );
+        assert_eq!(
+            provider
+                .settings_config
+                .pointer("/env/ANTHROPIC_DEFAULT_FABLE_MODEL")
+                .and_then(|item| item.as_str()),
+            Some("claude-fable")
         );
     }
 

@@ -129,10 +129,11 @@ export function UniversalProviderFormModal({
   // 计算 Claude 配置 JSON 预览
   const claudeConfigJson = useMemo(() => {
     if (!claudeEnabled) return null;
-    const model = models.claude?.model || "claude-sonnet-4-20250514";
-    const haiku = models.claude?.haikuModel || "claude-haiku-4-20250514";
-    const sonnet = models.claude?.sonnetModel || "claude-sonnet-4-20250514";
-    const opus = models.claude?.opusModel || "claude-sonnet-4-20250514";
+    const model = models.claude?.model || "claude-sonnet-5";
+    const haiku = models.claude?.haikuModel || "claude-haiku-4-5-20251001";
+    const sonnet = models.claude?.sonnetModel || "claude-sonnet-5";
+    const opus = models.claude?.opusModel || "claude-opus-5";
+    const fable = models.claude?.fableModel || "claude-fable-5";
     return {
       env: {
         ANTHROPIC_BASE_URL: baseUrl,
@@ -141,6 +142,7 @@ export function UniversalProviderFormModal({
         ANTHROPIC_DEFAULT_HAIKU_MODEL: haiku,
         ANTHROPIC_DEFAULT_SONNET_MODEL: sonnet,
         ANTHROPIC_DEFAULT_OPUS_MODEL: opus,
+        ANTHROPIC_DEFAULT_FABLE_MODEL: fable,
       },
     };
   }, [claudeEnabled, baseUrl, apiKey, models.claude]);
@@ -539,7 +541,7 @@ wire_api = "responses"`;
                     onChange={(e) =>
                       updateModel("claude", "model", e.target.value)
                     }
-                    placeholder="claude-sonnet-4-20250514"
+                    placeholder="claude-sonnet-5"
                   />
                 </div>
                 <div className="space-y-1">
@@ -549,7 +551,7 @@ wire_api = "responses"`;
                     onChange={(e) =>
                       updateModel("claude", "haikuModel", e.target.value)
                     }
-                    placeholder="claude-haiku-4-20250514"
+                    placeholder="claude-haiku-4-5-20251001"
                   />
                 </div>
                 <div className="space-y-1">
@@ -559,7 +561,7 @@ wire_api = "responses"`;
                     onChange={(e) =>
                       updateModel("claude", "sonnetModel", e.target.value)
                     }
-                    placeholder="claude-sonnet-4-20250514"
+                    placeholder="claude-sonnet-5"
                   />
                 </div>
                 <div className="space-y-1">
@@ -569,7 +571,17 @@ wire_api = "responses"`;
                     onChange={(e) =>
                       updateModel("claude", "opusModel", e.target.value)
                     }
-                    placeholder="claude-sonnet-4-20250514"
+                    placeholder="claude-opus-5"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Fable</Label>
+                  <Input
+                    value={models.claude?.fableModel || ""}
+                    onChange={(e) =>
+                      updateModel("claude", "fableModel", e.target.value)
+                    }
+                    placeholder="claude-fable-5"
                   />
                 </div>
               </div>

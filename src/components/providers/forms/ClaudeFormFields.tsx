@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -64,9 +65,21 @@ import {
   providerPresets,
   type TemplateValueConfig,
 } from "@/config/claudeProviderPresets";
+import {
+  CLAUDE_MODEL_ROLES,
+  selectLatestClaudeRoleModels,
+  type ClaudeModelRole,
+  type ClaudeRoleModelMapping,
+} from "@/utils/claudeModelMapping";
 
 interface EndpointCandidate {
   url: string;
+}
+
+interface QuickSetProposal {
+  mappings: ClaudeRoleModelMapping;
+  missingRoles: ClaudeModelRole[];
+  source: "fetched" | "existing";
 }
 
 interface ClaudeFormFieldsProps {
@@ -248,6 +261,8 @@ export function ClaudeFormFields({
   // 通用模型获取（非 Copilot 供应商）
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [quickSetProposal, setQuickSetProposal] =
+    useState<QuickSetProposal | null>(null);
 
   const showModelFetchResult = useCallback(
     (count: number) => {
@@ -566,6 +581,102 @@ export function ClaudeFormFields({
     },
   ];
 
+  const handleQuickSetClick = () => {
+    const fetchedModelIds = isCopilotPreset
+      ? copilotModels.map((model) => model.id)
+      : isCodexOauthPreset
+        ? codexOauthModels.map((model) => model.id)
+        : fetchedModels.map((model) => model.id);
+
+    if (fetchedModelIds.length > 0) {
+      const mappings = selectLatestClaudeRoleModels(fetchedModelIds);
+      const missingRoles = CLAUDE_MODEL_ROLES.filter((role) => !mappings[role]);
+      if (Object.keys(mappings).length > 0) {
+        setQuickSetProposal({
+          mappings,
+          missingRoles,
+          source: "fetched",
+        });
+        return;
+      }
+    }
+
+    const value =
+      claudeModel ||
+      defaultSonnetModel ||
+      defaultOpusModel ||
+      defaultFableModel ||
+      defaultHaikuModel;
+    if (!value) {
+      toast.info(
+        t("providerForm.quickSetNoMatchingModels", {
+          defaultValue:
+            "获取到的列表中没有可识别的 Sonnet、Opus、Fable 或 Haiku 模型，请先选择一个模型。",
+        }),
+      );
+      return;
+    }
+
+    const mappings: ClaudeRoleModelMapping = {};
+    for (const role of CLAUDE_MODEL_ROLES) {
+      mappings[role] = value;
+    }
+    setQuickSetProposal({
+      mappings,
+      missingRoles: [],
+      source: "existing",
+    });
+  };
+
+  const applyQuickSetProposal = () => {
+    if (!quickSetProposal) return;
+
+    let appliedCount = 0;
+    for (const row of modelRoleRows) {
+      const value = quickSetProposal.mappings[row.role];
+      if (!value) continue;
+
+      const normalizedValue = row.supportsOneM
+        ? setClaudeOneMMarker(value, hasClaudeOneMMarker(row.model))
+        : stripClaudeOneMMarker(value);
+      onModelChange(row.modelField, normalizedValue);
+      onModelChange(
+        row.displayNameField,
+        stripClaudeOneMMarker(normalizedValue),
+      );
+      appliedCount += 1;
+    }
+
+    toast.success(
+      quickSetProposal.source === "fetched"
+        ? t("providerForm.quickSetFetchedSuccess", {
+            defaultValue: "已按模型列表更新 {{count}} 个角色",
+            count: appliedCount,
+          })
+        : t("providerForm.quickSetSuccess", {
+            defaultValue: "已将模型名称应用到所有角色",
+          }),
+    );
+
+    if (quickSetProposal.missingRoles.length > 0) {
+      const missingLabels = quickSetProposal.missingRoles
+        .map(
+          (role) =>
+            modelRoleRows.find((row) => row.role === role)?.label || role,
+        )
+        .join(", ");
+      toast.warning(
+        t("providerForm.quickSetMissingWarning", {
+          defaultValue:
+            "当前模型列表未提供 {{roles}}，已保留这些角色的原配置。",
+          roles: missingLabels,
+        }),
+      );
+    }
+
+    setQuickSetProposal(null);
+  };
+
   const handleRoleModelChange = (row: ModelRoleRow, value: string) => {
     const oldModelBase = stripClaudeOneMMarker(row.model).trim();
     const normalizedValue = row.supportsOneM
@@ -809,37 +920,16 @@ export function ClaudeFormFields({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      const value =
-                        claudeModel ||
-                        defaultSonnetModel ||
-                        defaultOpusModel ||
-                        defaultFableModel ||
-                        defaultHaikuModel;
-                      if (value) {
-                        for (const row of modelRoleRows) {
-                          const roleValue = row.supportsOneM
-                            ? value
-                            : stripClaudeOneMMarker(value);
-                          onModelChange(row.modelField, roleValue);
-                          onModelChange(
-                            row.displayNameField,
-                            stripClaudeOneMMarker(roleValue),
-                          );
-                        }
-                        toast.success(
-                          t("providerForm.quickSetSuccess", {
-                            defaultValue: "已将模型名称应用到所有角色",
-                          }),
-                        );
-                      }
-                    }}
+                    onClick={handleQuickSetClick}
                     disabled={
                       !claudeModel &&
                       !defaultHaikuModel &&
                       !defaultSonnetModel &&
                       !defaultOpusModel &&
-                      !defaultFableModel
+                      !defaultFableModel &&
+                      fetchedModels.length === 0 &&
+                      copilotModels.length === 0 &&
+                      codexOauthModels.length === 0
                     }
                     className="h-7 gap-1"
                   >
@@ -988,6 +1078,49 @@ export function ClaudeFormFields({
           </CollapsibleContent>
         </Collapsible>
       )}
+      <ConfirmDialog
+        isOpen={quickSetProposal !== null}
+        variant="info"
+        title={t("providerForm.quickSetConfirmTitle", {
+          defaultValue: "确认模型映射",
+        })}
+        message={
+          quickSetProposal
+            ? [
+                t("providerForm.quickSetConfirmIntro", {
+                  defaultValue: "将应用以下模型映射：",
+                }),
+                ...modelRoleRows
+                  .filter((row) => quickSetProposal.mappings[row.role])
+                  .map(
+                    (row) =>
+                      `${row.label}: ${quickSetProposal.mappings[row.role]}`,
+                  ),
+                ...(quickSetProposal.missingRoles.length > 0
+                  ? [
+                      "",
+                      t("providerForm.quickSetConfirmMissing", {
+                        defaultValue:
+                          "当前列表未提供 {{roles}}；这些角色会保留原配置。",
+                        roles: quickSetProposal.missingRoles
+                          .map(
+                            (role) =>
+                              modelRoleRows.find((row) => row.role === role)
+                                ?.label || role,
+                          )
+                          .join(", "),
+                      }),
+                    ]
+                  : []),
+              ].join("\n")
+            : ""
+        }
+        confirmText={t("providerForm.quickSetConfirmButton", {
+          defaultValue: "应用映射",
+        })}
+        onConfirm={applyQuickSetProposal}
+        onCancel={() => setQuickSetProposal(null)}
+      />
     </>
   );
 }
