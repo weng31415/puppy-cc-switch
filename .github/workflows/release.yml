@@ -183,8 +183,10 @@ jobs:
             KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
           fi
           echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+          echo "TAURI_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
           if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW:-}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW" >> "$GITHUB_ENV"
+            echo "TAURI_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW" >> "$GITHUB_ENV"
           fi
           echo "✅ Tauri updater signing key prepared"
 
@@ -306,19 +308,20 @@ jobs:
             echo "❌ No macOS .tar.gz updater artifact found" >&2
             exit 1
           fi
-          if [ ! -f "$TAR_GZ.sig" ]; then
-            echo "❌ No signature found for macOS updater artifact: $TAR_GZ.sig" >&2
-            exit 1
-          fi
 
           # Staple notarization ticket to .app (Tauri already notarized it)
           xcrun stapler staple "$APP_PATH"
           echo "✅ .app stapled"
 
-          # 1) Collect .tar.gz updater artifact
+          # 1) Rebuild the updater from the stapled app without macOS
+          # AppleDouble metadata. Rust's tar extractor treats ._* entries as
+          # regular files and cannot install updater archives containing them.
           NEW_TAR_GZ="PuppyRouter-App-${VERSION}-macOS.tar.gz"
-          cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
-          cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig"
+          COPYFILE_DISABLE=1 tar -czf "release-assets/$NEW_TAR_GZ" \
+            -C "$(dirname "$APP_PATH")" \
+            "$(basename "$APP_PATH")"
+          python3 scripts/verify-macos-updater.py "release-assets/$NEW_TAR_GZ"
+          pnpm tauri signer sign "release-assets/$NEW_TAR_GZ"
           echo "macOS updater artifact ready: $NEW_TAR_GZ"
 
           # 2) Collect .app as zip
