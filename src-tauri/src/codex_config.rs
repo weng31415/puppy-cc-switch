@@ -1064,6 +1064,41 @@ pub fn write_codex_provider_live_with_catalog(
     write_codex_live_for_provider(category, auth, prepared_config.as_deref())
 }
 
+/// Ensure a third-party Codex provider explicitly opts into OpenAI auth
+/// semantics.
+///
+/// Codex treats built-in provider IDs as its own routing/auth surface. Only
+/// the active non-reserved provider table is eligible for this migration;
+/// missing provider tables are left untouched because synthesizing one would
+/// create an incomplete route.
+pub fn ensure_codex_requires_openai_auth(config_text: &str) -> Result<String, AppError> {
+    if config_text.trim().is_empty() {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(provider_id) = active_codex_model_provider_id(&doc) else {
+        return Ok(config_text.to_string());
+    };
+    if !is_custom_codex_model_provider_id(&provider_id) {
+        return Ok(config_text.to_string());
+    }
+
+    let Some(provider_table) = doc
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .and_then(|providers| providers.get_mut(provider_id.as_str()))
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(config_text.to_string());
+    };
+
+    provider_table.insert("requires_openai_auth", toml_edit::value(true));
+    Ok(doc.to_string())
+}
+
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
 ///
 /// Mobile compat: third-party providers may store the API key inside
@@ -1403,6 +1438,14 @@ pub fn write_codex_live_for_provider(
             None
         };
     let config_text = unified_official_config.as_deref().or(config_text);
+    let third_party_config = if category != Some("official") {
+        config_text
+            .map(ensure_codex_requires_openai_auth)
+            .transpose()?
+    } else {
+        None
+    };
+    let config_text = third_party_config.as_deref().or(config_text);
 
     if category == Some("official") {
         if let Some(official_auth) = codex_oauth_auth_for_preservation(auth) {
@@ -1429,12 +1472,13 @@ pub fn prepare_codex_provider_live_config(
     auth: &Value,
     config_text: &str,
 ) -> Result<String, AppError> {
+    let config_text = ensure_codex_requires_openai_auth(config_text)?;
     let token = extract_codex_auth_api_key(auth)
-        .or_else(|| extract_codex_experimental_bearer_token(config_text));
+        .or_else(|| extract_codex_experimental_bearer_token(&config_text));
 
     Ok(match token {
-        Some(token) => set_codex_experimental_bearer_token(config_text, &token)?,
-        None => config_text.to_string(),
+        Some(token) => set_codex_experimental_bearer_token(&config_text, &token)?,
+        None => config_text,
     })
 }
 
@@ -1789,6 +1833,81 @@ base_url = "https://single.example.com/v1"
         assert!(
             err.to_string().contains("config.toml"),
             "error should explain missing config.toml, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_requires_openai_auth_backfills_active_third_party_provider() {
+        let input = r#"model_provider = "vendor_alpha"
+model = "gpt-5"
+
+[model_providers.vendor_alpha]
+name = "Vendor Alpha"
+base_url = "https://alpha.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+"#;
+
+        let output =
+            ensure_codex_requires_openai_auth(input).expect("backfill requires_openai_auth");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("vendor_alpha"))
+                .and_then(|v| v.get("requires_openai_auth"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn ensure_requires_openai_auth_does_not_modify_reserved_provider() {
+        let input = r#"model_provider = "openai"
+model = "gpt-5"
+
+[model_providers.openai]
+name = "OpenAI"
+wire_api = "responses"
+"#;
+
+        let output =
+            ensure_codex_requires_openai_auth(input).expect("reserved provider should be valid");
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn prepare_provider_live_config_backfills_requires_openai_auth_and_token() {
+        let input = r#"model_provider = "vendor_alpha"
+model = "gpt-5"
+
+[model_providers.vendor_alpha]
+name = "Vendor Alpha"
+base_url = "https://alpha.example/v1"
+wire_api = "responses"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("vendor_alpha"))
+            .expect("active provider");
+
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            provider
+                .get("experimental_bearer_token")
+                .and_then(|v| v.as_str()),
+            Some("sk-test")
         );
     }
 

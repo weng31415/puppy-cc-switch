@@ -3252,6 +3252,10 @@ wire_api = "responses"
             live_config.contains(PROXY_TOKEN_PLACEHOLDER),
             "live config should carry the proxy placeholder token"
         );
+        assert!(
+            live_config.contains("requires_openai_auth = true"),
+            "third-party provider live config should opt into OpenAI auth semantics"
+        );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
             .expect("reset settings");
@@ -3334,6 +3338,10 @@ wire_api = "responses"
                 && live_config.contains("rightcode-key"),
             "selected provider token should move into config.toml"
         );
+        assert!(
+            live_config.contains("requires_openai_auth = true"),
+            "preserved-OAuth provider switches should backfill the auth requirement"
+        );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
             .expect("reset settings");
@@ -3403,6 +3411,10 @@ wire_api = "responses"
             live_config.contains("experimental_bearer_token")
                 && live_config.contains("rightcode-key"),
             "selected provider token should still be applied"
+        );
+        assert!(
+            live_config.contains("requires_openai_auth = true"),
+            "legacy provider switches should backfill the auth requirement"
         );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())

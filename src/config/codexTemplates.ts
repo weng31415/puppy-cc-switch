@@ -20,7 +20,8 @@ disable_response_storage = true
 
 [model_providers.custom]
 name = "custom"
-wire_api = "responses"`;
+wire_api = "responses"
+requires_openai_auth = true`;
 
   return {
     auth: { OPENAI_API_KEY: "" },
