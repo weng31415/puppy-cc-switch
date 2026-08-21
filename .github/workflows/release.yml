@@ -238,26 +238,23 @@ jobs:
         timeout-minutes: 60
         env:
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
-            echo "=== macOS build/notarization attempt ${attempt}/${max_attempts} ==="
+            echo "=== macOS build/signing attempt ${attempt}/${max_attempts} ==="
             if pnpm tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}'; then
-              echo "✅ macOS build/notarization succeeded"
+              echo "✅ macOS build/signing succeeded"
               exit 0
             fi
 
             if [ "$attempt" -eq "$max_attempts" ]; then
-              echo "❌ macOS build/notarization failed after ${max_attempts} attempts" >&2
+              echo "❌ macOS build/signing failed after ${max_attempts} attempts" >&2
               exit 1
             fi
 
             sleep_seconds=$((attempt * 60))
-            echo "⚠️ macOS build/notarization failed, retrying in ${sleep_seconds}s..."
+            echo "⚠️ macOS build/signing failed, retrying in ${sleep_seconds}s..."
             sleep "$sleep_seconds"
           done
 
@@ -281,8 +278,12 @@ jobs:
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME}"  # e.g., v3.5.0
 
@@ -309,9 +310,21 @@ jobs:
             exit 1
           fi
 
-          # Staple notarization ticket to .app (Tauri already notarized it)
+          # Tauri must not notarize during the build command: that makes the
+          # build phase depend on Apple credentials and hides the actual
+          # failure point. Notarize the signed app explicitly here, then
+          # staple the ticket before rebuilding the updater archive.
+          APP_NOTARIZATION_ZIP="$RUNNER_TEMP/puppyrouter-app-notarization.zip"
+          rm -f "$APP_NOTARIZATION_ZIP"
+          ditto -c -k --keepParent "$APP_PATH" "$APP_NOTARIZATION_ZIP"
+          xcrun notarytool submit "$APP_NOTARIZATION_ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
           xcrun stapler staple "$APP_PATH"
-          echo "✅ .app stapled"
+          xcrun stapler validate "$APP_PATH"
+          echo "✅ .app notarized and stapled"
 
           # 1) Rebuild the updater from the stapled app without macOS
           # AppleDouble metadata. Rust's tar extractor treats ._* entries as
