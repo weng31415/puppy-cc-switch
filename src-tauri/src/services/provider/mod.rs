@@ -4564,6 +4564,10 @@ impl ProviderService {
                     &mut merged,
                 );
                 claude_provider.settings_config = merged;
+                claude_provider.created_at = existing.created_at.or(claude_provider.created_at);
+                claude_provider.notes = existing.notes.or(claude_provider.notes);
+                claude_provider.meta = existing.meta.or(claude_provider.meta);
+                claude_provider.in_failover_queue = existing.in_failover_queue;
             }
             state.db.save_provider("claude", &claude_provider)?;
         } else {
@@ -4584,6 +4588,10 @@ impl ProviderService {
                     &mut merged,
                 );
                 codex_provider.settings_config = merged;
+                codex_provider.created_at = existing.created_at.or(codex_provider.created_at);
+                codex_provider.notes = existing.notes.or(codex_provider.notes);
+                codex_provider.meta = existing.meta.or(codex_provider.meta);
+                codex_provider.in_failover_queue = existing.in_failover_queue;
             }
             state.db.save_provider("codex", &codex_provider)?;
         } else {
@@ -4603,6 +4611,10 @@ impl ProviderService {
                     &mut merged,
                 );
                 gemini_provider.settings_config = merged;
+                gemini_provider.created_at = existing.created_at.or(gemini_provider.created_at);
+                gemini_provider.notes = existing.notes.or(gemini_provider.notes);
+                gemini_provider.meta = existing.meta.or(gemini_provider.meta);
+                gemini_provider.in_failover_queue = existing.in_failover_queue;
             }
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {
@@ -4638,7 +4650,10 @@ impl ProviderService {
                     &mut merged,
                 );
                 desktop_provider.settings_config = merged;
+                desktop_provider.created_at = existing.created_at.or(desktop_provider.created_at);
+                desktop_provider.notes = existing.notes.or(desktop_provider.notes);
                 desktop_provider.meta = existing.meta.or(desktop_provider.meta);
+                desktop_provider.in_failover_queue = existing.in_failover_queue;
             }
             state
                 .db

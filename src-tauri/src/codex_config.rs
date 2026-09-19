@@ -1071,6 +1071,41 @@ pub fn write_codex_provider_live_with_catalog(
 /// the active non-reserved provider table is eligible for this migration;
 /// missing provider tables are left untouched because synthesizing one would
 /// create an incomplete route.
+/// Whether a provider's `http_headers` / `env_http_headers` table carries an
+/// `Authorization` entry. Header names are case-insensitive on the wire, so
+/// match TOML keys case-insensitively too.
+fn table_declares_authorization_header(item: Option<&toml_edit::Item>) -> bool {
+    item.and_then(|item| item.as_table_like())
+        .is_some_and(|table| {
+            table
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+        })
+}
+
+/// Codex 0.149 guard: a provider table that already declares its own
+/// credential source must not receive an injected bearer token or a forced
+/// `requires_openai_auth`. `auth` / `aws` sub-tables hard-conflict with both
+/// at deserialization — the whole config.toml fails to parse and Codex
+/// refuses to start. `env_key` outranks the token at runtime, so injection
+/// buys nothing and only leaks the key into config.toml. An explicit
+/// `Authorization` in `http_headers` / `env_http_headers` is how header-auth
+/// providers survive — injected auth is applied after provider headers and
+/// would overwrite it, unless `requires_openai_auth = true` already routes
+/// auth to auth.json (then the token short-circuits that leak instead).
+fn codex_provider_table_declares_auth(table: &dyn toml_edit::TableLike) -> bool {
+    let requires_openai_auth = table
+        .get("requires_openai_auth")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false);
+    table.get("auth").is_some()
+        || table.get("aws").is_some()
+        || table.get("env_key").is_some()
+        || (!requires_openai_auth
+            && (table_declares_authorization_header(table.get("http_headers"))
+                || table_declares_authorization_header(table.get("env_http_headers"))))
+}
+
 pub fn ensure_codex_requires_openai_auth(config_text: &str) -> Result<String, AppError> {
     if config_text.trim().is_empty() {
         return Ok(config_text.to_string());
@@ -1094,6 +1129,15 @@ pub fn ensure_codex_requires_openai_auth(config_text: &str) -> Result<String, Ap
     else {
         return Ok(config_text.to_string());
     };
+
+    // Tables that declare their own credential source (env_key / auth / aws /
+    // Authorization headers) must not get `requires_openai_auth = true`:
+    // `auth`/`aws` conflict with it at deserialization, and forcing it on a
+    // header-auth table would send the preserved OAuth login to the
+    // third-party endpoint.
+    if codex_provider_table_declares_auth(&*provider_table) {
+        return Ok(config_text.to_string());
+    }
 
     provider_table.insert("requires_openai_auth", toml_edit::value(true));
     Ok(doc.to_string())
@@ -1160,17 +1204,21 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
         return Ok(doc.to_string());
     }
 
-    if let Some(model_providers) = doc
+    if let Some(provider_table) = doc
         .get_mut("model_providers")
         .and_then(toml_edit::Item::as_table_like_mut)
+        .and_then(|providers| providers.get_mut(provider_id.as_str()))
+        .and_then(toml_edit::Item::as_table_like_mut)
     {
-        if let Some(provider_table) = model_providers
-            .get_mut(provider_id.as_str())
-            .and_then(toml_edit::Item::as_table_like_mut)
-        {
-            provider_table.insert("experimental_bearer_token", toml_edit::value(token));
-            return Ok(doc.to_string());
+        // Provider declares its own credentials: injecting a bearer token is
+        // either a 0.149 deserialization conflict (auth/aws) or a dead write
+        // that leaks the key (env_key outranks it). Return the original text
+        // untouched so formatting is preserved.
+        if codex_provider_table_declares_auth(&*provider_table) {
+            return Ok(config_text.to_string());
         }
+        provider_table.insert("experimental_bearer_token", toml_edit::value(token));
+        return Ok(doc.to_string());
     }
 
     doc["experimental_bearer_token"] = toml_edit::value(token);
@@ -1906,6 +1954,115 @@ wire_api = "responses"
         assert_eq!(
             provider
                 .get("experimental_bearer_token")
+                .and_then(|v| v.as_str()),
+            Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_skips_injection_for_env_key_provider() {
+        let input = r#"model_provider = "corp"
+model = "gpt-5"
+
+[model_providers.corp]
+name = "Corp"
+base_url = "https://corp.example/v1"
+wire_api = "responses"
+env_key = "CORP_API_KEY"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn prepare_provider_live_config_skips_injection_for_command_auth_provider() {
+        let input = r#"model_provider = "corp"
+model = "gpt-5"
+
+[model_providers.corp]
+name = "Corp"
+base_url = "https://corp.example/v1"
+wire_api = "responses"
+
+[model_providers.corp.auth]
+command = "gcloud"
+args = ["auth", "print-access-token"]
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("corp"))
+            .expect("active provider");
+
+        assert!(provider.get("experimental_bearer_token").is_none());
+        assert!(provider.get("requires_openai_auth").is_none());
+    }
+
+    #[test]
+    fn prepare_provider_live_config_skips_injection_for_header_auth_provider() {
+        let input = r#"model_provider = "corp"
+model = "gpt-5"
+
+[model_providers.corp]
+name = "Corp"
+base_url = "https://corp.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.corp.http_headers]
+Authorization = "Bearer static-key"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("corp"))
+            .expect("active provider");
+
+        assert!(provider.get("experimental_bearer_token").is_none());
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_injects_token_past_header_when_requires_auth() {
+        let input = r#"model_provider = "corp"
+model = "gpt-5"
+
+[model_providers.corp]
+name = "Corp"
+base_url = "https://corp.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[model_providers.corp.http_headers]
+Authorization = "Bearer static-key"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("corp"))
+                .and_then(|v| v.get("experimental_bearer_token"))
                 .and_then(|v| v.as_str()),
             Some("sk-test")
         );

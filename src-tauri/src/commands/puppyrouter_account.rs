@@ -1043,15 +1043,15 @@ fn puppyrouter_provider_api_key_for_app(
     Ok((!api_key.trim().is_empty()).then_some(api_key))
 }
 
-fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType) {
+fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType, local_only: bool) {
     let _ = app.emit(
         "universal-provider-synced",
         serde_json::json!({
             "action": "sync",
             "id": PUPPYROUTER_UNIVERSAL_ID,
-            // Applying a cloud key updates the local PuppyRouter provider only.
-            // The actual client config is written later by an explicit Enable.
-            "localOnly": true,
+            // localOnly=true means the client live config was not touched (provider
+            // is not current); false means the live config was already refreshed.
+            "localOnly": local_only,
             "appType": target_app.as_str(),
         }),
     );
@@ -1399,6 +1399,43 @@ pub async fn apply_puppyrouter_api_key(
     let full_key = fetch_token_key(state.inner(), &client, &session, token_id).await?;
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
 
+    let mut live_refreshed = false;
+    if let Some(provider_id) = puppyrouter_provider_id_for_app(&target_app) {
+        if target_app.is_additive_mode() {
+            // Additive apps (OpenCode): refresh the live entry only when the
+            // provider is already present in the client config, without
+            // re-selecting it as the active provider.
+            let in_live =
+                crate::services::provider::provider_exists_in_live_config(&target_app, provider_id)
+                    .map_err(|e| e.to_string())?;
+            if in_live {
+                let provider = state
+                    .db
+                    .get_provider_by_id(provider_id, target_app.as_str())
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+                crate::services::provider::write_live_with_common_config(
+                    state.db.as_ref(),
+                    &target_app,
+                    &provider,
+                )
+                .map_err(|e| format!("API key 已保存，但刷新客户端配置失败: {e}"))?;
+                live_refreshed = true;
+            }
+        } else {
+            let is_current =
+                crate::settings::get_effective_current_provider(&state.db, &target_app)
+                    .map_err(|e| e.to_string())?
+                    .as_deref()
+                    == Some(provider_id);
+            if is_current {
+                ProviderService::switch(state.inner(), target_app.clone(), provider_id)
+                    .map_err(|e| format!("API key 已保存，但刷新客户端配置失败: {e}"))?;
+                live_refreshed = true;
+            }
+        }
+    }
+
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
         token_id,
@@ -1408,7 +1445,7 @@ pub async fn apply_puppyrouter_api_key(
         applied_at: now_timestamp(),
     };
     set_selected_token_for_app(state.inner(), &target_app, selected)?;
-    emit_universal_provider_synced(&app, &target_app);
+    emit_universal_provider_synced(&app, &target_app, !live_refreshed);
 
     Ok(PuppyRouterApplyKeyResult {
         synced: true,

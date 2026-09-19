@@ -325,9 +325,14 @@ pub fn mask_url(url: &str) -> String {
             None => format!("{}://{}", parsed.scheme(), host),
         }
     } else {
-        // URL 解析失败，返回部分内容
+        // URL 解析失败，返回部分内容。截断点回退到最近的字符边界，
+        // 避免在多字节 UTF-8 字符中间切割导致 panic。
         if url.len() > 20 {
-            format!("{}...", &url[..20])
+            let cut = (0..=20)
+                .rev()
+                .find(|&i| url.is_char_boundary(i))
+                .unwrap_or(0);
+            format!("{}...", &url[..cut])
         } else {
             url.to_string()
         }
@@ -364,6 +369,22 @@ mod tests {
             mask_url("https://user:pass@proxy.example.com"),
             "https://proxy.example.com"
         );
+    }
+
+    #[test]
+    fn test_mask_url_multibyte_boundary() {
+        // 解析失败的超长 URL 在截断时不能切在多字节字符中间（旧实现会 panic）。
+        // 空格让 Url::parse 失败；构造一个第 20 字节恰好落在 UTF-8 字符中间的输入。
+        let mut url = "not a url ".to_string();
+        while url.len() < 19 {
+            url.push('a');
+        }
+        url.push('中'); // 3 字节，占据 19..22，截断点 20 落在字符中间
+        url.push_str(&"b".repeat(30));
+        assert!(url.len() > 20);
+        let masked = mask_url(&url);
+        assert!(masked.ends_with("..."));
+        assert!(!masked.contains('中'));
     }
 
     #[test]
