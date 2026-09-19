@@ -484,14 +484,14 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
       onClose={onClose}
       footer={footer}
     >
-      <div className="glass rounded-xl p-6 border border-white/10 flex flex-col gap-6">
+      <div className="glass rounded-xl p-6 border border-border flex flex-col gap-6">
         {/* 测速控制栏 */}
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground">
             {entries.length} {t("endpointTest.endpoints")}
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-muted-foreground">
               <input
                 type="checkbox"
                 checked={autoSelect}
@@ -611,13 +611,13 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                         </div>
                       </div>
                     ) : isTesting ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     ) : entry.error ? (
-                      <div className="text-xs text-gray-400">
+                      <div className="text-xs text-muted-foreground">
                         {t("endpointTest.failed")}
                       </div>
                     ) : (
-                      <div className="text-xs text-gray-400">—</div>
+                      <div className="text-xs text-muted-foreground">—</div>
                     )}
 
                     <button

@@ -138,6 +138,11 @@
     "diagnoseEndpointMismatch": "live endpoint がアプリ内の PuppyRouter provider と一致しません。",
     "diagnoseKeyMissing": "live 設定に利用可能な API key がありません。",
     "diagnoseKeyMismatch": "live key がアプリ内の PuppyRouter provider の key と一致しません。",
+    "diagnoseCodexConfigInvalid": "Codex live 設定の解析に失敗しました（ファイルが破損している可能性があります）。",
+    "diagnoseCodexProviderTableMissing": "Codex model_provider が参照するプロバイダー設定が存在しないため、リクエストは公式エンドポイントにフォールバックします。",
+    "diagnoseCodexWireApiNotResponses": "Codex プロバイダーの wire_api が \"responses\" ではないため、新しい Codex ではこの設定を読み込めません。",
+    "diagnoseCodexAuthMissing": "Codex プロバイダーに利用可能な認証ソースがありません（token / env_key / auth / requires_openai_auth のいずれも未設定）。",
+    "diagnoseCodexRequiresAuthMissing": "Codex プロバイダーに requires_openai_auth フィールドがないため、新しい Codex で認証方式を解決できない可能性があります。",
     "logoutSuccess": "PuppyRouter からログアウトしました",
     "logoutFailed": "ログアウトに失敗しました: {{error}}",
     "loginStatus": {

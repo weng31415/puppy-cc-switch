@@ -4,30 +4,30 @@
 
 @layer base {
   :root {
-    --background: 24 28% 4%;
-    --foreground: 30 36% 91%;
-    --card: 24 24% 7%;
-    --card-foreground: 30 36% 91%;
-    --popover: 24 26% 6%;
-    --popover-foreground: 30 36% 91%;
+    --background: 210 30% 96.5%;
+    --foreground: 216 30% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 216 30% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 216 30% 14%;
 
-    --primary: 32 96% 64%;
-    --primary-foreground: 24 40% 8%;
+    --primary: 212 88% 44%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 24 20% 11%;
-    --secondary-foreground: 30 34% 88%;
+    --secondary: 210 24% 92%;
+    --secondary-foreground: 216 25% 22%;
 
-    --muted: 24 16% 12%;
-    --muted-foreground: 27 12% 62%;
-    --accent: 27 30% 16%;
-    --accent-foreground: 33 98% 75%;
+    --muted: 212 22% 93.5%;
+    --muted-foreground: 215 13% 42%;
+    --accent: 211 80% 93%;
+    --accent-foreground: 215 75% 30%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 4 72% 50%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 28 42% 18%;
-    --input: 28 34% 18%;
-    --ring: 32 96% 64%;
+    --border: 213 16% 85.5%;
+    --input: 213 14% 81%;
+    --ring: 212 88% 44%;
 
     --radius: 0.5rem;
   }
@@ -61,10 +61,10 @@
 }
 
 .glass {
-  background: rgba(20, 12, 6, 0.78);
+  background: rgba(250, 252, 254, 0.82);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(248, 158, 56, 0.2);
+  border: 1px solid rgba(13, 114, 210, 0.14);
 }
 
 .dark .glass {
@@ -73,10 +73,17 @@
 }
 
 .glass-card {
-  background: rgba(16, 10, 5, 0.9);
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(240, 246, 252, 0.97) 100%
+  );
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(248, 158, 56, 0.2);
+  border: 1px solid rgba(13, 114, 210, 0.18);
+  box-shadow:
+    0 10px 34px rgba(30, 70, 120, 0.1),
+    0 1px 3px rgba(30, 70, 120, 0.06);
 }
 
 .dark .glass-card {
@@ -90,8 +97,8 @@
 }
 
 .glass-card-active {
-  background: rgba(248, 158, 56, 0.14);
-  border: 1px solid rgba(248, 158, 56, 0.5);
+  background: rgba(13, 114, 210, 0.09);
+  border: 1px solid rgba(13, 114, 210, 0.35);
 }
 
 .dark .glass-card-active {
@@ -100,12 +107,12 @@
 }
 
 .glass-header {
-  background: rgba(8, 5, 3, 0.94);
+  background: rgba(250, 252, 254, 0.92);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   border: none;
-  border-top: 1px solid rgba(248, 158, 56, 0.3);
-  border-bottom: 1px solid rgba(248, 158, 56, 0.2);
+  border-top: 1px solid rgba(13, 114, 210, 0.18);
+  border-bottom: 1px solid rgba(13, 114, 210, 0.12);
 }
 
 .dark .glass-header {
@@ -133,7 +140,7 @@
 html {
   @apply font-sans antialiased;
   line-height: 1.5;
-  color-scheme: dark;
+  color-scheme: light;
   overscroll-behavior: none;
 }
 

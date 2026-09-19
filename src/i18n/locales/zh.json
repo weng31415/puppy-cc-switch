@@ -138,6 +138,11 @@
     "diagnoseEndpointMismatch": "live endpoint 与 app 内 PuppyRouter provider 不一致。",
     "diagnoseKeyMissing": "live 配置没有可用 API key。",
     "diagnoseKeyMismatch": "live key 与 app 内 PuppyRouter provider 的 key 不一致。",
+    "diagnoseCodexConfigInvalid": "Codex live 配置解析失败（文件可能已损坏）。",
+    "diagnoseCodexProviderTableMissing": "Codex model_provider 指向的供应商配置表缺失，请求会回退到官方端点。",
+    "diagnoseCodexWireApiNotResponses": "Codex 供应商 wire_api 不是 \"responses\"，新版 Codex 无法加载该配置。",
+    "diagnoseCodexAuthMissing": "Codex 供应商缺少可用认证来源（token / env_key / auth / requires_openai_auth 均无）。",
+    "diagnoseCodexRequiresAuthMissing": "Codex 供应商缺少 requires_openai_auth 字段，新版 Codex 可能无法识别认证方式。",
     "logoutSuccess": "已退出 PuppyRouter",
     "logoutFailed": "退出登录失败：{{error}}",
     "loginStatus": {

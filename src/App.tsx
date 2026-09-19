@@ -1328,10 +1328,10 @@ function App() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 12 }}
                         transition={{ duration: 0.18, ease: "easeOut" }}
-                        className="sticky bottom-3 z-20 rounded-lg border border-red-400/70 bg-red-950/95 px-4 py-3 text-sm font-semibold text-red-50 shadow-2xl shadow-red-950/40 backdrop-blur"
+                        className="sticky bottom-3 z-20 rounded-lg border border-red-300/70 bg-red-50/95 px-4 py-3 text-sm font-semibold text-red-800 shadow-2xl shadow-red-900/10 backdrop-blur dark:border-red-400/70 dark:bg-red-950/95 dark:text-red-50 dark:shadow-red-950/40"
                       >
                         <div className="flex items-center gap-3">
-                          <AlertTriangle className="h-5 w-5 shrink-0 text-red-200" />
+                          <AlertTriangle className="h-5 w-5 shrink-0 text-red-500 dark:text-red-200" />
                           <span>
                             {t(
                               "puppyrouterAccount.clientNotConfiguredWarning",

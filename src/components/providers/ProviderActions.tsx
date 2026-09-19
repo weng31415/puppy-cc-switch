@@ -85,6 +85,8 @@ export function ProviderActions({
 }: ProviderActionsProps) {
   const { t } = useTranslation();
   const iconButtonClass = "h-8 w-8 p-1";
+  const activeStatusClassName =
+    "bg-emerald-100 text-emerald-800 hover:bg-emerald-200 hover:text-emerald-900 disabled:opacity-100 dark:bg-emerald-500/15 dark:text-emerald-300 dark:hover:bg-emerald-500/25 dark:hover:text-emerald-200";
 
   // 累加模式应用（OpenCode 非 OMO / OpenClaw / Hermes）
   const isAdditiveMode =
@@ -131,8 +133,7 @@ export function ProviderActions({
         return {
           disabled: false,
           variant: "secondary" as const,
-          className:
-            "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
+          className: activeStatusClassName,
           icon: <Check className="h-4 w-4" />,
           text: t("provider.inUse"),
         };
@@ -154,8 +155,7 @@ export function ProviderActions({
             return {
               disabled: true,
               variant: "secondary" as const,
-              className:
-                "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
+              className: activeStatusClassName,
               icon: <Check className="h-4 w-4" />,
               text: t("provider.inUse"),
             };
@@ -218,8 +218,7 @@ export function ProviderActions({
       return {
         disabled: true,
         variant: "secondary" as const,
-        className:
-          "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
+        className: activeStatusClassName,
         icon: <Check className="h-4 w-4" />,
         text: t("provider.inUse"),
       };
@@ -281,7 +280,7 @@ export function ProviderActions({
               className={cn(
                 "w-fit px-2.5",
                 isDefaultModel
-                  ? "bg-gray-200 text-muted-foreground dark:bg-gray-700 opacity-60 cursor-not-allowed"
+                  ? activeStatusClassName
                   : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm shadow-primary/20",
               )}
             >

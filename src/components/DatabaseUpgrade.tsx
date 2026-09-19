@@ -224,7 +224,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className={`h-full rounded-full bg-amber-500 transition-all duration-200 ${
+                className={`h-full rounded-full bg-primary transition-all duration-200 ${
                   percent === null ? "w-1/3 animate-pulse" : ""
                 }`}
                 style={percent === null ? undefined : { width: `${percent}%` }}
@@ -249,7 +249,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           {(phase === "upgradable" || phase === "error") && (
             <Button
               onClick={startUpgrade}
-              className="gap-2 bg-amber-500 text-white hover:bg-amber-600"
+              className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {phase === "error" ? (
                 <RefreshCw className="h-4 w-4" />

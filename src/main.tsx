@@ -83,7 +83,10 @@ async function bootstrap() {
       // 数据库版本过新：渲染应用内「升级应用」恢复界面，不进入正常 App
       ReactDOM.createRoot(document.getElementById("root")!).render(
         <React.StrictMode>
-          <ThemeProvider defaultTheme="dark" storageKey="puppyrouter-app-theme">
+          <ThemeProvider
+            defaultTheme="light"
+            storageKey="puppyrouter-app-theme"
+          >
             <DatabaseUpgrade payload={initError} />
             <Toaster />
           </ThemeProvider>
@@ -104,7 +107,7 @@ async function bootstrap() {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider defaultTheme="dark" storageKey="puppyrouter-app-theme">
+        <ThemeProvider defaultTheme="light" storageKey="puppyrouter-app-theme">
           <UpdateProvider>
             <App />
             <Toaster />

@@ -437,7 +437,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       >
         <div className="flex flex-col h-full gap-6">
           {/* 上半部分：表单字段 */}
-          <div className="glass rounded-xl p-6 border border-white/10 space-y-6 flex-shrink-0">
+          <div className="glass rounded-xl p-6 border border-border space-y-6 flex-shrink-0">
             {/* 预设选择（仅新增时展示） */}
             {!isEditing && (
               <div>
@@ -671,7 +671,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
           </div>
 
           {/* 下半部分：JSON 配置编辑器 - 自适应剩余高度 */}
-          <div className="glass rounded-xl p-6 border border-white/10 flex flex-col flex-1 min-h-0">
+          <div className="glass rounded-xl p-6 border border-border flex flex-col flex-1 min-h-0">
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <label className="text-sm font-medium text-foreground">
                 {useToml ? t("mcp.form.tomlConfig") : t("mcp.form.jsonConfig")}

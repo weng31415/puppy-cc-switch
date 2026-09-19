@@ -110,7 +110,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
         </Button>
       }
     >
-      <div className="glass rounded-xl p-6 border border-white/10 space-y-6">
+      <div className="glass rounded-xl p-6 border border-border space-y-6">
         <div>
           <Label htmlFor="name" className="text-foreground">
             {t("prompts.name")}

@@ -138,6 +138,11 @@
     "diagnoseEndpointMismatch": "The live endpoint does not match the PuppyRouter provider saved in the app.",
     "diagnoseKeyMissing": "The live config does not contain a usable API key.",
     "diagnoseKeyMismatch": "The live key does not match the PuppyRouter provider key saved in the app.",
+    "diagnoseCodexConfigInvalid": "The Codex live config failed to parse (the file may be corrupted).",
+    "diagnoseCodexProviderTableMissing": "The provider table referenced by Codex model_provider is missing, so requests fall back to the official endpoint.",
+    "diagnoseCodexWireApiNotResponses": "The Codex provider wire_api is not \"responses\"; recent Codex versions cannot load this config.",
+    "diagnoseCodexAuthMissing": "The Codex provider has no usable auth source (no token, env_key, auth, or requires_openai_auth).",
+    "diagnoseCodexRequiresAuthMissing": "The Codex provider is missing requires_openai_auth; recent Codex versions may not resolve auth correctly.",
     "logoutSuccess": "Signed out of PuppyRouter",
     "logoutFailed": "Sign-out failed: {{error}}",
     "loginStatus": {

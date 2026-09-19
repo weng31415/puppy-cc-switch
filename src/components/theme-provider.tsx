@@ -20,10 +20,10 @@ const ThemeProviderContext = createContext<ThemeContextValue | undefined>(
 
 export function ThemeProvider({
   children,
-  defaultTheme: _defaultTheme = "dark",
+  defaultTheme: _defaultTheme = "light",
   storageKey = "puppyrouter-app-theme",
 }: ThemeProviderProps) {
-  const theme: Theme = "dark";
+  const theme: Theme = "light";
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -32,8 +32,8 @@ export function ThemeProvider({
 
     const root = window.document.documentElement;
     root.classList.remove("light", "dark");
-    root.classList.add("dark");
-    window.localStorage.setItem(storageKey, "dark");
+    root.classList.add("light");
+    window.localStorage.setItem(storageKey, "light");
   }, [storageKey]);
 
   // Sync native window theme (Windows/macOS title bar)
@@ -54,7 +54,7 @@ export function ThemeProvider({
       }
     };
 
-    updateNativeTheme("dark");
+    updateNativeTheme("light");
 
     return () => {
       isCancelled = true;

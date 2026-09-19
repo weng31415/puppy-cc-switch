@@ -53,6 +53,8 @@ import {
 } from "@/utils/displayCurrency";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import { PUPPYROUTER_PROVIDER_IDS } from "@/utils/lockedProviders";
+import { parse as parseToml } from "smol-toml";
+import { normalizeTomlText } from "@/utils/textNormalization";
 import {
   extractCodexBaseUrl,
   getApiKeyFromConfig,
@@ -175,6 +177,107 @@ function resolveOpenCodeProviderSettings(
   const providers = settings.provider;
   if (!isRecord(providers)) return settings;
   return providers[providerId] ?? settings;
+}
+
+const CODEX_RESERVED_PROVIDER_IDS = new Set([
+  "amazon-bedrock",
+  "openai",
+  "ollama",
+  "lmstudio",
+  "oss",
+  "ollama-chat",
+]);
+
+function hasAuthorizationHeader(headers: unknown): boolean {
+  if (!isRecord(headers)) return false;
+  return Object.keys(headers).some(
+    (key) => key.toLowerCase() === "authorization",
+  );
+}
+
+// Mirrors codex_config::codex_provider_table_declares_auth — a provider table
+// that carries its own credential source must not be force-normalized.
+function codexTableDeclaresAuth(table: Record<string, any>): boolean {
+  if (table.auth != null || table.aws != null || table.env_key != null) {
+    return true;
+  }
+  if (table.requires_openai_auth === true) return false;
+  return (
+    hasAuthorizationHeader(table.http_headers) ||
+    hasAuthorizationHeader(table.env_http_headers)
+  );
+}
+
+function collectCodexLiveConfigIssues(
+  configText: string,
+  t: TFunction,
+): DiagnoseIssue[] {
+  const text = normalizeTomlText(configText);
+  if (!text) return [];
+
+  let doc: Record<string, any>;
+  try {
+    doc = parseToml(text) as Record<string, any>;
+  } catch {
+    return [
+      {
+        id: "codex-config-invalid",
+        message: t("puppyrouterAccount.diagnoseCodexConfigInvalid"),
+        fixAction: "live",
+      },
+    ];
+  }
+
+  const issues: DiagnoseIssue[] = [];
+  const modelProvider =
+    typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
+  if (
+    !modelProvider ||
+    CODEX_RESERVED_PROVIDER_IDS.has(modelProvider.toLowerCase())
+  ) {
+    return issues;
+  }
+
+  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+  const table = providers[modelProvider];
+  if (!isRecord(table)) {
+    issues.push({
+      id: "codex-provider-table-missing",
+      message: t("puppyrouterAccount.diagnoseCodexProviderTableMissing"),
+      fixAction: "live",
+    });
+    return issues;
+  }
+
+  if (table.wire_api !== "responses") {
+    issues.push({
+      id: "codex-wire-api",
+      message: t("puppyrouterAccount.diagnoseCodexWireApiNotResponses"),
+      fixAction: "live",
+    });
+  }
+
+  const declaresAuth = codexTableDeclaresAuth(table);
+  const hasBearer =
+    typeof table.experimental_bearer_token === "string" &&
+    table.experimental_bearer_token.trim() !== "";
+  const requiresAuth = table.requires_openai_auth === true;
+
+  if (!declaresAuth && !hasBearer && !requiresAuth) {
+    issues.push({
+      id: "codex-auth-missing",
+      message: t("puppyrouterAccount.diagnoseCodexAuthMissing"),
+      fixAction: "live",
+    });
+  } else if (!declaresAuth && !requiresAuth) {
+    issues.push({
+      id: "codex-requires-auth-missing",
+      message: t("puppyrouterAccount.diagnoseCodexRequiresAuthMissing"),
+      fixAction: "live",
+    });
+  }
+
+  return issues;
 }
 
 function readBaseUrlFromSettings(
@@ -848,6 +951,15 @@ export function PuppyRouterAccountBanner({
         });
       }
 
+      if (activeApp === "codex") {
+        issues.push(
+          ...collectCodexLiveConfigIssues(
+            readStringPath(liveSettings, ["config"]),
+            t,
+          ),
+        );
+      }
+
       setDiagnoseResult({
         appLabel: APP_ICON_MAP[activeApp].label,
         providerId,
@@ -949,11 +1061,11 @@ export function PuppyRouterAccountBanner({
   }
 
   return (
-    <section className="space-y-3">
+    <section className="mt-2 space-y-3">
       {(sessionState === "offline" || sessionState === "server_error") && (
-        <div className="flex flex-col gap-3 rounded-lg border border-amber-400/35 bg-amber-400/10 px-4 py-3 text-amber-50 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-500/30 dark:border-amber-400/35 bg-amber-400/10 px-4 py-3 text-amber-950 dark:text-amber-50 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
-            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-300" />
             <div className="min-w-0">
               <div className="text-sm font-semibold">
                 {t(
@@ -962,7 +1074,7 @@ export function PuppyRouterAccountBanner({
                     : "puppyrouterAccount.serverUnavailableTitle",
                 )}
               </div>
-              <div className="mt-1 text-xs leading-5 text-amber-100/75">
+              <div className="mt-1 text-xs leading-5 text-amber-900/70 dark:text-amber-100/75">
                 {t(
                   sessionState === "offline"
                     ? "puppyrouterAccount.offlineDescription"
@@ -977,7 +1089,7 @@ export function PuppyRouterAccountBanner({
             size="sm"
             onClick={() => void refetchAccountStatus()}
             disabled={isCheckingAccount}
-            className="shrink-0 border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/18"
+            className="shrink-0 border-amber-500/30 dark:border-amber-300/35 bg-amber-500/10 dark:bg-amber-300/10 text-amber-900 dark:text-amber-100 hover:bg-amber-500/15 dark:hover:bg-amber-300/18"
           >
             <RefreshCw
               className={cn(
@@ -992,24 +1104,24 @@ export function PuppyRouterAccountBanner({
 
       {!effectiveAccount?.loggedIn && sessionState !== "server_error" ? (
         <motion.div
-          className="relative overflow-hidden rounded-lg border border-amber-300/45 bg-[linear-gradient(110deg,#080808,#171208_52%,#302006)] px-4 py-4 text-amber-50 shadow-[0_0_28px_rgba(249,148,42,0.2)]"
+          className="relative overflow-hidden rounded-lg border border-primary/30 bg-[linear-gradient(110deg,#FDFEFF,#EFF5FC_52%,#DFEDFA)] px-4 py-4 text-foreground shadow-[0_0_28px_rgba(13,114,210,0.15)] dark:border-amber-300/45 dark:bg-[linear-gradient(110deg,#080808,#171208_52%,#302006)] dark:text-amber-50"
           animate={{
             boxShadow: [
-              "0 0 18px rgba(249,148,42,0.18)",
-              "0 0 38px rgba(249,148,42,0.34)",
-              "0 0 18px rgba(249,148,42,0.18)",
+              "0 0 18px rgba(13,114,210,0.14)",
+              "0 0 38px rgba(13,114,210,0.26)",
+              "0 0 18px rgba(13,114,210,0.14)",
             ],
           }}
           transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
         >
           <motion.div
-            className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 bg-gradient-to-r from-transparent via-amber-200/20 to-transparent"
+            className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 bg-gradient-to-r from-transparent via-primary/15 to-transparent dark:via-amber-200/20"
             animate={{ x: ["0%", "430%"] }}
             transition={{ duration: 3.2, repeat: Infinity, ease: "linear" }}
           />
           <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex min-w-0 items-start gap-3">
-              <div className="mt-0.5 rounded-lg border border-amber-300/35 bg-amber-300/10 p-2 text-amber-200">
+              <div className="mt-0.5 rounded-lg border border-primary/30 bg-primary/10 p-2 text-primary dark:border-amber-300/35 dark:bg-amber-300/10 dark:text-amber-200">
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div className="min-w-0">
@@ -1020,7 +1132,7 @@ export function PuppyRouterAccountBanner({
                       : "puppyrouterAccount.notLoggedInTitle",
                   )}
                 </div>
-                <div className="mt-1 max-w-3xl text-xs leading-5 text-amber-100/78">
+                <div className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground dark:text-amber-100/78">
                   {t(
                     sessionState === "expired"
                       ? "puppyrouterAccount.sessionExpiredDescription"
@@ -1032,7 +1144,7 @@ export function PuppyRouterAccountBanner({
             <Button
               type="button"
               onClick={() => setIsLoginOpen(true)}
-              className="shrink-0 border border-amber-300/40 bg-amber-300 text-black hover:bg-amber-200"
+              className="shrink-0 border border-primary/40 bg-primary text-primary-foreground hover:bg-primary/90 dark:border-amber-300/40 dark:bg-amber-300 dark:text-black dark:hover:bg-amber-200"
             >
               <LogIn className="mr-2 h-4 w-4" />
               {t("puppyrouterAccount.loginCta")}
@@ -1040,7 +1152,7 @@ export function PuppyRouterAccountBanner({
           </div>
         </motion.div>
       ) : effectiveAccount?.loggedIn ? (
-        <div className="rounded-lg border border-primary/25 bg-[linear-gradient(110deg,rgba(10,10,10,0.94),rgba(24,20,12,0.92))] px-4 py-4 shadow-sm shadow-primary/10">
+        <div className="rounded-lg border border-primary/25 bg-[linear-gradient(110deg,rgba(253,254,255,0.96),rgba(239,245,252,0.94))] px-4 py-4 shadow-sm shadow-primary/10 dark:bg-[linear-gradient(110deg,rgba(10,10,10,0.94),rgba(24,20,12,0.92))]">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -1141,7 +1253,7 @@ export function PuppyRouterAccountBanner({
                 disabled={isDiagnosing || !canLoadAccountData}
                 title={t("puppyrouterAccount.diagnose")}
                 aria-label={t("puppyrouterAccount.diagnose")}
-                className="border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/18"
+                className="border-primary/35 bg-primary/12 text-primary hover:bg-primary/20"
               >
                 {isDiagnosing ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1170,8 +1282,8 @@ export function PuppyRouterAccountBanner({
           </div>
 
           {isManualOnlyApp && (
-            <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 dark:border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
               <span>
                 {t("puppyrouterAccount.manualOnly", {
                   app: APP_ICON_MAP[activeApp].label,
@@ -1208,7 +1320,7 @@ export function PuppyRouterAccountBanner({
                     className={cn(
                       "group flex min-h-[180px] flex-col items-start justify-between rounded-lg border px-3 py-3 text-left transition",
                       apiKey.active
-                        ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(249,148,42,0.2)]"
+                        ? "border-primary/60 bg-primary/12 shadow-[0_0_18px_rgba(13,114,210,0.18)] dark:shadow-[0_0_18px_rgba(249,148,42,0.2)]"
                         : "border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/8",
                       !apiKey.usable && "opacity-55",
                     )}
@@ -1235,7 +1347,7 @@ export function PuppyRouterAccountBanner({
                         className={cn(
                           "border-border/70 text-[11px]",
                           apiKey.status === 1 &&
-                            "border-emerald-500/35 text-emerald-300",
+                            "border-emerald-600/35 dark:border-emerald-500/35 text-emerald-700 dark:text-emerald-300",
                         )}
                       >
                         {keyStatusLabel(t, apiKey.status)}
@@ -1316,7 +1428,7 @@ export function PuppyRouterAccountBanner({
                         </Badge>
                       )}
                       {apiKey.active && (
-                        <Badge className="bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20">
+                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20">
                           {t("puppyrouterAccount.activeKey")}
                         </Badge>
                       )}
@@ -1363,8 +1475,8 @@ export function PuppyRouterAccountBanner({
                       className={cn(
                         "mt-3 w-full shadow-none",
                         apiKey.active
-                          ? "border-emerald-500/25 bg-emerald-500/5 text-emerald-300/75 hover:border-emerald-500/35 hover:bg-emerald-500/10 hover:text-emerald-300"
-                          : "border-emerald-500/45 bg-emerald-500/10 text-emerald-300 hover:border-emerald-400/60 hover:bg-emerald-500/16 hover:text-emerald-200",
+                          ? "border-emerald-600/25 dark:border-emerald-500/25 bg-emerald-500/5 text-emerald-700/75 dark:text-emerald-300/75 hover:border-emerald-500/35 hover:bg-emerald-500/10 hover:text-emerald-300"
+                          : "border-emerald-600/40 dark:border-emerald-500/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:border-emerald-500/60 dark:hover:border-emerald-400/60 hover:bg-emerald-500/16 hover:text-emerald-800 dark:hover:text-emerald-200",
                       )}
                     >
                       {applyingKeyId === apiKey.id ? (
@@ -1388,7 +1500,7 @@ export function PuppyRouterAccountBanner({
                 ))}
               </div>
             ) : !canLoadAccountData ? (
-              <div className="rounded-lg border border-amber-400/25 bg-amber-400/8 px-3 py-3 text-sm text-amber-100/75">
+              <div className="rounded-lg border border-amber-500/25 dark:border-amber-400/25 bg-amber-400/8 px-3 py-3 text-sm text-amber-900/70 dark:text-amber-100/75">
                 {t("puppyrouterAccount.accountDataUnavailable")}
               </div>
             ) : (
@@ -1413,13 +1525,13 @@ export function PuppyRouterAccountBanner({
 
           <div className="space-y-3 px-6 py-5">
             {diagnoseResult && diagnoseResult.issues.length === 0 ? (
-              <div className="flex items-start gap-3 rounded-lg border border-emerald-400/35 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-50">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+              <div className="flex items-start gap-3 rounded-lg border border-emerald-600/30 dark:border-emerald-400/35 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-50">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
                 <div>
                   <div className="font-medium">
                     {t("puppyrouterAccount.diagnoseHealthy")}
                   </div>
-                  <div className="mt-1 text-xs text-emerald-50/75">
+                  <div className="mt-1 text-xs text-emerald-800/75 dark:text-emerald-50/75">
                     {t("puppyrouterAccount.diagnoseSuccess", {
                       app:
                         diagnoseResult?.appLabel ??
@@ -1430,16 +1542,16 @@ export function PuppyRouterAccountBanner({
               </div>
             ) : (
               <div className="space-y-2">
-                <div className="text-xs font-medium uppercase tracking-wide text-amber-200">
+                <div className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-200">
                   {t("puppyrouterAccount.diagnoseIssuesTitle")}
                 </div>
                 {(diagnoseResult?.issues ?? []).map((issue) => (
                   <div
                     key={issue.id}
-                    className="flex flex-col gap-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-sm text-amber-50 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex flex-col gap-3 rounded-lg border border-amber-500/30 dark:border-amber-400/30 bg-amber-400/10 px-3 py-3 text-sm text-amber-950 dark:text-amber-50 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 items-start gap-2">
-                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
                       <span className="min-w-0 whitespace-pre-line">
                         {issue.message}
                       </span>
@@ -1518,14 +1630,14 @@ export function PuppyRouterAccountBanner({
             </div>
 
             {loginStart && (
-              <div className="space-y-3 rounded-lg border border-amber-400/35 bg-amber-400/10 px-3 py-3">
-                <div className="text-xs font-medium uppercase tracking-wide text-amber-200">
+              <div className="space-y-3 rounded-lg border border-amber-500/30 dark:border-amber-400/35 bg-amber-400/10 px-3 py-3">
+                <div className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-200">
                   {t("puppyrouterAccount.browserAuthCode")}
                 </div>
-                <div className="font-mono text-lg font-semibold text-amber-100">
+                <div className="font-mono text-lg font-semibold text-amber-900 dark:text-amber-100">
                   {loginStart.userCode}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-amber-100/75">
+                <div className="flex items-center gap-2 text-xs text-amber-900/70 dark:text-amber-100/75">
                   {isPollingLogin && (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   )}
