@@ -26,19 +26,15 @@ const switchProviderMutateAsync = vi.fn();
 
 const addProviderMutation = {
   mutateAsync: addProviderMutateAsync,
-  isPending: false,
 };
 const updateProviderMutation = {
   mutateAsync: updateProviderMutateAsync,
-  isPending: false,
 };
 const deleteProviderMutation = {
   mutateAsync: deleteProviderMutateAsync,
-  isPending: false,
 };
 const switchProviderMutation = {
   mutateAsync: switchProviderMutateAsync,
-  isPending: false,
 };
 
 const useAddProviderMutationMock = vi.fn(() => addProviderMutation);
@@ -55,13 +51,19 @@ vi.mock("@/lib/query", () => ({
 
 const providersApiUpdateMock = vi.fn();
 const providersApiUpdateTrayMenuMock = vi.fn();
+const piApiUpdateProviderUsageScriptMock = vi.fn();
 const settingsApiGetMock = vi.fn();
 const settingsApiApplyMock = vi.fn();
 const openclawApiGetModelCatalogMock = vi.fn();
+const openclawApiSetModelCatalogMock = vi.fn();
 const openclawApiGetDefaultModelMock = vi.fn();
 const openclawApiSetDefaultModelMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
+  piApi: {
+    updateProviderUsageScript: (...args: unknown[]) =>
+      piApiUpdateProviderUsageScriptMock(...args),
+  },
   providersApi: {
     update: (...args: unknown[]) => providersApiUpdateMock(...args),
     updateTrayMenu: (...args: unknown[]) =>
@@ -75,6 +77,8 @@ vi.mock("@/lib/api", () => ({
   openclawApi: {
     getModelCatalog: (...args: unknown[]) =>
       openclawApiGetModelCatalogMock(...args),
+    setModelCatalog: (...args: unknown[]) =>
+      openclawApiSetModelCatalogMock(...args),
     getDefaultModel: (...args: unknown[]) =>
       openclawApiGetDefaultModelMock(...args),
     setDefaultModel: (...args: unknown[]) =>
@@ -113,20 +117,17 @@ beforeEach(() => {
   switchProviderMutateAsync.mockReset();
   providersApiUpdateMock.mockReset();
   providersApiUpdateTrayMenuMock.mockReset();
+  piApiUpdateProviderUsageScriptMock.mockReset();
   settingsApiGetMock.mockReset();
   settingsApiApplyMock.mockReset();
   openclawApiGetModelCatalogMock.mockReset();
+  openclawApiSetModelCatalogMock.mockReset();
   openclawApiGetDefaultModelMock.mockReset();
   openclawApiSetDefaultModelMock.mockReset();
   toastSuccessMock.mockReset();
   toastErrorMock.mockReset();
   toastInfoMock.mockReset();
   toastWarningMock.mockReset();
-
-  addProviderMutation.isPending = false;
-  updateProviderMutation.isPending = false;
-  deleteProviderMutation.isPending = false;
-  switchProviderMutation.isPending = false;
 
   useAddProviderMutationMock.mockClear();
   useUpdateProviderMutationMock.mockClear();
@@ -135,26 +136,6 @@ beforeEach(() => {
 });
 
 describe("useProviderActions", () => {
-  it("should trigger mutation when calling addProvider", async () => {
-    addProviderMutateAsync.mockResolvedValueOnce(undefined);
-    const { wrapper } = createWrapper();
-    const providerInput = {
-      name: "New Provider",
-      settingsConfig: { token: "abc" },
-    } as Omit<Provider, "id">;
-
-    const { result } = renderHook(() => useProviderActions("claude"), {
-      wrapper,
-    });
-
-    await act(async () => {
-      await result.current.addProvider(providerInput);
-    });
-
-    expect(addProviderMutateAsync).toHaveBeenCalledTimes(1);
-    expect(addProviderMutateAsync).toHaveBeenCalledWith(providerInput);
-  });
-
   it("should update tray menu when calling updateProvider", async () => {
     updateProviderMutateAsync.mockResolvedValueOnce(undefined);
     providersApiUpdateTrayMenuMock.mockResolvedValueOnce(true);
@@ -198,6 +179,162 @@ describe("useProviderActions", () => {
     );
   });
 
+  it.each(["codex", "gemini", "grokbuild", "claude-desktop"] as const)(
+    "reports a %s route switch without a restart when the client config is unchanged",
+    async (app) => {
+      switchProviderMutateAsync.mockResolvedValueOnce({
+        warnings: [],
+        route: { kind: "route", clientConfigChanged: false },
+      });
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useProviderActions(app, true), {
+        wrapper,
+      });
+      await act(async () => {
+        await result.current.switchProvider(
+          createProvider({ category: "custom" }),
+        );
+      });
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "路由已切换至 Test Provider，后续新请求将使用该供应商。",
+        { closeButton: true },
+      );
+    },
+  );
+
+  it("keeps a client reload hint when a routed switch rewrites Codex configuration", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: [],
+      route: { kind: "route", clientConfigChanged: true },
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ category: "custom" }),
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "路由目标已设为 Test Provider。客户端配置也已更新；重启 Codex 以加载更新后的配置。",
+      { closeButton: true },
+    );
+  });
+
+  it("describes the aggregation default without claiming to reroute selected aggregated models", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: [],
+      route: { kind: "stack", clientConfigChanged: false },
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ category: "custom" }),
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "聚合默认供应商已设为 Test Provider；已选聚合模型仍使用各自的供应商。",
+      { closeButton: true },
+    );
+  });
+
+  it("uses the operation result even if the UI takeover status is stale", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: [],
+      route: { kind: "route", clientConfigChanged: false },
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("codex", false), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ category: "custom" }),
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "路由已切换至 Test Provider，后续新请求将使用该供应商。",
+      { closeButton: true },
+    );
+  });
+
+  it("names a failed OMO variant cleanup instead of blaming a backfill", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: ["omo_variant_cleanup_failed:omo-a"],
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("opencode"), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ id: "omo-a", category: "omo" }),
+      );
+    });
+    expect(toastWarningMock.mock.calls.map(([message]) => message)).toEqual([
+      "切换成功，但未能删除另一个 OMO 变体（OMO / OMO Slim）的配置文件，OpenCode 可能同时加载两者；请在 OpenCode 配置目录中手动删除它",
+    ]);
+  });
+
+  it("still reports an uncoded warning as a failed backfill", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: ["omo_variant_cleanup_failed:omo-a", "backfill: boom"],
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("opencode"), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ id: "omo-a", category: "omo" }),
+      );
+    });
+    expect(toastWarningMock.mock.calls.map(([message]) => message)).toEqual([
+      "切换成功，但未能删除另一个 OMO 变体（OMO / OMO Slim）的配置文件，OpenCode 可能同时加载两者；请在 OpenCode 配置目录中手动删除它",
+      "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
+    ]);
+  });
+
+  it("does not infer a hot switch solely from the UI takeover flag", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({ warnings: [] });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ category: "custom" }),
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "切换成功，请重启客户端以生效",
+      { closeButton: true },
+    );
+  });
+
+  it("asks for a Gemini CLI restart after switching, since it reads .env only at startup", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({ category: "custom" });
+
+    const { result } = renderHook(() => useProviderActions("gemini"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "切换成功，请重启 Gemini CLI 以生效",
+      { closeButton: true },
+    );
+  });
+
   it("warns but still switches providers that require proxy when proxy is not running", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
@@ -208,7 +345,7 @@ describe("useProviderActions", () => {
       },
     });
 
-    const { result } = renderHook(() => useProviderActions("claude", false), {
+    const { result } = renderHook(() => useProviderActions("claude"), {
       wrapper,
     });
 
@@ -230,7 +367,7 @@ describe("useProviderActions", () => {
       },
     });
 
-    const { result } = renderHook(() => useProviderActions("codex", false), {
+    const { result } = renderHook(() => useProviderActions("codex"), {
       wrapper,
     });
 
@@ -240,6 +377,219 @@ describe("useProviderActions", () => {
 
     expect(toastWarningMock).toHaveBeenCalledTimes(1);
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("warns when switching a Codex Anthropic-format provider without proxy", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: { apiFormat: "anthropic" },
+    });
+
+    const { result } = renderHook(() => useProviderActions("codex"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      expect.stringContaining("Anthropic Messages"),
+    );
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("warns for Grok providers that require the Responses router", async () => {
+    switchProviderMutateAsync.mockResolvedValue(undefined);
+    const { wrapper } = createWrapper();
+    const providers = [
+      createProvider({
+        id: "grok-chat",
+        category: "custom",
+        meta: { apiFormat: "openai_chat" },
+      }),
+      createProvider({
+        id: "grok-anthropic",
+        category: "custom",
+        meta: { apiFormat: "anthropic" },
+      }),
+      createProvider({
+        id: "grok-full-url",
+        category: "custom",
+        meta: { isFullUrl: true },
+      }),
+    ];
+
+    const { result } = renderHook(() => useProviderActions("grokbuild"), {
+      wrapper,
+    });
+
+    for (const provider of providers) {
+      await act(async () => {
+        await result.current.switchProvider(provider);
+      });
+    }
+
+    expect(toastWarningMock).toHaveBeenCalledTimes(3);
+    expect(switchProviderMutateAsync).toHaveBeenCalledTimes(3);
+  });
+
+  it("warns for managed OAuth until the current Code app is taken over", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: {
+        providerType: "codex_oauth",
+        apiFormat: "openai_responses",
+      },
+    });
+
+    const { result } = renderHook(() => useProviderActions("codex", false), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      expect.stringContaining("托管 OAuth"),
+    );
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("does not warn for managed OAuth after the current Code app is taken over", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: {
+        providerType: "codex_oauth",
+        apiFormat: "openai_responses",
+      },
+    });
+
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).not.toHaveBeenCalled();
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("does not warn for a Claude Desktop mapping card while Desktop is in route mode", async () => {
+    switchProviderMutateAsync.mockResolvedValue(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: { claudeDesktopMode: "proxy" },
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("claude-desktop", true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).not.toHaveBeenCalled();
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("warns for a Claude Desktop mapping card in direct mode", async () => {
+    switchProviderMutateAsync.mockResolvedValue(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: { claudeDesktopMode: "proxy" },
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("claude-desktop", false),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).toHaveBeenCalled();
+  });
+
+  it("allows the native Codex official provider during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "codex-official",
+      category: "official",
+    });
+
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("codex-official");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("continues blocking other official providers during takeover", async () => {
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "claude-official",
+      category: "official",
+    });
+
+    const { result } = renderHook(() => useProviderActions("claude", true), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a managed Codex Official card during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "generated-uuid",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+      meta: {
+        providerType: "codex_oauth",
+        authBinding: {
+          source: "managed_account",
+          authProvider: "codex_oauth",
+          accountId: "acct-managed",
+        },
+      },
+    });
+    const { result } = renderHook(() => useProviderActions("codex", true), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("generated-uuid");
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("should sync plugin config when switching Claude provider with integration enabled", async () => {
@@ -441,6 +791,37 @@ describe("useProviderActions", () => {
     expect(toastErrorMock.mock.calls[0]?.[0]).toBe("Save failed");
   });
 
+  it("saves Pi usage metadata without updating the native provider config", async () => {
+    piApiUpdateProviderUsageScriptMock.mockResolvedValueOnce(true);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      settingsConfig: {
+        name: "Pi provider",
+        futureField: { preserve: true },
+      },
+    });
+    const script: UsageScript = {
+      enabled: true,
+      language: "javascript",
+      code: "return {}",
+    };
+
+    const { result } = renderHook(() => useProviderActions("pi"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.saveUsageScript(provider, script);
+    });
+
+    expect(piApiUpdateProviderUsageScriptMock).toHaveBeenCalledWith(
+      provider.id,
+      script,
+      "pi",
+    );
+    expect(providersApiUpdateMock).not.toHaveBeenCalled();
+  });
+
   it("should use default error message when saveUsageScript fails without error message", async () => {
     providersApiUpdateMock.mockRejectedValueOnce(new Error(""));
     const { wrapper } = createWrapper();
@@ -511,18 +892,37 @@ describe("useProviderActions", () => {
     expect(settingsApiApplyMock).not.toHaveBeenCalled();
   });
 
-  it("should track pending state of all mutations in isLoading", () => {
-    addProviderMutation.isPending = true;
+  it("keeps existing OpenClaw catalog entries when registering a new provider's models", async () => {
+    openclawApiGetModelCatalogMock.mockResolvedValueOnce({
+      "my-or/kept": { alias: "Mine" },
+      "my-or/preset": { alias: "Old" },
+    });
     const { wrapper } = createWrapper();
-
-    const { result } = renderHook(() => useProviderActions("claude"), {
+    const { result } = renderHook(() => useProviderActions("openclaw"), {
       wrapper,
     });
 
-    expect(result.current.isLoading).toBe(true);
+    await act(async () => {
+      await result.current.addProvider({
+        ...createProvider(),
+        suggestedDefaults: {
+          modelCatalog: {
+            "my-or/kept": {},
+            "my-or/preset": { alias: "Opus" },
+            "my-or/new": {},
+          },
+        },
+      });
+    });
+
+    expect(openclawApiSetModelCatalogMock).toHaveBeenCalledWith({
+      "my-or/kept": { alias: "Mine" },
+      "my-or/preset": { alias: "Opus" },
+      "my-or/new": {},
+    });
   });
 
-  it("does not show backup details when setting OpenClaw default model", async () => {
+  it("sets the first OpenClaw model without inventing a fallback chain", async () => {
     openclawApiSetDefaultModelMock.mockResolvedValueOnce({
       backupPath: "/tmp/openclaw-backup.json5",
       warnings: [],
@@ -545,22 +945,40 @@ describe("useProviderActions", () => {
 
     expect(openclawApiSetDefaultModelMock).toHaveBeenCalledWith({
       primary: "provider-1/gpt-4.1",
-      fallbacks: ["provider-1/gpt-4.1-mini"],
     });
     expect(toastSuccessMock).toHaveBeenCalledTimes(1);
     expect(toastSuccessMock.mock.calls[0]?.[1]).toEqual({ closeButton: true });
   });
-});
-it("clears loading flag when all mutations idle", () => {
-  addProviderMutation.isPending = false;
-  updateProviderMutation.isPending = false;
-  deleteProviderMutation.isPending = false;
-  switchProviderMutation.isPending = false;
 
-  const { wrapper } = createWrapper();
-  const { result } = renderHook(() => useProviderActions("claude"), {
-    wrapper,
+  it("sets the explicitly selected OpenClaw model and preserves existing fallbacks", async () => {
+    openclawApiGetDefaultModelMock.mockResolvedValueOnce({
+      primary: "other/old-primary",
+      fallbacks: ["provider-1/gpt-4.1-mini", "other/fallback"],
+      customPolicy: "preserve-me",
+    });
+    openclawApiSetDefaultModelMock.mockResolvedValueOnce({
+      warnings: [],
+    });
+
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      settingsConfig: {
+        models: [{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }],
+      },
+    });
+
+    const { result } = renderHook(() => useProviderActions("openclaw"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.setAsDefaultModel(provider, "gpt-4.1-mini");
+    });
+
+    expect(openclawApiSetDefaultModelMock).toHaveBeenCalledWith({
+      primary: "provider-1/gpt-4.1-mini",
+      fallbacks: ["other/fallback"],
+      customPolicy: "preserve-me",
+    });
   });
-
-  expect(result.current.isLoading).toBe(false);
 });

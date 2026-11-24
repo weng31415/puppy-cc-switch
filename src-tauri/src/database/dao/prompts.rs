@@ -2,6 +2,7 @@
 //!
 //! 提供提示词（Prompt）的 CRUD 操作。
 
+use crate::app_config::AppType;
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::prompt::Prompt;
@@ -10,7 +11,7 @@ use rusqlite::params;
 
 impl Database {
     /// 获取指定应用类型的所有提示词
-    pub fn get_prompts(&self, app_type: &str) -> Result<IndexMap<String, Prompt>, AppError> {
+    pub fn get_prompts(&self, app_type: &AppType) -> Result<IndexMap<String, Prompt>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
             .prepare(
@@ -54,7 +55,7 @@ impl Database {
     }
 
     /// 保存提示词
-    pub fn save_prompt(&self, app_type: &str, prompt: &Prompt) -> Result<(), AppError> {
+    pub fn save_prompt(&self, app_type: &AppType, prompt: &Prompt) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "INSERT OR REPLACE INTO prompts (
@@ -75,8 +76,40 @@ impl Database {
         Ok(())
     }
 
+    // Backfill and activation must commit together with MiniMax Code's live file.
+    pub(crate) fn save_mcode_prompts(
+        &self,
+        prompts: &IndexMap<String, Prompt>,
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let transaction = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for prompt in prompts.values() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO prompts (
+                    id, app_type, name, content, description, enabled, created_at, updated_at
+                ) VALUES (?1, 'mcode', ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        prompt.id,
+                        prompt.name,
+                        prompt.content,
+                        prompt.description,
+                        prompt.enabled,
+                        prompt.created_at,
+                        prompt.updated_at
+                    ],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        transaction
+            .commit()
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     /// 删除提示词
-    pub fn delete_prompt(&self, app_type: &str, id: &str) -> Result<(), AppError> {
+    pub fn delete_prompt(&self, app_type: &AppType, id: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "DELETE FROM prompts WHERE id = ?1 AND app_type = ?2",

@@ -57,15 +57,31 @@ pub(crate) async fn execute_and_format_usage_result(
             })
         }
         Err(err) => {
+            // 瞬时传输失败（send 失败/超时、读体中断）以 Err 传播，让前端 invoke
+            // reject → react-query retry 并保留上次成功值；按错误 key 判定而非
+            // 文案匹配。其余脚本/配置/HTTP 业务错误折叠成 success:false 展示文案。
+            if let AppError::Localized { key, .. } = &err {
+                if matches!(
+                    *key,
+                    "usage_script.request_failed" | "usage_script.read_response_failed"
+                ) {
+                    return Err(err);
+                }
+            }
+
             let lang = settings::get_settings()
                 .language
-                .unwrap_or_else(|| "en".to_string());
+                .unwrap_or_else(|| "zh".to_string());
 
             let msg = match err {
-                AppError::Localized { zh, en, .. } => match lang.as_str() {
-                    "zh" | "zh-TW" => zh,
-                    _ => en,
-                },
+                AppError::Localized { zh, en, .. } => {
+                    if lang == "en" || lang == "de" || lang == "tr" || lang == "ko" || lang == "ru"
+                    {
+                        en
+                    } else {
+                        zh
+                    }
+                }
                 other => other.to_string(),
             };
 
@@ -114,8 +130,8 @@ pub async fn query_usage(
     provider_id: &str,
 ) -> Result<UsageResult, AppError> {
     let (script_code, timeout, api_key, base_url, access_token, user_id, template_type) = {
-        let providers = state.db.get_all_providers(app_type.as_str())?;
-        let provider = providers.get(provider_id).ok_or_else(|| {
+        let providers = state.db.get_provider_rows(&app_type)?;
+        let provider = providers.get(provider_id)?.ok_or_else(|| {
             AppError::localized(
                 "provider.not_found",
                 format!("供应商不存在: {provider_id}"),
@@ -187,8 +203,8 @@ pub async fn test_usage_script(
     user_id: Option<&str>,
     template_type: Option<&str>,
 ) -> Result<UsageResult, AppError> {
-    let providers = state.db.get_all_providers(app_type.as_str())?;
-    let provider = providers.get(provider_id).ok_or_else(|| {
+    let providers = state.db.get_provider_rows(&app_type)?;
+    let provider = providers.get(provider_id)?.ok_or_else(|| {
         AppError::localized(
             "provider.not_found",
             format!("供应商不存在: {provider_id}"),

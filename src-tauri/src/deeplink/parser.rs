@@ -1,6 +1,6 @@
 //! Deep link URL parser
 //!
-//! Parses puppyrouter:// URLs into DeepLinkImportRequest structures.
+//! Parses ccswitch:// URLs into DeepLinkImportRequest structures.
 
 use super::utils::validate_url;
 use super::DeepLinkImportRequest;
@@ -8,10 +8,10 @@ use crate::error::AppError;
 use std::collections::HashMap;
 use url::Url;
 
-/// Parse a puppyrouter:// URL into a DeepLinkImportRequest
+/// Parse a ccswitch:// URL into a DeepLinkImportRequest
 ///
 /// Expected format:
-/// puppyrouter://v1/import?resource={type}&...
+/// ccswitch://v1/import?resource={type}&...
 pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppError> {
     // Parse URL
     let url = Url::parse(url_str)
@@ -19,9 +19,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 
     // Validate scheme
     let scheme = url.scheme();
-    if scheme != "puppyrouter" && scheme != "ccswitch" {
+    if scheme != "ccswitch" && scheme != "puppyrouter" {
         return Err(AppError::InvalidInput(format!(
-            "Invalid scheme: expected 'puppyrouter', got '{scheme}'"
+            "Invalid scheme: expected 'ccswitch', got '{scheme}'"
         )));
     }
 
@@ -68,6 +68,16 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 }
 
 /// Parse provider deep link parameters
+/// 内置图标名的形状：小写字母、数字、`-`、`_`、`.`，不超过 64 个字符。
+/// 只看形状，不核对图标是否存在（前端找不到时显示首字母）。
+fn is_builtin_icon_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+}
+
 fn parse_provider_deeplink(
     params: &HashMap<String, String>,
     version: String,
@@ -78,13 +88,28 @@ fn parse_provider_deeplink(
         .ok_or_else(|| AppError::InvalidInput("Missing 'app' parameter".to_string()))?
         .clone();
 
-    // Validate app type
+    // Validate app type.
     if !matches!(
         app.as_str(),
-        "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes"
+        "agy"
+            | "copilot"
+            | "claude"
+            | "claude-desktop"
+            | "codex"
+            | "gemini"
+            | "grokbuild"
+            | "opencode"
+            | "openclaw"
+            | "hermes"
+            | "pi"
+            | "mcode"
+            | "kimi"
+            | "dsh"
+            | "omp"
+            | "workbuddy"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'opencode', 'openclaw', or 'hermes', got '{app}'"
+            "Invalid provider app type: '{app}'"
         )));
     }
 
@@ -116,17 +141,48 @@ fn parse_provider_deeplink(
 
     // Extract optional fields
     let model = params.get("model").cloned();
+    // 这几家的节点没有模型就选不到任何模型（见 `provider::build_pi_family_settings`）；
+    // WorkBuddy 的卡至少要一个模型才能保存
+    if matches!(
+        app.as_str(),
+        "pi" | "mcode" | "kimi" | "dsh" | "omp" | "workbuddy"
+    ) && model.as_deref().is_none_or(|model| model.trim().is_empty())
+    {
+        return Err(AppError::InvalidInput(format!(
+            "{app} providers need a model; add 'model' to the link"
+        )));
+    }
     let notes = params.get("notes").cloned();
     let haiku_model = params.get("haikuModel").cloned();
     let sonnet_model = params.get("sonnetModel").cloned();
     let opus_model = params.get("opusModel").cloned();
+    // 在解析阶段就核对，用户当场看到「这个应用不支持这种接口」，而不是确认导入之后才失败
+    let api_format = params.get("apiFormat").cloned();
+    if let Some(ref format) = api_format {
+        super::provider::check_api_format(&app, format)?;
+    }
+    // icon 只收内置图标名。图片要走下载后重新编码的流程，不能借这个参数直接把
+    // data URI 之类的内容塞进库；不合格的值丢掉，退回首字母图标，不让整条链接失败
     let icon = params
         .get("icon")
         .map(|v| v.trim().to_lowercase())
-        .filter(|v| !v.is_empty());
+        .filter(|v| is_builtin_icon_name(v));
+    // iconUrl 只在确认框里由专门的命令下载（见 `icon_fetch`）。形状不合格的地址同样丢掉，
+    // 不让整条链接失败
+    let icon_url = params
+        .get("iconUrl")
+        .and_then(|v| super::icon_fetch::parse_icon_url(v))
+        .map(|url| url.to_string());
     let config = params.get("config").cloned();
     let config_format = params.get("configFormat").cloned();
-    let config_url = params.get("configUrl").cloned();
+    // 远程配置还没实现。在解析阶段就拒绝，用户当场看到原因，而不是确认导入之后才失败
+    if params.contains_key("configUrl") {
+        return Err(AppError::InvalidInput(
+            "'configUrl' is not supported yet; pass the config inline with 'config' (Base64)"
+                .to_string(),
+        ));
+    }
+    let config_url = None;
     let enabled = params.get("enabled").and_then(|v| v.parse::<bool>().ok());
 
     // Extract usage script fields (v3.9+)
@@ -136,13 +192,19 @@ fn parse_provider_deeplink(
     let usage_script = params.get("usageScript").cloned();
     let usage_api_key = params.get("usageApiKey").cloned();
     let usage_base_url = params.get("usageBaseUrl").cloned();
+    if let Some(ref ubu) = usage_base_url {
+        let trimmed = ubu.trim();
+        if !trimmed.is_empty() {
+            validate_url(trimmed, "usageBaseUrl")?;
+        }
+    }
     let usage_access_token = params.get("usageAccessToken").cloned();
     let usage_user_id = params.get("usageUserId").cloned();
     let usage_auto_interval = params
         .get("usageAutoInterval")
         .and_then(|v| v.parse::<u64>().ok());
 
-    Ok(DeepLinkImportRequest {
+    let request = DeepLinkImportRequest {
         version,
         resource,
         app: Some(app),
@@ -157,6 +219,7 @@ fn parse_provider_deeplink(
         haiku_model,
         sonnet_model,
         opus_model,
+        api_format,
         content: None,
         description: None,
         apps: None,
@@ -166,6 +229,7 @@ fn parse_provider_deeplink(
         config,
         config_format,
         config_url,
+        icon_url,
         usage_enabled,
         usage_script,
         usage_api_key,
@@ -173,7 +237,17 @@ fn parse_provider_deeplink(
         usage_access_token,
         usage_user_id,
         usage_auto_interval,
-    })
+    };
+    // 累加式应用会把某些写法当成命令、环境变量或文件引用，解析阶段就拒绝
+    if let Ok(app_type) = request
+        .app
+        .as_deref()
+        .unwrap_or("")
+        .parse::<crate::AppType>()
+    {
+        super::provider::check_link_values(&app_type, &request)?;
+    }
+    Ok(request)
 }
 
 /// Parse prompt deep link parameters
@@ -190,10 +264,20 @@ fn parse_prompt_deeplink(
     // Validate app type
     if !matches!(
         app.as_str(),
-        "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes"
+        "claude"
+            | "codex"
+            | "gemini"
+            | "agy"
+            | "grokbuild"
+            | "opencode"
+            | "openclaw"
+            | "hermes"
+            | "pi"
+            | "mcode"
+            | "copilot"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'opencode', 'openclaw', or 'hermes', got '{app}'"
+            "Invalid app type: must be 'claude', 'codex', 'gemini', 'agy', 'copilot', 'grokbuild', 'opencode', 'openclaw', 'hermes', 'pi', or 'mcode', got '{app}'"
         )));
     }
 
@@ -229,6 +313,7 @@ fn parse_prompt_deeplink(
         haiku_model: None,
         sonnet_model: None,
         opus_model: None,
+        api_format: None,
         apps: None,
         repo: None,
         directory: None,
@@ -236,6 +321,7 @@ fn parse_prompt_deeplink(
         config: None,
         config_format: None,
         config_url: None,
+        icon_url: None,
         usage_enabled: None,
         usage_script: None,
         usage_api_key: None,
@@ -257,15 +343,33 @@ fn parse_mcp_deeplink(
         .ok_or_else(|| AppError::InvalidInput("Missing 'apps' parameter for MCP".to_string()))?
         .clone();
 
-    // Validate apps format
+    // Validate apps format. Keep this list in step with `parse_mcp_apps`
+    // (`deeplink/mcp.rs`), which is what actually maps the names onto `McpApps`:
+    // rejecting a name here makes the importer's arm for it unreachable.
     for app in apps.split(',') {
         let trimmed = app.trim();
         if !matches!(
             trimmed,
-            "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes"
+            "claude"
+                | "codex"
+                | "gemini"
+                | "agy"
+                | "grokbuild"
+                | "grok"
+                | "opencode"
+                | "openclaw"
+                | "hermes"
+                | "mcode"
+                | "pi"
+                | "kimi"
+                | "dsh"
+                | "omp"
+                | "copilot"
+                | "workbuddy"
+                | "work-buddy"
         ) {
             return Err(AppError::InvalidInput(format!(
-                "Invalid app in 'apps': must be 'claude', 'codex', 'gemini', 'opencode', 'openclaw', or 'hermes', got '{trimmed}'"
+                "Invalid app in 'apps': must be 'claude', 'codex', 'gemini', 'agy', 'grokbuild', 'opencode', 'openclaw', 'hermes', 'pi', 'kimi', 'dsh', 'mcode', 'omp', 'copilot', or 'workbuddy', got '{trimmed}'"
             )));
         }
     }
@@ -295,12 +399,14 @@ fn parse_mcp_deeplink(
         haiku_model: None,
         sonnet_model: None,
         opus_model: None,
+        api_format: None,
         content: None,
         description: None,
         repo: None,
         directory: None,
         branch: None,
         config_url: None,
+        icon_url: None,
         usage_enabled: None,
         usage_script: None,
         usage_api_key: None,
@@ -339,7 +445,7 @@ fn parse_skill_deeplink(
         directory,
         branch,
         icon: None,
-        app: Some("claude".to_string()), // Skills are Claude-only
+        app: None, // Skill links add a shared repository; app installation is a separate action.
         name: None,
         enabled: None,
         homepage: None,
@@ -350,12 +456,14 @@ fn parse_skill_deeplink(
         haiku_model: None,
         sonnet_model: None,
         opus_model: None,
+        api_format: None,
         content: None,
         description: None,
         apps: None,
         config: None,
         config_format: None,
         config_url: None,
+        icon_url: None,
         usage_enabled: None,
         usage_script: None,
         usage_api_key: None,
@@ -364,4 +472,36 @@ fn parse_skill_deeplink(
         usage_user_id: None,
         usage_auto_interval: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_provider_rejects_invalid_usage_base_url() {
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "not-a-url"] {
+            let link = Url::parse_with_params(
+                "ccswitch://v1/import",
+                &[
+                    ("resource", "provider"),
+                    ("app", "claude"),
+                    ("name", "Test"),
+                    ("endpoint", "https://api.example.com"),
+                    ("apiKey", "sk-1"),
+                    ("usageBaseUrl", bad),
+                ],
+            )
+            .unwrap()
+            .to_string();
+            let res = parse_deeplink_url(&link);
+            assert!(
+                res.is_err(),
+                "invalid usageBaseUrl '{bad}' must be rejected, got: {res:?}"
+            );
+        }
+
+        let valid = "ccswitch://v1/import?resource=provider&app=claude&name=Test&endpoint=https%3A%2F%2Fapi.example.com&apiKey=sk-1&usageBaseUrl=https%3A%2F%2Fusage.example.com";
+        assert!(parse_deeplink_url(valid).is_ok());
+    }
 }

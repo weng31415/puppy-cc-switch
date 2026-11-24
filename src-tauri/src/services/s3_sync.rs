@@ -4,8 +4,6 @@
 //! primitives in [`super::s3`]. Artifact set: `db.sql` + `skills.zip`.
 
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::sync::OnceLock;
 
 use chrono::Utc;
 use serde_json::Value;
@@ -21,19 +19,9 @@ use super::sync_protocol::{
     PROTOCOL_VERSION, REMOTE_DB_SQL, REMOTE_MANIFEST, REMOTE_SKILLS_ZIP,
 };
 
-// ─── Sync lock ───────────────────────────────────────────────
-
-pub fn sync_mutex() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-pub async fn run_with_sync_lock<T, Fut>(operation: Fut) -> Result<T, AppError>
-where
-    Fut: Future<Output = Result<T, AppError>>,
-{
-    let _guard = sync_mutex().lock().await;
-    operation.await
+#[cfg(test)]
+pub(crate) fn sync_mutex() -> &'static tokio::sync::Mutex<()> {
+    super::sync_protocol::sync_mutex()
 }
 
 // ─── Public API ──────────────────────────────────────────────

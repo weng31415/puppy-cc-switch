@@ -1,23 +1,41 @@
+#[cfg(test)]
+use crate::model_capabilities::is_confirmed_text_only_model as confirmed_text_only_model;
+use crate::model_capabilities::{
+    image_input_capability_from_settings, is_text_only_model_from_settings, ImageInputCapability,
+};
 use crate::provider::Provider;
 use crate::proxy::error::ProxyError;
+use crate::proxy::tool_media::{
+    strip_media_from_tool_value, tool_output_contains_media, ToolMediaScope,
+};
 use serde_json::{json, Value};
 
 pub const UNSUPPORTED_IMAGE_MARKER: &str = "[Unsupported Image]";
+const UNSUPPORTED_MEDIA_MARKER: &str = "[Unsupported Media]";
 
 /// Replace image blocks before sending when the routed model is text-only.
 ///
 /// Two paths, both reached only when the caller's media-fallback switch is on:
 /// - explicit capability from the provider config (modelCatalog / modalities) is
 ///   always trusted — it is declaration-driven, never a guess;
-/// - the curated `known_text_only_model` list is a heuristic *prediction* and only
-///   runs when `allow_heuristic` is true, so a mislabeled multimodal model cannot
-///   have its images silently stripped when the user opts out.
+/// - the confirmed text-only registry is used for proactive replacement only
+///   when `allow_heuristic` is true. This switch controls silent request-body
+///   mutation, not the capability truth advertised by the Codex model catalog.
+///   Replace non-text media blocks before sending when the routed model is
+///   text-only. A text-only upstream (e.g. GLM-5.2, see #6151) rejects any
+///   `messages.content[*].type` other than `text`, not just images — `file`
+///   and `input_audio` parts trip the same 400. The existing image strip runs
+///   unchanged first, then a narrow second pass removes `file`/`input_file`/
+///   `input_audio`/`document` blocks from user/assistant content only. Tool-role
+///   content, tool-output payloads, and the reactive retry are untouched.
 pub fn replace_images_for_text_only_model(
     body: &mut Value,
     provider: &Provider,
     allow_heuristic: bool,
 ) -> usize {
-    if !contains_image_blocks(body) {
+    let has_images = contains_image_blocks(body);
+    let has_non_image_media = contains_non_image_media_blocks(body);
+    if !has_images && !has_non_image_media {
         return 0;
     }
 
@@ -27,21 +45,30 @@ pub fn replace_images_for_text_only_model(
         .map(str::trim)
         .unwrap_or("");
 
-    match explicit_model_image_support(provider, model) {
-        Some(true) => return 0,
-        Some(false) => return replace_images_in_body(body),
-        None => {}
-    }
-
-    if !allow_heuristic || !known_text_only_model(model) {
+    let replace_images = has_images
+        && image_input_capability_from_settings(&provider.settings_config, model, allow_heuristic)
+            == ImageInputCapability::Unsupported;
+    let strip_non_image_media = has_non_image_media
+        && is_text_only_model_from_settings(&provider.settings_config, model, allow_heuristic);
+    if !replace_images && !strip_non_image_media {
         return 0;
     }
 
-    replace_images_in_body(body)
+    let mut replaced = if replace_images {
+        replace_images_in_body(body)
+    } else {
+        0
+    };
+    if strip_non_image_media {
+        replaced += strip_non_image_media_blocks(body);
+    }
+    replaced
 }
 
 pub fn contains_image_blocks(body: &Value) -> bool {
-    messages_have_image_blocks(body) || responses_input_has_image_blocks(body.get("input"))
+    messages_have_image_blocks(body)
+        || responses_input_has_image_blocks(body.get("input"))
+        || gemini_contents_have_image_blocks(body)
 }
 
 pub fn replace_image_blocks_with_marker(body: &mut Value) -> usize {
@@ -53,16 +80,41 @@ pub fn is_unsupported_image_error(error: &ProxyError) -> bool {
         return false;
     };
 
-    if !matches!(*status, 400 | 415 | 422 | 501) {
+    let is_standard_modality_status = matches!(*status, 400 | 415 | 422 | 501);
+    if !is_standard_modality_status && *status != 404 {
         return false;
     }
 
     let Some(body) = body.as_deref() else {
         return false;
     };
-
     let message = extract_error_text(body);
     let message = message.to_ascii_lowercase();
+
+    // OpenRouter reports routing failure as 404 when every endpoint for a
+    // model rejects image input. Keep this narrow: an ordinary missing route
+    // must not trigger a body-mutating retry.
+    if *status == 404 {
+        return message.contains("no endpoints found that support image input");
+    }
+
+    // 自证性表述：这类短语本身就断言了"仅接受文本"，属于模态拒绝，无需再要求
+    // 错误提到 image/media 等字样——火山方舟等网关的报错是
+    // "Model only support text input"，全程不出现 image（issue #5025）。
+    // 国产网关的英文常缺三单 s，因此带 s / 不带 s 两种形式都要列。
+    // GLM-5.2 text endpoint rejects any messages.content[*].type other than
+    // `text` with a field-validation error that never mentions image/modality
+    // (#6151). The Chinese form "content.type 参数非法，取值范围 ['text']"
+    // is itself a text-only assertion.
+    const TEXT_ONLY_SELF_EVIDENT_HINTS: &[&str] = &["only support text", "only supports text"];
+    if TEXT_ONLY_SELF_EVIDENT_HINTS
+        .iter()
+        .any(|hint| message.contains(hint))
+        || (message.contains("content.type 参数非法") && message.contains("取值范围 ['text']"))
+    {
+        return true;
+    }
+
     let mentions_image = message.contains("image")
         || message.contains("vision")
         || message.contains("multimodal")
@@ -83,7 +135,6 @@ pub fn is_unsupported_image_error(error: &ProxyError) -> bool {
         "doesn't support",
         "do not support",
         "don't support",
-        "only supports text",
         "text only",
         "text-only",
         "invalid content type",
@@ -108,7 +159,11 @@ fn content_has_image_blocks(content: &Value) -> bool {
 
     blocks.iter().any(|block| {
         is_image_block_type(block.get("type").and_then(Value::as_str))
-            || block.get("content").is_some_and(content_has_image_blocks)
+            || block.get("content").is_some_and(|nested| {
+                content_has_image_blocks(nested)
+                    || (block.get("type").and_then(Value::as_str) == Some("tool_result")
+                        && tool_output_contains_media(nested, ToolMediaScope::ImagesOnly))
+            })
     })
 }
 
@@ -116,13 +171,7 @@ fn replace_images_in_body(body: &mut Value) -> usize {
     let message_replacements = body
         .get_mut("messages")
         .and_then(Value::as_array_mut)
-        .map(|messages| {
-            messages
-                .iter_mut()
-                .filter_map(|message| message.get_mut("content"))
-                .map(replace_images_in_content)
-                .sum()
-        })
+        .map(|messages| messages.iter_mut().map(replace_images_in_message).sum())
         .unwrap_or(0);
 
     message_replacements
@@ -130,6 +179,37 @@ fn replace_images_in_body(body: &mut Value) -> usize {
             .get_mut("input")
             .map(replace_images_in_responses_input)
             .unwrap_or(0)
+        + replace_images_in_gemini_contents(body)
+}
+
+fn replace_images_in_message(message: &mut Value) -> usize {
+    let is_tool_message = message.get("role").and_then(Value::as_str) == Some("tool");
+    let Some(content) = message.get_mut("content") else {
+        return 0;
+    };
+
+    if is_tool_message {
+        // Preserve the legacy typed-image replacement semantics first,
+        // including Anthropic cache_control on the replacement text block.
+        // The shared traversal then handles JSON strings, MCP wrappers, and
+        // loose data-URL shapes that the legacy recursion does not recognize.
+        let mut replaced = replace_images_in_content(content);
+        let replacement_block = json!({
+            "type":"text",
+            "text":UNSUPPORTED_IMAGE_MARKER
+        });
+        let mut discarded_media = Vec::new();
+        replaced += strip_media_from_tool_value(
+            content,
+            &mut discarded_media,
+            ToolMediaScope::ImagesOnly,
+            &replacement_block,
+            UNSUPPORTED_IMAGE_MARKER,
+        );
+        replaced
+    } else {
+        replace_images_in_content(content)
+    }
 }
 
 fn replace_images_in_content(content: &mut Value) -> usize {
@@ -143,14 +223,36 @@ fn replace_images_in_content_with_text_type(content: &mut Value, text_type: &str
 
     let mut replaced = 0usize;
     for block in blocks {
-        if is_image_block_type(block.get("type").and_then(Value::as_str)) {
+        let block_type = block.get("type").and_then(Value::as_str);
+        if is_image_block_type(block_type) {
             replace_image_block_with_text_marker(block, text_type);
             replaced += 1;
             continue;
         }
 
+        let is_tool_result = block_type == Some("tool_result");
         if let Some(nested_content) = block.get_mut("content") {
-            replaced += replace_images_in_content_with_text_type(nested_content, text_type);
+            if is_tool_result {
+                // Run the legacy typed-block replacement before the shared
+                // payload-aware traversal. This makes replacement a superset
+                // of detection and preserves cache_control on Anthropic image
+                // blocks, while the second pass covers alternate tool shapes.
+                replaced += replace_images_in_content_with_text_type(nested_content, text_type);
+                let replacement_block = json!({
+                    "type":text_type,
+                    "text":UNSUPPORTED_IMAGE_MARKER
+                });
+                let mut discarded_media = Vec::new();
+                replaced += strip_media_from_tool_value(
+                    nested_content,
+                    &mut discarded_media,
+                    ToolMediaScope::ImagesOnly,
+                    &replacement_block,
+                    UNSUPPORTED_IMAGE_MARKER,
+                );
+            } else {
+                replaced += replace_images_in_content_with_text_type(nested_content, text_type);
+            }
         }
     }
 
@@ -161,11 +263,108 @@ fn messages_have_image_blocks(body: &Value) -> bool {
     body.get("messages")
         .and_then(Value::as_array)
         .is_some_and(|messages| {
-            messages
-                .iter()
-                .filter_map(|message| message.get("content"))
-                .any(content_has_image_blocks)
+            messages.iter().any(|message| {
+                let Some(content) = message.get("content") else {
+                    return false;
+                };
+                content_has_image_blocks(content)
+                    || (message.get("role").and_then(Value::as_str) == Some("tool")
+                        && tool_output_contains_media(content, ToolMediaScope::ImagesOnly))
+            })
         })
+}
+
+fn gemini_contents_have_image_blocks(body: &Value) -> bool {
+    body.get("contents")
+        .and_then(Value::as_array)
+        .is_some_and(|contents| {
+            contents.iter().any(|content| {
+                content
+                    .get("parts")
+                    .and_then(Value::as_array)
+                    .is_some_and(|parts| parts.iter().any(gemini_part_has_image))
+            })
+        })
+}
+
+fn gemini_part_has_image(part: &Value) -> bool {
+    gemini_media_payload_is_image(part.get("inlineData").or_else(|| part.get("inline_data")))
+        || gemini_media_payload_is_image(part.get("fileData").or_else(|| part.get("file_data")))
+        || part
+            .get("functionResponse")
+            .or_else(|| part.get("function_response"))
+            .and_then(|response| response.get("parts"))
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(gemini_part_has_image))
+}
+
+fn gemini_media_payload_is_image(payload: Option<&Value>) -> bool {
+    payload
+        .and_then(|payload| payload.get("mimeType").or_else(|| payload.get("mime_type")))
+        .and_then(Value::as_str)
+        .is_some_and(|mime_type| {
+            mime_type
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+        })
+}
+
+fn replace_images_in_gemini_contents(body: &mut Value) -> usize {
+    body.get_mut("contents")
+        .and_then(Value::as_array_mut)
+        .map(|contents| {
+            contents
+                .iter_mut()
+                .filter_map(|content| content.get_mut("parts").and_then(Value::as_array_mut))
+                .map(|parts| {
+                    parts
+                        .iter_mut()
+                        .map(replace_images_in_gemini_part)
+                        .sum::<usize>()
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn replace_images_in_gemini_part(part: &mut Value) -> usize {
+    if gemini_media_payload_is_image(part.get("inlineData").or_else(|| part.get("inline_data")))
+        || gemini_media_payload_is_image(part.get("fileData").or_else(|| part.get("file_data")))
+    {
+        *part = json!({"text":UNSUPPORTED_IMAGE_MARKER});
+        return 1;
+    }
+
+    let response_key = if part.get("functionResponse").is_some() {
+        "functionResponse"
+    } else {
+        "function_response"
+    };
+    let Some(function_response) = part.get_mut(response_key) else {
+        return 0;
+    };
+    let Some(media_parts) = function_response
+        .get_mut("parts")
+        .and_then(Value::as_array_mut)
+    else {
+        return 0;
+    };
+
+    let before = media_parts.len();
+    media_parts.retain(|media_part| !gemini_part_has_image(media_part));
+    let replaced = before.saturating_sub(media_parts.len());
+    if replaced > 0 {
+        if let Some(response) = function_response
+            .get_mut("response")
+            .and_then(Value::as_object_mut)
+        {
+            response.insert(
+                "cc_switch_media".to_string(),
+                Value::String(UNSUPPORTED_IMAGE_MARKER.to_string()),
+            );
+        }
+    }
+    replaced
 }
 
 fn responses_input_has_image_blocks(input: Option<&Value>) -> bool {
@@ -182,6 +381,9 @@ fn responses_input_item_has_image_blocks(item: &Value) -> bool {
     }
 
     item.get("content").is_some_and(content_has_image_blocks)
+        || item
+            .get("output")
+            .is_some_and(|output| tool_output_contains_media(output, ToolMediaScope::ImagesOnly))
 }
 
 fn replace_images_in_responses_input(input: &mut Value) -> usize {
@@ -207,6 +409,141 @@ fn replace_images_in_responses_input_item(item: &mut Value) -> usize {
         replaced += replace_images_in_content_with_text_type(content, "input_text");
     }
 
+    if let Some(output) = item.get_mut("output") {
+        // The image-capability fallback deliberately strips images only.
+        // Tool-output files/audio remain a known unsupported-modality gap.
+        let replacement_block = json!({
+            "type": "input_text",
+            "text": UNSUPPORTED_IMAGE_MARKER
+        });
+        let mut discarded_media = Vec::new();
+        replaced += strip_media_from_tool_value(
+            output,
+            &mut discarded_media,
+            ToolMediaScope::ImagesOnly,
+            &replacement_block,
+            UNSUPPORTED_IMAGE_MARKER,
+        );
+    }
+    replaced
+}
+
+/// Content-part types beyond images that a text-only upstream rejects
+/// (`file`/`input_file`/`input_audio`/`document`). GLM-5.2 returns
+/// `messages.content.type 参数非法，取值范围 ['text']` for these (#6151).
+/// Covers Chat (`file`), Responses (`input_file`), and Anthropic (`document`).
+fn is_non_image_media_block_type(block_type: Option<&str>) -> bool {
+    matches!(
+        block_type,
+        Some("file" | "input_file" | "input_audio" | "document")
+    )
+}
+
+fn is_user_or_assistant_content(item: &Value) -> bool {
+    matches!(
+        item.get("role").and_then(Value::as_str),
+        Some("user" | "assistant")
+    )
+}
+
+/// Whether the body carries non-image media blocks in
+/// user/assistant content (messages or Responses input). Only non-tool
+/// messages are checked — tool-role content and tool-output payloads are
+/// handled by the existing image-scoped path and are not widened here.
+fn contains_non_image_media_blocks(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                is_user_or_assistant_content(message)
+                    && message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|blocks| {
+                            blocks.iter().any(|block| {
+                                is_non_image_media_block_type(
+                                    block.get("type").and_then(Value::as_str),
+                                )
+                            })
+                        })
+            })
+        })
+        || responses_input_has_non_image_media_blocks(body.get("input"))
+}
+
+fn responses_input_has_non_image_media_blocks(input: Option<&Value>) -> bool {
+    match input {
+        Some(Value::Array(items)) => items.iter().any(responses_input_item_has_non_image_media),
+        Some(item @ Value::Object(_)) => responses_input_item_has_non_image_media(item),
+        _ => false,
+    }
+}
+
+fn responses_input_item_has_non_image_media(item: &Value) -> bool {
+    is_user_or_assistant_content(item)
+        && item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    is_non_image_media_block_type(block.get("type").and_then(Value::as_str))
+                })
+            })
+}
+
+/// Replace non-image media blocks with a text marker in user/assistant messages
+/// and Responses input content. Runs as a second pass after the existing image
+/// strip. Tool-role messages and tool-output payloads are intentionally skipped
+/// — the reactive retry's image-scoped contract stays untouched.
+fn strip_non_image_media_blocks(body: &mut Value) -> usize {
+    let mut replaced = 0usize;
+
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages.iter_mut() {
+            if !is_user_or_assistant_content(message) {
+                continue;
+            }
+            if let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) {
+                for block in blocks.iter_mut() {
+                    if is_non_image_media_block_type(block.get("type").and_then(Value::as_str)) {
+                        replace_non_image_media_block_with_text_marker(block, "text");
+                        replaced += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    replaced += match body.get_mut("input") {
+        Some(Value::Array(items)) => items
+            .iter_mut()
+            .map(strip_non_image_media_from_responses_item)
+            .sum(),
+        Some(item @ Value::Object(_)) => strip_non_image_media_from_responses_item(item),
+        _ => 0,
+    };
+
+    replaced
+}
+
+fn strip_non_image_media_from_responses_item(item: &mut Value) -> usize {
+    if !is_user_or_assistant_content(item) {
+        return 0;
+    }
+    let text_type = if item.get("role").and_then(Value::as_str) == Some("assistant") {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    let mut replaced = 0usize;
+    if let Some(blocks) = item.get_mut("content").and_then(Value::as_array_mut) {
+        for block in blocks.iter_mut() {
+            if is_non_image_media_block_type(block.get("type").and_then(Value::as_str)) {
+                replace_non_image_media_block_with_text_marker(block, text_type);
+                replaced += 1;
+            }
+        }
+    }
     replaced
 }
 
@@ -215,99 +552,22 @@ fn is_image_block_type(block_type: Option<&str>) -> bool {
 }
 
 fn replace_image_block_with_text_marker(block: &mut Value, text_type: &str) {
+    replace_block_with_text_marker(block, text_type, UNSUPPORTED_IMAGE_MARKER);
+}
+
+fn replace_non_image_media_block_with_text_marker(block: &mut Value, text_type: &str) {
+    replace_block_with_text_marker(block, text_type, UNSUPPORTED_MEDIA_MARKER);
+}
+
+fn replace_block_with_text_marker(block: &mut Value, text_type: &str, marker: &str) {
     let cache_control = block.get("cache_control").cloned();
     *block = json!({
         "type": text_type,
-        "text": UNSUPPORTED_IMAGE_MARKER
+        "text": marker
     });
     if let (Some(cache_control), Some(object)) = (cache_control, block.as_object_mut()) {
         object.insert("cache_control".to_string(), cache_control);
     }
-}
-
-fn explicit_model_image_support(provider: &Provider, model: &str) -> Option<bool> {
-    let settings = &provider.settings_config;
-    [
-        settings
-            .get("modelCatalog")
-            .and_then(|catalog| catalog.get("models")),
-        settings.get("modelCatalog"),
-        settings.get("models"),
-    ]
-    .into_iter()
-    .flatten()
-    .find_map(|value| explicit_model_image_support_in_value(value, model))
-}
-
-fn known_text_only_model(model: &str) -> bool {
-    let normalized = normalize_model_id(model);
-    let tail = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-
-    const EXACT_TAILS: &[&str] = &[
-        "ark-code-latest",
-        "deepseek-chat",
-        "deepseek-reasoner",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-        "glm-5.1",
-        "kat-coder",
-        "kat-coder-pro",
-        "kat-coder-pro v1",
-        "kat-coder-pro v2",
-        "kat-coder-pro-v1",
-        "kat-coder-pro-v2",
-        "ling-2.5-1t",
-        "longcat-flash-chat",
-        "mimo-v2.5-pro",
-        "us.deepseek.r1-v1",
-    ];
-
-    const TAIL_PREFIXES: &[&str] = &["minimax-m2.7", "qwen3-coder", "step-3.5-flash"];
-
-    EXACT_TAILS.contains(&tail) || TAIL_PREFIXES.iter().any(|prefix| tail.starts_with(prefix))
-}
-
-fn explicit_model_image_support_in_value(value: &Value, model: &str) -> Option<bool> {
-    if let Some(models) = value.as_array() {
-        return models.iter().find_map(|entry| {
-            model_entry_matches(entry, None, model).then(|| explicit_image_support(entry))?
-        });
-    }
-
-    let object = value.as_object()?;
-    object.iter().find_map(|(key, entry)| {
-        model_entry_matches(entry, Some(key), model).then(|| explicit_image_support(entry))?
-    })
-}
-
-fn explicit_image_support(entry: &Value) -> Option<bool> {
-    if let Some(value) = entry
-        .get("supportsImage")
-        .or_else(|| entry.get("supports_image"))
-        .or_else(|| entry.get("vision"))
-        .and_then(Value::as_bool)
-    {
-        return Some(value);
-    }
-
-    [
-        entry.get("input"),
-        entry.pointer("/modalities/input"),
-        entry.get("input_modalities"),
-        entry.get("inputModalities"),
-    ]
-    .into_iter()
-    .flatten()
-    .find_map(input_modalities_support_image)
-}
-
-fn input_modalities_support_image(value: &Value) -> Option<bool> {
-    let modalities = value.as_array()?;
-    Some(modalities.iter().any(|item| {
-        item.as_str()
-            .map(str::trim)
-            .is_some_and(|item| item.eq_ignore_ascii_case("image"))
-    }))
 }
 
 fn extract_error_text(body: &str) -> String {
@@ -334,43 +594,6 @@ fn extract_error_text(body: &str) -> String {
     body.to_string()
 }
 
-fn model_entry_matches(entry: &Value, key: Option<&str>, model: &str) -> bool {
-    key.is_some_and(|key| model_ids_match(key, model))
-        || ["model", "id", "name"]
-            .into_iter()
-            .filter_map(|field| entry.get(field).and_then(Value::as_str))
-            .any(|candidate| model_ids_match(candidate, model))
-}
-
-fn model_ids_match(candidate: &str, model: &str) -> bool {
-    let candidate = normalize_model_id(candidate);
-    let model = normalize_model_id(model);
-    if candidate.is_empty() || model.is_empty() {
-        return false;
-    }
-    if candidate == model {
-        return true;
-    }
-
-    let candidate_tail = candidate.rsplit('/').next().unwrap_or(candidate.as_str());
-    let model_tail = model.rsplit('/').next().unwrap_or(model.as_str());
-    candidate_tail == model_tail || candidate == model_tail || candidate_tail == model
-}
-
-fn normalize_model_id(value: &str) -> String {
-    let mut normalized = value
-        .trim()
-        .trim_start_matches("models/")
-        .trim()
-        .to_ascii_lowercase();
-    if let Some(stripped) =
-        normalized.strip_suffix(crate::claude_desktop_config::ONE_M_CONTEXT_MARKER)
-    {
-        normalized = stripped.trim().to_string();
-    }
-    normalized
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +617,13 @@ mod tests {
         }
     }
 
+    fn large_tool_data_url() -> String {
+        format!(
+            "data:image/png;base64,{}",
+            "SANITIZER_TOOL_MEDIA_SENTINEL".repeat(400)
+        )
+    }
+
     #[test]
     fn keeps_images_when_model_capability_is_unknown() {
         let provider = provider(json!({}));
@@ -415,10 +645,53 @@ mod tests {
     }
 
     #[test]
-    fn known_text_only_models_replace_images_before_send() {
+    fn codex_catalog_modalities_control_image_rectification() {
+        for (row, expected_replacements) in [
+            (
+                json!({ "model": "gpt-5.6-sol", "inputModalities": ["text", "image"] }),
+                0,
+            ),
+            (
+                json!({ "model": "gpt-5.6-sol", "inputModalities": ["text"] }),
+                1,
+            ),
+            (json!({ "model": "gpt-5.6-sol" }), 0),
+        ] {
+            let provider = provider(json!({ "modelCatalog": { "models": [row] } }));
+            let original = json!({
+                "model": "gpt-5.6-sol",
+                "input": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "look" },
+                        { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                    ]
+                }]
+            });
+            for allow_heuristic in [false, true] {
+                let mut body = original.clone();
+                assert_eq!(
+                    replace_images_for_text_only_model(&mut body, &provider, allow_heuristic),
+                    expected_replacements
+                );
+                if expected_replacements == 0 {
+                    assert_eq!(body, original);
+                } else {
+                    assert_eq!(body["input"][0]["content"][1]["type"], "input_text");
+                    assert_eq!(
+                        body["input"][0]["content"][1]["text"],
+                        UNSUPPORTED_IMAGE_MARKER
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_text_only_models_replace_images_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek/deepseek-v4-pro",
+            "model": "qwen/qwen3-coder-plus",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -437,10 +710,10 @@ mod tests {
     }
 
     #[test]
-    fn known_text_only_models_replace_chat_image_url_before_send() {
+    fn confirmed_text_only_models_replace_chat_image_url_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "qwen3-coder-plus",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -461,10 +734,10 @@ mod tests {
     }
 
     #[test]
-    fn known_text_only_models_replace_codex_input_image_before_send() {
+    fn confirmed_text_only_models_replace_codex_input_image_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "qwen3-coder-plus",
             "input": [{
                 "role": "user",
                 "content": [
@@ -485,6 +758,319 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_dated_deepseek_replaces_codex_input_image_before_send() {
+        let provider = provider(json!({}));
+        let mut body = json!({
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "look" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                ]
+            }]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["input"][0]["content"][1]["type"], "input_text");
+        assert_eq!(
+            body["input"][0]["content"][1]["text"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+    }
+
+    #[test]
+    fn confirmed_text_only_models_replace_chat_file_part_before_send() {
+        // #6151: GLM-5.2 (text-only) rejects messages.content parts whose
+        // `type` is not `text` — including `file`. The second pass must drop it.
+        let provider = provider(json!({}));
+        let mut body = json!({
+            "model": "glm-5.2",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "summarize" },
+                    { "type": "file", "file": { "file_id": "file_1" } }
+                ]
+            }]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(
+            body["messages"][0]["content"][1]["text"],
+            UNSUPPORTED_MEDIA_MARKER
+        );
+    }
+
+    #[test]
+    fn confirmed_text_only_models_replace_chat_input_audio_part_before_send() {
+        // #6151: `input_audio` parts are equally rejected by text-only upstreams.
+        let provider = provider(json!({}));
+        let mut body = json!({
+            "model": "glm-5.2",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "transcribe" },
+                    { "type": "input_audio", "input_audio": { "data": "YQ==", "format": "wav" } }
+                ]
+            }]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(
+            body["messages"][0]["content"][1]["text"],
+            UNSUPPORTED_MEDIA_MARKER
+        );
+    }
+
+    #[test]
+    fn image_disabled_models_preserve_non_image_media() {
+        for (model, settings) in [
+            (
+                "glm-5.2",
+                json!({ "models": [{ "id": "glm-5.2", "supportsImage": false }] }),
+            ),
+            (
+                "glm-5.2",
+                json!({ "models": [{ "id": "glm-5.2", "input": ["text", "audio"] }] }),
+            ),
+        ] {
+            let provider = provider(settings);
+            let mut body = json!({
+                "model": model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,YQ==" } },
+                        { "type": "input_audio", "input_audio": { "data": "YQ==", "format": "wav" } },
+                        { "type": "file", "file": { "file_id": "file_1" } }
+                    ]
+                }]
+            });
+
+            let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+            assert_eq!(count, 1, "only the unsupported image is replaced");
+            assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+            assert_eq!(body["messages"][0]["content"][1]["type"], "input_audio");
+            assert_eq!(body["messages"][0]["content"][2]["type"], "file");
+        }
+    }
+
+    #[test]
+    fn text_only_modalities_control_non_image_media_independently() {
+        let provider = provider(json!({
+            "models": [{
+                "id": "declared-text-only",
+                "supportsImage": true,
+                "input": ["text"]
+            }]
+        }));
+        let mut body = json!({
+            "model": "declared-text-only",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,YQ==" } },
+                    { "type": "file", "file": { "file_id": "file_1" } }
+                ]
+            }]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+    }
+
+    #[test]
+    fn confirmed_text_only_models_replace_codex_input_file_part_before_send() {
+        // #6151: native Responses input `input_file` must also be stripped.
+        let provider = provider(json!({}));
+        let mut body = json!({
+            "model": "glm-5.2",
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "summarize" },
+                    { "type": "input_file", "file_id": "file_top" }
+                ]
+            }]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["input"][0]["content"][1]["type"], "input_text");
+        assert_eq!(
+            body["input"][0]["content"][1]["text"],
+            UNSUPPORTED_MEDIA_MARKER
+        );
+    }
+
+    #[test]
+    fn codex_to_anthropic_documents_are_replaced_for_text_only_models() {
+        let provider = provider(json!({}));
+        let mut body =
+            crate::proxy::providers::transform_codex_anthropic::responses_request_to_anthropic(
+                json!({
+                    "model": "glm-5.2",
+                    "input": [{
+                        "role": "user",
+                        "content": [
+                            { "type": "input_text", "text": "summarize" },
+                            { "type": "input_file", "file_url": "https://example.com/report.pdf" }
+                        ]
+                    }]
+                }),
+                8192,
+            )
+            .unwrap();
+        assert_eq!(body["messages"][0]["content"][1]["type"], "document");
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 1);
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(
+            body["messages"][0]["content"][1]["text"],
+            UNSUPPORTED_MEDIA_MARKER
+        );
+    }
+
+    #[test]
+    fn reactive_retry_stays_image_scoped_for_file_and_audio() {
+        // The reactive retry must remain image-scoped — file/audio parts are
+        // NOT stripped by `replace_image_blocks_with_marker`.
+        let mut body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_id": "file_1" } },
+                    { "type": "input_audio", "input_audio": { "data": "YQ==", "format": "wav" } },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,YQ==" } }
+                ]
+            }]
+        });
+
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1, "only the image_url block is replaced");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "file");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "input_audio");
+        assert_eq!(body["messages"][0]["content"][2]["type"], "text");
+    }
+
+    #[test]
+    fn non_image_media_replacement_stays_in_user_and_assistant_content() {
+        let provider = provider(json!({}));
+        let mut body = json!({
+            "model": "glm-5.2",
+            "messages": [
+                { "role": "system", "content": [{ "type": "file" }] },
+                { "role": "developer", "content": [{ "type": "input_audio" }] },
+                { "role": "unknown", "content": [{ "type": "document" }] },
+                { "content": [{ "type": "file" }] },
+                { "role": "user", "content": [{ "type": "file" }] }
+            ],
+            "input": [
+                { "role": "system", "content": [{ "type": "input_file" }] },
+                { "type": "input_file" },
+                { "role": "assistant", "content": [{ "type": "input_file" }] }
+            ]
+        });
+
+        let count = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(count, 2);
+        for index in 0..4 {
+            assert_ne!(body["messages"][index]["content"][0]["type"], "text");
+        }
+        assert_eq!(body["messages"][4]["content"][0]["type"], "text");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_file");
+        assert_eq!(body["input"][1]["type"], "input_file");
+        assert_eq!(body["input"][2]["content"][0]["type"], "output_text");
+    }
+
+    #[test]
+    fn classifies_image_and_text_only_errors() {
+        for (case, status, body, unsupported) in [
+            // #6151: GLM-5.2 returns a field-validation error that never mentions
+            // image/modality; the reactive fallback must still recognize it.
+            (
+                "is_unsupported_image_error_recognizes_glm_content_type_rejection",
+                400,
+                r#"{"error":{"code":"1214","message":"messages.content.type 参数非法，取值范围 ['text']"}}"#,
+                true,
+            ),
+            (
+                "content_type_error_with_image_allowed_is_not_text_only",
+                400,
+                r#"{"error":{"message":"messages.content.type 参数非法，取值范围 ['text','image_url']"}}"#,
+                false,
+            ),
+            (
+                "detects_unsupported_image_errors",
+                400,
+                r#"{"error":{"message":"This model does not support image input"}}"#,
+                true,
+            ),
+            (
+                "detects_openrouter_no_image_endpoint_404",
+                404,
+                r#"{"error":{"message":"No endpoints found that support image input"}}"#,
+                true,
+            ),
+            // 火山方舟真实报错（issue #5025）：不含 image/media 等字样，且英文缺
+            // 三单 s——旧逻辑的 mentions_image 门与 "only supports text" 提示都拦不住。
+            (
+                "detects_text_only_errors_without_image_mention",
+                400,
+                r#"{"error":{"message":"Model only support text input Request id: 021783"}}"#,
+                true,
+            ),
+            (
+                "ignores_non_image_errors",
+                400,
+                r#"{"error":{"message":"Invalid API key"}}"#,
+                false,
+            ),
+            (
+                "detects_chat_content_unknown_variant_image_url_errors",
+                400,
+                r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#,
+                true,
+            ),
+        ] {
+            let error = ProxyError::UpstreamError {
+                status,
+                body: Some(body.to_string()),
+            };
+
+            assert_eq!(is_unsupported_image_error(&error), unsupported, "{case}");
+        }
+    }
+
+    #[test]
+    fn longcat_models_are_classified_text_only() {
+        // LongCat-2.0 (like the retired Flash Chat) is a text-only model; the
+        // preset ships it in mixed case, so the classifier must normalize first.
+        assert!(confirmed_text_only_model("LongCat-2.0"));
+        assert!(confirmed_text_only_model("longcat/LongCat-2.0"));
+        assert!(confirmed_text_only_model("LongCat-Flash-Chat"));
+    }
+
+    #[test]
     fn explicit_text_modalities_replace_images_before_send() {
         let provider = provider(json!({
             "models": [
@@ -497,16 +1083,18 @@ mod tests {
                 "role": "user",
                 "content": [
                     { "type": "text", "text": "look" },
-                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "abc" } }
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "abc" } },
+                    { "type": "input_audio", "input_audio": { "data": "YQ==", "format": "wav" } }
                 ]
             }]
         });
 
         let count = replace_images_for_text_only_model(&mut body, &provider, true);
 
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
         assert_eq!(body["messages"][0]["content"][0]["text"], "look");
         assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(body["messages"][0]["content"][2]["type"], "text");
         assert_eq!(
             body["messages"][0]["content"][1]["text"],
             UNSUPPORTED_IMAGE_MARKER
@@ -637,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn known_text_only_prefixes_replace_images_before_send() {
+    fn confirmed_text_only_variant_replaces_images_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
             "model": "therouter/qwen/qwen3-coder-480b",
@@ -706,25 +1294,402 @@ mod tests {
     }
 
     #[test]
-    fn detects_unsupported_image_errors() {
-        let error = ProxyError::UpstreamError {
-            status: 400,
-            body: Some(
-                r#"{"error":{"message":"This model does not support image input"}}"#.to_string(),
-            ),
-        };
+    fn replaces_file_backed_tool_result_image_and_preserves_cache_control() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_file",
+                    "content": [{
+                        "type": "image",
+                        "source": {
+                            "type": "file",
+                            "file_id": "file_123"
+                        },
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                }]
+            }]
+        });
 
-        assert!(is_unsupported_image_error(&error));
+        assert!(contains_image_blocks(&body));
+        let count = replace_image_blocks_with_marker(&mut body);
+        let replacement = &body["messages"][0]["content"][0]["content"][0];
+
+        assert_eq!(count, 1);
+        assert_eq!(replacement["type"], "text");
+        assert_eq!(replacement["text"], UNSUPPORTED_IMAGE_MARKER);
+        assert_eq!(replacement["cache_control"]["type"], "ephemeral");
+        assert!(!body.to_string().contains("file_123"));
     }
 
     #[test]
-    fn ignores_non_image_errors() {
-        let error = ProxyError::UpstreamError {
-            status: 400,
-            body: Some(r#"{"error":{"message":"Invalid API key"}}"#.to_string()),
-        };
+    fn replaces_stringified_anthropic_tool_result_image_blocks() {
+        let content = json!({
+            "content": [{
+                "type": "image",
+                "mimeType": "image/png",
+                "data": "ANTHROPIC_STRING_TOOL_SENTINEL"
+            }]
+        })
+        .to_string();
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": content
+                }]
+            }]
+        });
 
-        assert!(!is_unsupported_image_error(&error));
+        assert!(contains_image_blocks(&body));
+        let count = replace_image_blocks_with_marker(&mut body);
+        let rewritten = body["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert!(rewritten.contains(UNSUPPORTED_IMAGE_MARKER));
+        assert!(!rewritten.contains("ANTHROPIC_STRING_TOOL_SENTINEL"));
+    }
+
+    #[test]
+    fn detects_and_replaces_responses_function_output_images() {
+        let data_url = large_tool_data_url();
+        let mut body = json!({
+            "model": "text-only",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": {
+                    "content": [
+                        {"type": "input_text", "text": "caption"},
+                        {"type": "input_image", "image_url": data_url.clone()},
+                        {"type": "image", "mimeType": "image/webp", "data": "MCP_SENTINEL"}
+                    ]
+                }
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 2);
+        assert_eq!(
+            body["input"][0]["output"]["content"][1],
+            json!({"type": "input_text", "text": UNSUPPORTED_IMAGE_MARKER})
+        );
+        assert_eq!(
+            body["input"][0]["output"]["content"][2],
+            json!({"type": "input_text", "text": UNSUPPORTED_IMAGE_MARKER})
+        );
+        assert!(!body.to_string().contains(&data_url));
+        assert!(!body.to_string().contains("MCP_SENTINEL"));
+    }
+
+    #[test]
+    fn proactive_text_only_sanitizer_covers_responses_tool_outputs() {
+        let provider = provider(json!({
+            "models": [{"id": "text-model", "input": ["text"]}]
+        }));
+        let mut body = json!({
+            "model": "text-model",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,PROACTIVE_SENTINEL"
+                }]
+            }]
+        });
+
+        let replaced = replace_images_for_text_only_model(&mut body, &provider, true);
+
+        assert_eq!(replaced, 1);
+        assert_eq!(body["input"][0]["output"][0]["type"], "input_text");
+        assert!(!body.to_string().contains("PROACTIVE_SENTINEL"));
+    }
+
+    #[test]
+    fn detects_and_replaces_json_string_tool_output_symmetrically() {
+        let data_url = large_tool_data_url();
+        let output = json!({
+            "content": [{
+                "type": "input_image",
+                "image_url": data_url.clone()
+            }]
+        })
+        .to_string();
+        let mut body = json!({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_string",
+                "output": output
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1);
+        let rewritten = body["input"][0]["output"].as_str().unwrap();
+        assert!(rewritten.contains(UNSUPPORTED_IMAGE_MARKER));
+        assert!(!rewritten.contains(&data_url));
+        let parsed: Value = serde_json::from_str(rewritten).unwrap();
+        assert_eq!(parsed["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn detects_and_replaces_whole_string_tool_image_data_url() {
+        let data_url = large_tool_data_url();
+        let mut body = json!({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_raw",
+                "output": data_url.clone()
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1);
+        assert_eq!(
+            body["input"][0]["output"],
+            Value::String(UNSUPPORTED_IMAGE_MARKER.to_string())
+        );
+        assert!(!body.to_string().contains(&data_url));
+    }
+
+    #[test]
+    fn detects_and_replaces_custom_tool_output_images() {
+        let mut body = json!({
+            "input": [{
+                "type": "custom_tool_call_output",
+                "call_id": "call_custom",
+                "status": "completed",
+                "output": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/render.png"}
+                }]
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1);
+        assert_eq!(body["input"][0]["status"], "completed");
+        assert_eq!(body["input"][0]["output"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn ignores_no_media_and_untyped_remote_tool_outputs() {
+        let mut body = json!({
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_text",
+                    "output": {"content": [{"type": "text", "text": "ordinary result"}]}
+                },
+                {
+                    "type": "tool_search_output",
+                    "call_id": "call_search",
+                    "output": {
+                        "image_url": {"url": "https://example.com/search-thumbnail.png"}
+                    }
+                }
+            ]
+        });
+        let original = body.clone();
+
+        assert!(!contains_image_blocks(&body));
+        assert_eq!(replace_image_blocks_with_marker(&mut body), 0);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn image_retry_scope_intentionally_ignores_tool_files_and_audio() {
+        let mut body = json!({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_modalities",
+                "output": {
+                    "content": [
+                        {"type": "input_file", "file_id": "file_1"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "AUDIO", "format": "wav"}
+                        }
+                    ]
+                }
+            }]
+        });
+        let original = body.clone();
+
+        assert!(!contains_image_blocks(&body));
+        assert_eq!(replace_image_blocks_with_marker(&mut body), 0);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn replaces_synthetic_user_and_tool_role_chat_image_parts() {
+        let mut body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "tool media"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,USER_SENTINEL"}
+                        }
+                    ]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/tool.png"}
+                    }]
+                }
+            ]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 2);
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn detects_and_replaces_stringified_chat_tool_image() {
+        let content = json!({
+            "content": [{
+                "type": "image",
+                "mimeType": "image/png",
+                "data": "STRINGIFIED_CHAT_TOOL_SENTINEL"
+            }]
+        })
+        .to_string();
+        let mut body = json!({
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": content
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+        let rewritten = body["messages"][0]["content"].as_str().unwrap();
+
+        assert_eq!(replaced, 1);
+        assert!(rewritten.contains(UNSUPPORTED_IMAGE_MARKER));
+        assert!(!rewritten.contains("STRINGIFIED_CHAT_TOOL_SENTINEL"));
+    }
+
+    #[test]
+    fn detects_and_replaces_gemini_native_image_parts() {
+        let mut body = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "inspect",
+                            "response": {"content": "done"}
+                        }
+                    },
+                    {
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": "GEMINI_INLINE_SENTINEL"
+                        }
+                    }
+                ]
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1);
+        assert_eq!(
+            body["contents"][0]["parts"][1]["text"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+        assert!(!body.to_string().contains("GEMINI_INLINE_SENTINEL"));
+    }
+
+    #[test]
+    fn detects_and_removes_nested_gemini_function_response_media() {
+        let mut body = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "name": "inspect",
+                        "response": {"content": "done"},
+                        "parts": [{
+                            "inlineData": {
+                                "mimeType": "image/webp",
+                                "data": "GEMINI_FUNCTION_SENTINEL"
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        assert!(contains_image_blocks(&body));
+        let replaced = replace_image_blocks_with_marker(&mut body);
+
+        assert_eq!(replaced, 1);
+        assert!(body["contents"][0]["parts"][0]["functionResponse"]["parts"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            body["contents"][0]["parts"][0]["functionResponse"]["response"]["cc_switch_media"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+        assert!(!body.to_string().contains("GEMINI_FUNCTION_SENTINEL"));
+    }
+
+    #[test]
+    fn ignores_unrelated_404_errors() {
+        for message in [
+            "Route not found",
+            "No endpoints found that support image generation",
+        ] {
+            let error = ProxyError::UpstreamError {
+                status: 404,
+                body: Some(json!({ "error": { "message": message } }).to_string()),
+            };
+
+            assert!(!is_unsupported_image_error(&error));
+        }
+    }
+
+    #[test]
+    fn glm_52_is_classified_text_only() {
+        // issue #5025：火山 Coding Plan 的 GLM 5.2 是纯文本端点，
+        // 映射链 glm-5.2[1M] 归一化后尾部为 glm-5.2。
+        assert!(confirmed_text_only_model("glm-5.2"));
+        assert!(confirmed_text_only_model("GLM-5.2[1M]"));
+        assert!(confirmed_text_only_model("zai-org/GLM-5.2"));
+        // 未来视觉版（智谱 4v/5v 命名惯例）不能被误判为纯文本。
+        assert!(!confirmed_text_only_model("glm-5.2v"));
     }
 
     #[test]
@@ -767,19 +1732,6 @@ mod tests {
             body: Some(r#"{"message":"attachments are not supported by this model"}"#.to_string()),
         };
         assert!(is_unsupported_image_error(&attachment_error));
-    }
-
-    #[test]
-    fn detects_chat_content_unknown_variant_image_url_errors() {
-        let error = ProxyError::UpstreamError {
-            status: 400,
-            body: Some(
-                r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
-                    .to_string(),
-            ),
-        };
-
-        assert!(is_unsupported_image_error(&error));
     }
 
     #[test]

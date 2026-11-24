@@ -1,18 +1,26 @@
 import React, { useState } from "react";
 import { Play, Wand2, Eye, EyeOff, Save, ExternalLink } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Provider, UsageScript, UsageData, createUsageScript } from "@/types";
 import { usageApi, settingsApi, type AppId } from "@/lib/api";
-import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
+import {
+  copilotCliSignedInAccount,
+  copilotGetUsage,
+  copilotGetUsageForAccount,
+} from "@/lib/api/copilot";
+import { isCopilotByok } from "@/config/copilotConfig";
 import { useSettingsQuery } from "@/lib/query";
 import { resolveManagedAccountId } from "@/lib/authBinding";
+import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
-} from "@/utils/providerConfigUtils";
+} from "@/utils/codexConfigUtils";
+import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
 import JsonEditor from "./JsonEditor";
 import * as prettier from "prettier/standalone";
 import * as parserBabel from "prettier/parser-babel";
@@ -24,12 +32,18 @@ import { Switch } from "@/components/ui/switch";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
-import { TEMPLATE_TYPES, PROVIDER_TYPES } from "@/config/constants";
+import {
+  TEMPLATE_TYPES,
+  PROVIDER_TYPES,
+  type TemplateType,
+} from "@/config/constants";
 import {
   CODING_PLAN_PROVIDERS,
   detectCodingPlanProvider,
 } from "@/config/codingPlanProviders";
+import { detectBalanceProvider } from "@/config/balanceProviders";
 import { formatUsageDataSummary } from "@/utils/usageDisplay";
+import { appHas } from "@/config/appSpecs";
 
 /**
  * 火山引擎账号级 AccessKey 的密钥管理页（IAM）。
@@ -38,6 +52,8 @@ import { formatUsageDataSummary } from "@/utils/usageDisplay";
  */
 const VOLCENGINE_KEY_CONSOLE_URL =
   "https://console.volcengine.com/iam/keymanage";
+// 智谱团队套餐用量页（组织 ID / 项目 ID 在此页 URL 或管理后台可见）
+const ZHIPU_TEAM_USAGE_URL = "https://bigmodel.cn/coding-plan/team/usage-stats";
 
 interface UsageScriptModalProps {
   provider: Provider;
@@ -71,7 +87,7 @@ const generatePresetTemplates = (
     method: "GET",
     headers: {
       "Authorization": "Bearer {{apiKey}}",
-      "User-Agent": "puppyrouter-app/1.0"
+      "User-Agent": "cc-switch/1.0"
     }
   },
   extractor: function(response) {
@@ -90,7 +106,7 @@ const generatePresetTemplates = (
     headers: {
       "Content-Type": "application/json",
       "Authorization": "Bearer {{accessToken}}",
-      "User-Agent": "puppyrouter-app/1.0",
+      "User-Agent": "cc-switch/1.0",
       "New-Api-User": "{{userId}}"
     },
   },
@@ -108,6 +124,40 @@ const generatePresetTemplates = (
       isValid: false,
       invalidMessage: response.message || "${t("usageScript.queryFailedMessage")}"
     };
+  },
+})`,
+
+  // Sub2API 的 /v1/usage 用 API Key 认证；供应商地址带不带 /v1 都能拼出同一个地址。
+  // 订阅分组不限量时 remaining 为 -1，不当作余额显示
+  [TEMPLATE_TYPES.SUB2API]: `({
+  request: {
+    url: "{{baseUrl}}".replace(/\\/+$/, "").replace(/\\/v1$/, "") + "/v1/usage",
+    method: "GET",
+    headers: {
+      "Authorization": "Bearer {{apiKey}}",
+      "User-Agent": "cc-switch/1.0"
+    }
+  },
+  extractor: function (response) {
+    var quota = response.quota || {};
+    var result = {
+      isValid: response.isValid !== false,
+      unit: response.unit || quota.unit || "USD"
+    };
+    if (typeof response.planName === "string") result.planName = response.planName;
+    if (typeof response.remaining === "number" && response.remaining >= 0) {
+      result.remaining = response.remaining;
+    }
+    if (quota.limit > 0) {
+      result.used = quota.used;
+      result.total = quota.limit;
+    }
+    if (!result.isValid) {
+      result.invalidMessage = response.status
+        ? String(response.status)
+        : "${t("usageScript.queryFailedMessage")}";
+    }
+    return result;
   },
 })`,
 
@@ -129,6 +179,7 @@ const TEMPLATE_NAME_KEYS: Record<string, string> = {
   [TEMPLATE_TYPES.CUSTOM]: "usageScript.templateCustom",
   [TEMPLATE_TYPES.GENERAL]: "usageScript.templateGeneral",
   [TEMPLATE_TYPES.NEW_API]: "usageScript.templateNewAPI",
+  [TEMPLATE_TYPES.SUB2API]: "usageScript.templateSub2API",
   [TEMPLATE_TYPES.GITHUB_COPILOT]: "usageScript.templateCopilot",
   [TEMPLATE_TYPES.TOKEN_PLAN]: "usageScript.templateTokenPlan",
   [TEMPLATE_TYPES.BALANCE]: "usageScript.templateBalance",
@@ -136,27 +187,8 @@ const TEMPLATE_NAME_KEYS: Record<string, string> = {
     "usageScript.templateOfficialSubscription",
 };
 
-/** 官方余额查询供应商检测 */
-const BALANCE_PROVIDERS = [
-  { id: "deepseek", label: "DeepSeek", pattern: /api\.deepseek\.com/i },
-  { id: "stepfun", label: "StepFun", pattern: /api\.stepfun\.(ai|com)/i },
-  {
-    id: "siliconflow",
-    label: "SiliconFlow",
-    pattern: /api\.siliconflow\.(cn|com)/i,
-  },
-  { id: "openrouter", label: "OpenRouter", pattern: /openrouter\.ai/i },
-  { id: "novita", label: "Novita AI", pattern: /api\.novita\.ai/i },
-] as const;
-
-/** 根据 Base URL 自动检测余额查询供应商 */
-function detectBalanceProvider(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false;
-  return BALANCE_PROVIDERS.some((bp) => bp.pattern.test(baseUrl));
-}
-
 function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
-  if (!["claude", "codex", "gemini"].includes(appId)) return false;
+  if (!appHas(appId, "officialSubscription")) return false;
   if (provider.category === "official") return true;
 
   const config = provider.settingsConfig as Record<string, any>;
@@ -175,7 +207,7 @@ function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
       (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""))
     );
   }
-  if (appId === "gemini") {
+  if (appId === "gemini" || appId === "agy") {
     const env = config?.env || {};
     const apiKey = env.GEMINI_API_KEY;
     const baseUrl = env.GOOGLE_GEMINI_BASE_URL;
@@ -184,6 +216,12 @@ function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
       (!baseUrl || (typeof baseUrl === "string" && baseUrl.trim() === ""))
     );
   }
+  // grokbuild 不做配置启发式，只认上方的 category === "official"：官方态判定
+  // 在后端是 TOML 解析（grok_config::is_official_live_config），正则无法忠实
+  // 镜像（引号键/inline table/非法 TOML 均会误判为官方），误判会让本组件的
+  // state 初始化丢弃已保存的非官方脚本。claude/codex/gemini 的启发式建立在
+  // 已解析的 JSON 字段上是精确的，不受此限。官方判定以 category 为 SSOT 的
+  // 理由见 ProviderCard 中的注释。
   return false;
 }
 
@@ -251,7 +289,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey,
             baseUrl: extractCodexBaseUrl(configToml),
           };
-        } else if (appId === "gemini") {
+        } else if (appId === "gemini" || appId === "agy") {
           // Gemini: { env: { GEMINI_API_KEY, GOOGLE_GEMINI_BASE_URL } }
           // Key fallback mirrors the backend resolver (Provider::resolve_usage_credentials).
           const env = (config as any).env || {};
@@ -259,11 +297,51 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
             baseUrl: env.GOOGLE_GEMINI_BASE_URL,
           };
+        } else if (appId === "grokbuild") {
+          const grokConfig = parseGrokBuildConfig(
+            (config as any).config,
+            provider.name,
+          );
+          return {
+            apiKey: grokConfig.apiKey,
+            baseUrl: grokConfig.baseUrl,
+          };
         } else if (appId === "hermes") {
           // Hermes: settingsConfig 顶层扁平（snake_case，对应 config.yaml）
           return {
             apiKey: (config as any).api_key,
             baseUrl: (config as any).base_url,
+          };
+        } else if (appId === "kimi") {
+          // Kimi Code: 凭据在 provider.{base_url, api_key}（snake_case，对应 config.toml）
+          const kimiProvider = (config as any).provider || {};
+          return {
+            apiKey: kimiProvider.api_key,
+            baseUrl: kimiProvider.base_url,
+          };
+        } else if (appHas(appId, "piFamily")) {
+          // Pi / Oh My Pi: provider values are camelCase; a model may override baseUrl.
+          const root = config as any;
+          const firstModel = Array.isArray(root.models)
+            ? root.models[0]
+            : undefined;
+          return {
+            apiKey: root.apiKey,
+            baseUrl: firstModel?.baseUrl || root.baseUrl,
+          };
+        } else if (appId === "workbuddy") {
+          // WorkBuddy models.json: shared url / apiKey, or the first model's overrides.
+          // url is the full chat/completions endpoint, same trim as the backend resolver.
+          const root = config as any;
+          const firstModel = Array.isArray(root.models)
+            ? root.models[0]
+            : undefined;
+          const url: string | undefined = root.url || firstModel?.url;
+          return {
+            apiKey: root.apiKey || firstModel?.apiKey,
+            baseUrl: url
+              ?.replace(/\/+$/, "")
+              .replace(/\/chat\/completions$/, ""),
           };
         } else if (appId === "openclaw") {
           // OpenClaw: settingsConfig 顶层扁平（camelCase，对应 openclaw.json）
@@ -271,8 +349,12 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey: (config as any).apiKey,
             baseUrl: (config as any).baseUrl,
           };
-        } else if (appId === "opencode") {
-          // OpenCode (OMO): 凭据嵌在 options.{baseURL, apiKey}（SDK options 对象）
+        } else if (
+          appId === "opencode" ||
+          appId === "dsh" ||
+          appId === "mcode"
+        ) {
+          // OpenCode / DeepSeek Harness / MiniMax Code: 凭据嵌在 options.{baseURL, apiKey}。
           const options = (config as any).options || {};
           return {
             apiKey: options.apiKey,
@@ -292,20 +374,59 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   };
 
   const providerCredentials = getProviderCredentials();
+  const balanceProvider = detectBalanceProvider(providerCredentials.baseUrl);
+  const isBoundCodexOfficial =
+    resolveCodexOfficialIdentity(appId, provider) === "managed_account";
   const isOfficialSubscription = isOfficialSubscriptionProvider(
     provider,
     appId,
   );
+  // Copilot CLI 官方卡：只有 Copilot Premium 额度一种查询；没设置过时，绑了授权中心账号的卡
+  // 默认打开（和卡片上的显示一致）。
+  const isCopilotCliOfficial =
+    appId === "copilot" && !isCopilotByok(provider.settingsConfig);
+  const copilotBoundAccountId = resolveManagedAccountId(
+    provider.meta,
+    PROVIDER_TYPES.GITHUB_COPILOT,
+  );
+  // 绑了授权中心账号的 Claude 官方卡：额度按这个号查（同 ProviderCard 的 claudeBoundAccountId）
+  const claudeBoundAccountId =
+    appId === "claude" && isOfficialSubscription
+      ? resolveManagedAccountId(provider.meta, "claude_official")?.trim() ||
+        null
+      : null;
+  // 绑了授权中心 xAI 账号的 Grok 官方卡：额度按这个号查（同 ProviderCard 的 grokBoundAccountId）
+  const grokBoundAccountId =
+    appId === "grokbuild" && isOfficialSubscription
+      ? resolveManagedAccountId(
+          provider.meta,
+          PROVIDER_TYPES.XAI_OAUTH,
+        )?.trim() || null
+      : null;
+  // 绑了账号的官方卡没保存过开关时默认开（卡片和托盘同一规则）
+  const defaultsToEnabled =
+    isBoundCodexOfficial ||
+    Boolean(claudeBoundAccountId) ||
+    Boolean(grokBoundAccountId);
 
   const [script, setScript] = useState<UsageScript>(() => {
     const savedScript = provider.meta?.usage_script;
+    if (isCopilotCliOfficial) {
+      return createUsageScript({
+        ...(savedScript ? createUsageScript(savedScript) : {}),
+        templateType: TEMPLATE_TYPES.GITHUB_COPILOT,
+        enabled: savedScript?.enabled ?? Boolean(copilotBoundAccountId),
+      });
+    }
     if (savedScript) {
       const normalizedScript = createUsageScript(savedScript);
       if (
         isOfficialSubscription &&
         normalizedScript.templateType !== TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION
       ) {
-        return createUsageScript();
+        return createUsageScript({
+          enabled: defaultsToEnabled ? normalizedScript.enabled : false,
+        });
       }
       // 已有配置：如果是 coding_plan 但没有 codingPlanProvider，自动检测填充
       if (
@@ -331,7 +452,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     }
 
     if (isOfficialSubscription) {
-      return createUsageScript();
+      return createUsageScript({ enabled: defaultsToEnabled });
     }
 
     return createUsageScript({
@@ -400,7 +521,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     () => {
       const existingScript = provider.meta?.usage_script;
       // Copilot 供应商默认使用 Copilot 模板
-      if (provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT) {
+      if (
+        isCopilotCliOfficial ||
+        provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT
+      ) {
         return TEMPLATE_TYPES.GITHUB_COPILOT;
       }
       // 优先使用保存的 templateType
@@ -411,7 +535,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       ) {
         return existingScript.templateType as string;
       }
-      // 官方 CLI/OAuth 供应商默认使用官方订阅额度模板，但开关默认关闭
+      // 官方 CLI/OAuth 供应商默认使用官方订阅额度模板；开关默认关，绑了账号的默认开
       if (isOfficialSubscription) {
         return TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
       }
@@ -477,15 +601,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     // 保存时记录当前选择的模板类型
     const scriptWithTemplate = {
       ...script,
-      templateType: selectedTemplate as
-        | "custom"
-        | "general"
-        | "newapi"
-        | "github_copilot"
-        | "token_plan"
-        | "balance"
-        | "official_subscription"
-        | undefined,
+      templateType: (selectedTemplate ?? undefined) as TemplateType | undefined,
     };
     onSave(scriptWithTemplate);
     onClose();
@@ -497,16 +613,37 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       // 官方订阅额度模板使用 CLI/OAuth 凭据和官方 API
       if (selectedTemplate === TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION) {
         const { subscriptionApi } = await import("@/lib/api/subscription");
-        const quota = await subscriptionApi.getQuota(appId);
+        const accountId = isBoundCodexOfficial
+          ? (resolveManagedAccountId(
+              provider.meta,
+              PROVIDER_TYPES.CODEX_OAUTH,
+            ) ?? null)
+          : null;
+        const quota = isBoundCodexOfficial
+          ? await subscriptionApi.getCodexOauthQuota(accountId)
+          : claudeBoundAccountId
+            ? await subscriptionApi.getClaudeAccountQuota(claudeBoundAccountId)
+            : grokBoundAccountId
+              ? await subscriptionApi.getXaiOauthQuota(grokBoundAccountId)
+              : await subscriptionApi.getQuota(appId);
         if (quota.success && quota.tiers.length > 0) {
           const summary = quota.tiers
             .map((tier) => `${tier.name}: ${Math.round(tier.utilization)}%`)
-            .join(", ");
+            .join(",");
           toast.success(`${t("usageScript.testSuccess")}${summary}`, {
             duration: 3000,
             closeButton: true,
           });
-          queryClient.setQueryData(["subscription", "quota", appId], quota);
+          queryClient.setQueryData(
+            isBoundCodexOfficial
+              ? ["codex_oauth", "quota", accountId ?? "default"]
+              : claudeBoundAccountId
+                ? ["claude_official", "quota", claudeBoundAccountId]
+                : grokBoundAccountId
+                  ? ["xai_oauth", "quota", grokBoundAccountId]
+                  : ["subscription", "quota", appId],
+            quota,
+          );
         } else {
           toast.error(
             `${t("usageScript.testFailed")}: ${quota.error || t("endpointTest.noResult")}`,
@@ -531,7 +668,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                 used: t("usage.used"),
               }),
             )
-            .join(", ");
+            .join(",");
           toast.success(`${t("usageScript.testSuccess")}${summary}`, {
             duration: 3000,
             closeButton: true,
@@ -552,6 +689,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         // 另用账号 AK/SK 签名查询控制面用量。
         const isZenMux = script.codingPlanProvider === "zenmux";
         const isVolcengine = script.codingPlanProvider === "volcengine";
+        const isZhipuTeam = script.codingPlanProvider === "zhipu_team";
         const baseUrl = isZenMux
           ? (script.baseUrl ?? "")
           : (providerCredentials.baseUrl ?? "");
@@ -564,11 +702,14 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           apiKey,
           isVolcengine ? script.accessKeyId : undefined,
           isVolcengine ? script.secretAccessKey : undefined,
+          isZhipuTeam ? script.codingPlanProvider : undefined,
+          isZhipuTeam ? script.teamOrganizationId : undefined,
+          isZhipuTeam ? script.teamProjectId : undefined,
         );
         if (quota.success && quota.tiers.length > 0) {
           const summary = quota.tiers
             .map((tier) => `${tier.name}: ${Math.round(tier.utilization)}%`)
-            .join(", ");
+            .join(",");
           toast.success(`${t("usageScript.testSuccess")}${summary}`, {
             duration: 3000,
             closeButton: true,
@@ -596,10 +737,23 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
       // Copilot 模板使用专用 API
       if (selectedTemplate === TEMPLATE_TYPES.GITHUB_COPILOT) {
-        const accountId = resolveManagedAccountId(
-          provider.meta,
-          PROVIDER_TYPES.GITHUB_COPILOT,
-        );
+        let accountId = copilotBoundAccountId;
+        if (isCopilotCliOfficial && !accountId) {
+          // 没绑账号的 Copilot CLI 官方卡跟着 CLI 当前登录的账号查，和卡片一致。
+          const signedIn = await copilotCliSignedInAccount();
+          if (!signedIn?.accountId) {
+            toast.error(
+              signedIn
+                ? t("copilot.quota.accountNotInAuthCenter", {
+                    login: signedIn.login,
+                  })
+                : t("copilot.quota.notSignedIn"),
+              { duration: 5000 },
+            );
+            return;
+          }
+          accountId = signedIn.accountId;
+        }
         const usage = accountId
           ? await copilotGetUsageForAccount(accountId)
           : await copilotGetUsage();
@@ -635,7 +789,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         script.baseUrl,
         script.accessToken,
         script.userId,
-        selectedTemplate as "custom" | "general" | "newapi" | undefined,
+        (selectedTemplate ?? undefined) as TemplateType | undefined,
       );
       if (result.success && result.data && result.data.length > 0) {
         const summary = result.data
@@ -646,7 +800,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
               used: t("usage.used"),
             }),
           )
-          .join(", ");
+          .join(",");
         toast.success(`${t("usageScript.testSuccess")}${summary}`, {
           duration: 3000,
           closeButton: true,
@@ -663,8 +817,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         );
       }
     } catch (error: any) {
+      // 后端命令 Err(String) 时 invoke 以裸字符串 reject（如瞬时网络失败），
+      // 直接读 .message 会得到 undefined。
       toast.error(
-        `${t("usageScript.testFailed")}: ${error?.message || t("common.unknown")}`,
+        `${t("usageScript.testFailed")}: ${extractErrorMessage(error) || t("common.unknown")}`,
         {
           duration: 5000,
         },
@@ -714,7 +870,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           accessToken: undefined,
           userId: undefined,
         });
-      } else if (presetName === TEMPLATE_TYPES.GENERAL) {
+      } else if (
+        presetName === TEMPLATE_TYPES.GENERAL ||
+        presetName === TEMPLATE_TYPES.SUB2API
+      ) {
         setScript({
           ...script,
           code: preset,
@@ -743,9 +902,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           providerCredentials.baseUrl,
         );
         const provider = script.codingPlanProvider || autoDetected || "kimi";
-        // ZenMux 保留手填 baseUrl/apiKey；火山保留账号 AK/SK；其余清除。
+        // ZenMux 保留手填 baseUrl/apiKey；火山保留账号 AK/SK；智谱团队保留组织/项目 ID；其余清除。
         const isZenMux = provider === "zenmux";
         const isVolcengine = provider === "volcengine";
+        const isZhipuTeam = provider === "zhipu_team";
         setScript({
           ...script,
           code: "",
@@ -755,6 +915,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           userId: undefined,
           accessKeyId: isVolcengine ? script.accessKeyId : undefined,
           secretAccessKey: isVolcengine ? script.secretAccessKey : undefined,
+          teamOrganizationId: isZhipuTeam
+            ? script.teamOrganizationId
+            : undefined,
+          teamProjectId: isZhipuTeam ? script.teamProjectId : undefined,
           codingPlanProvider: provider,
         });
       } else if (presetName === TEMPLATE_TYPES.BALANCE) {
@@ -784,6 +948,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
   const shouldShowCredentialsConfig =
     selectedTemplate === TEMPLATE_TYPES.GENERAL ||
+    selectedTemplate === TEMPLATE_TYPES.SUB2API ||
     selectedTemplate === TEMPLATE_TYPES.NEW_API ||
     (selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN &&
       script.codingPlanProvider === "zenmux");
@@ -808,7 +973,6 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             !script.enabled ||
             NATIVE_USAGE_TEMPLATES.has(selectedTemplate || "")
           }
-          title={t("usageScript.format")}
         >
           <Wand2 size={14} className="mr-1" />
           {t("usageScript.format")}
@@ -819,14 +983,11 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         <Button
           variant="outline"
           onClick={onClose}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
+          className="border-border/20 hover:bg-subtle hover:text-accent-foreground"
         >
           {t("common.cancel")}
         </Button>
-        <Button
-          onClick={handleSave}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
+        <Button onClick={handleSave}>
           <Save size={16} className="mr-2" />
           {t("usageScript.saveConfig")}
         </Button>
@@ -837,12 +998,13 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   return (
     <FullScreenPanel
       isOpen={isOpen}
+      trackUnsavedChanges
       title={`${t("usageScript.title")} - ${provider.name}`}
       onClose={onClose}
       footer={footer}
     >
-      <div className="glass rounded-xl border border-border px-6 py-4 flex items-center justify-between gap-4">
-        <p className="text-base font-medium leading-none text-foreground">
+      <div className="glass rounded-xl border border-white/10 px-6 py-4 flex items-center justify-between gap-4">
+        <p className="text-base font-medium leading-none text-fg-1">
           {t("usageScript.enableUsageQuery")}
         </p>
         <Switch
@@ -855,7 +1017,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       {script.enabled && (
         <div className="space-y-6">
           {/* 预设模板选择 */}
-          <div className="space-y-4 glass rounded-xl border border-border p-6">
+          <div className="space-y-4 glass rounded-xl border border-white/10 p-6">
             <Label className="text-base font-medium">
               {t("usageScript.presetTemplate")}
             </Label>
@@ -863,6 +1025,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
               {Object.keys(PRESET_TEMPLATES)
                 .filter((name) => {
                   const isCopilotProvider =
+                    isCopilotCliOfficial ||
                     provider.meta?.providerType === "github_copilot";
                   // Copilot 供应商只显示 copilot 模板
                   if (isCopilotProvider) {
@@ -890,7 +1053,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                         "rounded-lg border",
                         isSelected
                           ? "shadow-sm"
-                          : "bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                          : "bg-surface text-fg-2 hover:bg-subtle hover:text-accent-foreground",
                       )}
                       onClick={() => handleUsePreset(name)}
                     >
@@ -902,23 +1065,23 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
             {/* 自定义模式：变量提示和具体值 */}
             {selectedTemplate === TEMPLATE_TYPES.CUSTOM && (
-              <div className="space-y-2 border-t border-border pt-3">
-                <h4 className="text-sm font-medium text-foreground">
+              <div className="space-y-2 border-t border-white/10 pt-3">
+                <h4 className="text-sm font-medium text-fg-1">
                   {t("usageScript.supportedVariables")}
                 </h4>
                 <div className="space-y-1 text-xs">
                   {/* baseUrl */}
                   <div className="flex items-center gap-2 py-1">
-                    <code className="text-emerald-500 dark:text-emerald-400 font-mono shrink-0">
+                    <code className="text-success-text font-mono shrink-0">
                       {"{{baseUrl}}"}
                     </code>
-                    <span className="text-muted-foreground/50">=</span>
+                    <span className="text-fg-3">=</span>
                     {effectiveScriptCredentials.baseUrl ? (
-                      <code className="text-foreground/70 break-all font-mono">
+                      <code className="text-fg-1 break-all font-mono">
                         {effectiveScriptCredentials.baseUrl}
                       </code>
                     ) : (
-                      <span className="text-muted-foreground/50 italic">
+                      <span className="text-fg-3 italic">
                         {t("common.notSet") || "未设置"}
                       </span>
                     )}
@@ -926,25 +1089,23 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
                   {/* apiKey */}
                   <div className="flex items-center gap-2 py-1">
-                    <code className="text-emerald-500 dark:text-emerald-400 font-mono shrink-0">
+                    <code className="text-success-text font-mono shrink-0">
                       {"{{apiKey}}"}
                     </code>
-                    <span className="text-muted-foreground/50">=</span>
+                    <span className="text-fg-3">=</span>
                     {effectiveScriptCredentials.apiKey ? (
                       <>
                         {showApiKey ? (
-                          <code className="text-foreground/70 break-all font-mono">
+                          <code className="text-fg-1 break-all font-mono">
                             {effectiveScriptCredentials.apiKey}
                           </code>
                         ) : (
-                          <code className="text-foreground/70 font-mono">
-                            ••••••••
-                          </code>
+                          <code className="text-fg-1 font-mono">••••••••</code>
                         )}
                         <button
                           type="button"
                           onClick={() => setShowApiKey(!showApiKey)}
-                          className="text-muted-foreground hover:text-foreground transition-colors ml-1"
+                          className="text-fg-2 hover:text-fg-1 transition-colors ml-1"
                           aria-label={
                             showApiKey
                               ? t("apiKeyInput.hide")
@@ -959,7 +1120,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                         </button>
                       </>
                     ) : (
-                      <span className="text-muted-foreground/50 italic">
+                      <span className="text-fg-3 italic">
                         {t("common.notSet") || "未设置"}
                       </span>
                     )}
@@ -970,8 +1131,8 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
             {/* Copilot 模式：自动认证提示 */}
             {selectedTemplate === TEMPLATE_TYPES.GITHUB_COPILOT && (
-              <div className="space-y-2 border-t border-border pt-3">
-                <p className="text-sm text-muted-foreground">
+              <div className="space-y-2 border-t border-white/10 pt-3">
+                <p className="text-sm text-fg-2">
                   {t("usageScript.copilotAutoAuth")}
                 </p>
               </div>
@@ -979,38 +1140,35 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
             {/* 官方余额查询模式：自动提示 */}
             {selectedTemplate === TEMPLATE_TYPES.BALANCE && (
-              <div className="space-y-3 border-t border-border pt-3">
-                <p className="text-sm text-muted-foreground">
+              <div className="space-y-3 border-t border-white/10 pt-3">
+                <p className="text-sm text-fg-2">
                   {t("usageScript.balanceHint")}
                 </p>
                 <div className="flex gap-2 flex-wrap">
-                  {BALANCE_PROVIDERS.filter((bp) =>
-                    bp.pattern.test(providerCredentials.baseUrl || ""),
-                  ).map((bp) => (
-                    <span
-                      key={bp.id}
-                      className="inline-flex items-center px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium"
-                    >
-                      {bp.label}
+                  {balanceProvider && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium">
+                      {balanceProvider.label}
                     </span>
-                  ))}
+                  )}
                 </div>
               </div>
             )}
 
             {/* 官方订阅额度模式：自动提示 */}
             {selectedTemplate === TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION && (
-              <div className="space-y-2 border-t border-border pt-3">
-                <p className="text-sm text-muted-foreground">
-                  {t("usageScript.officialSubscriptionHint")}
+              <div className="space-y-2 border-t border-white/10 pt-3">
+                <p className="text-sm text-fg-2">
+                  {appId === "agy"
+                    ? t("usageScript.officialSubscriptionHintAgy")
+                    : t("usageScript.officialSubscriptionHint")}
                 </p>
               </div>
             )}
 
             {/* Coding Plan 模式：供应商选择 */}
             {selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN && (
-              <div className="space-y-3 border-t border-border pt-3">
-                <p className="text-sm text-muted-foreground">
+              <div className="space-y-3 border-t border-white/10 pt-3">
+                <p className="text-sm text-fg-2">
                   {t("usageScript.tokenPlanHint")}
                 </p>
                 <div className="flex gap-2 flex-wrap">
@@ -1028,7 +1186,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                         "rounded-lg border",
                         script.codingPlanProvider === cp.id
                           ? "shadow-sm"
-                          : "bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                          : "bg-surface text-fg-2 hover:bg-subtle hover:text-accent-foreground",
                       )}
                       onClick={() =>
                         setScript({
@@ -1048,21 +1206,22 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             {shouldShowCredentialsConfig && (
               <div className="space-y-4">
                 <div className="flex items-start justify-between">
-                  <h4 className="text-sm font-medium text-foreground">
+                  <h4 className="text-sm font-medium text-fg-1">
                     {t("usageScript.credentialsConfig")}
                   </h4>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-fg-2">
                     {t("usageScript.credentialsHint")}
                   </p>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
-                  {selectedTemplate === TEMPLATE_TYPES.GENERAL && (
+                  {(selectedTemplate === TEMPLATE_TYPES.GENERAL ||
+                    selectedTemplate === TEMPLATE_TYPES.SUB2API) && (
                     <>
                       <div className="space-y-2">
                         <Label htmlFor="usage-api-key">
-                          API Key{" "}
-                          <span className="text-xs text-muted-foreground font-normal">
+                          API Key{""}
+                          <span className="text-xs text-fg-2 font-normal">
                             ({t("usageScript.optional")})
                           </span>
                         </Label>
@@ -1076,13 +1235,13 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                             }
                             placeholder={t("usageScript.apiKeyPlaceholder")}
                             autoComplete="off"
-                            className="border-border"
+                            className="border-white/10"
                           />
                           {script.apiKey && (
                             <button
                               type="button"
                               onClick={() => setShowApiKey(!showApiKey)}
-                              className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors"
+                              className="absolute inset-y-0 right-0 flex items-center pr-3 text-fg-2 hover:text-fg-1 transition-colors"
                               aria-label={
                                 showApiKey
                                   ? t("apiKeyInput.hide")
@@ -1101,8 +1260,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
                       <div className="space-y-2">
                         <Label htmlFor="usage-base-url">
-                          {t("usageScript.baseUrl")}{" "}
-                          <span className="text-xs text-muted-foreground font-normal">
+                          {t("usageScript.baseUrl")}
+                          {""}
+                          <span className="text-xs text-fg-2 font-normal">
                             ({t("usageScript.optional")})
                           </span>
                         </Label>
@@ -1115,7 +1275,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                           }
                           placeholder={t("usageScript.baseUrlPlaceholder")}
                           autoComplete="off"
-                          className="border-border"
+                          className="border-white/10"
                         />
                       </div>
                     </>
@@ -1136,7 +1296,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                           }
                           placeholder="https://api.newapi.com"
                           autoComplete="off"
-                          className="border-border"
+                          className="border-white/10"
                         />
                       </div>
 
@@ -1159,7 +1319,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                               "usageScript.accessTokenPlaceholder",
                             )}
                             autoComplete="off"
-                            className="border-border"
+                            className="border-white/10"
                           />
                           {script.accessToken && (
                             <button
@@ -1167,7 +1327,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                               onClick={() =>
                                 setShowAccessToken(!showAccessToken)
                               }
-                              className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors"
+                              className="absolute inset-y-0 right-0 flex items-center pr-3 text-fg-2 hover:text-fg-1 transition-colors"
                               aria-label={
                                 showAccessToken
                                   ? t("apiKeyInput.hide")
@@ -1197,7 +1357,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                           }
                           placeholder={t("usageScript.userIdPlaceholder")}
                           autoComplete="off"
-                          className="border-border"
+                          className="border-white/10"
                         />
                       </div>
                     </>
@@ -1217,9 +1377,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                             onChange={(e) =>
                               setScript({ ...script, baseUrl: e.target.value })
                             }
-                            placeholder="https://api.zenmux.com/v1/..."
+                            placeholder="https://zenmux.ai/api/v1/..."
                             autoComplete="off"
-                            className="border-border"
+                            className="border-white/10"
                           />
                         </div>
 
@@ -1238,13 +1398,13 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                               }
                               placeholder="sk-..."
                               autoComplete="off"
-                              className="border-border"
+                              className="border-white/10"
                             />
                             {script.apiKey && (
                               <button
                                 type="button"
                                 onClick={() => setShowApiKey(!showApiKey)}
-                                className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors"
+                                className="absolute inset-y-0 right-0 flex items-center pr-3 text-fg-2 hover:text-fg-1 transition-colors"
                                 aria-label={
                                   showApiKey
                                     ? t("apiKeyInput.hide")
@@ -1271,20 +1431,21 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
               script.codingPlanProvider === "volcengine" && (
                 <div className="space-y-4">
                   <div>
-                    <h4 className="text-sm font-medium text-foreground">
+                    <h4 className="text-sm font-medium text-fg-1">
                       {t("usageScript.credentialsConfig")}
                     </h4>
-                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    <p className="text-xs text-fg-2 mt-1 leading-relaxed">
                       {t("usageScript.volcengineAkSkHint")}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1.5">
-                      {t("usageScript.volcengineKeyConsoleLink")}{" "}
+                    <p className="text-xs text-fg-2 mt-1.5">
+                      {t("usageScript.volcengineKeyConsoleLink")}
+                      {""}
                       <button
                         type="button"
                         onClick={() =>
                           settingsApi.openExternal(VOLCENGINE_KEY_CONSOLE_URL)
                         }
-                        className="inline-flex items-center gap-1 text-blue-400 dark:text-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors break-all align-baseline underline-offset-2 hover:underline"
+                        className="inline-flex items-center gap-1 text-fg-1 hover:text-fg-1 transition-colors break-all align-baseline underline-offset-2 hover:underline"
                       >
                         {VOLCENGINE_KEY_CONSOLE_URL}
                         <ExternalLink size={12} className="shrink-0" />
@@ -1309,7 +1470,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                         }
                         placeholder="AKLT..."
                         autoComplete="off"
-                        className="border-border"
+                        className="border-white/10"
                       />
                     </div>
 
@@ -1330,13 +1491,13 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                           }
                           placeholder="••••••••"
                           autoComplete="off"
-                          className="border-border"
+                          className="border-white/10"
                         />
                         {script.secretAccessKey && (
                           <button
                             type="button"
                             onClick={() => setShowApiKey(!showApiKey)}
-                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors"
+                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-fg-2 hover:text-fg-1 transition-colors"
                             aria-label={
                               showApiKey
                                 ? t("apiKeyInput.hide")
@@ -1356,8 +1517,79 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                 </div>
               )}
 
+            {/* 智谱团队套餐：需组织 ID + 项目 ID（api_key 沿用供应商推理凭据） */}
+            {selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN &&
+              script.codingPlanProvider === "zhipu_team" && (
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-medium text-fg-1">
+                      {t("usageScript.credentialsConfig")}
+                    </h4>
+                    <p className="text-xs text-fg-2 mt-1 leading-relaxed">
+                      {t("usageScript.zhipuTeamHint")}
+                    </p>
+                    <p className="text-xs text-fg-2 mt-1.5">
+                      {t("usageScript.zhipuTeamConsoleLink")}
+                      {""}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          settingsApi.openExternal(ZHIPU_TEAM_USAGE_URL)
+                        }
+                        className="inline-flex items-center gap-1 text-fg-1 hover:text-fg-1 transition-colors break-all align-baseline underline-offset-2 hover:underline"
+                      >
+                        {ZHIPU_TEAM_USAGE_URL}
+                        <ExternalLink size={12} className="shrink-0" />
+                      </button>
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="usage-zhipu-team-org">
+                        {t("usageScript.organizationId")}
+                      </Label>
+                      <Input
+                        id="usage-zhipu-team-org"
+                        type="text"
+                        value={script.teamOrganizationId || ""}
+                        onChange={(e) =>
+                          setScript({
+                            ...script,
+                            teamOrganizationId: e.target.value,
+                          })
+                        }
+                        placeholder={t("usageScript.organizationIdPlaceholder")}
+                        autoComplete="off"
+                        className="border-white/10"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="usage-zhipu-team-project">
+                        {t("usageScript.projectId")}
+                      </Label>
+                      <Input
+                        id="usage-zhipu-team-project"
+                        type="text"
+                        value={script.teamProjectId || ""}
+                        onChange={(e) =>
+                          setScript({
+                            ...script,
+                            teamProjectId: e.target.value,
+                          })
+                        }
+                        placeholder={t("usageScript.projectIdPlaceholder")}
+                        autoComplete="off"
+                        className="border-white/10"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
             {/* 通用配置（始终显示） */}
-            <div className="grid gap-4 md:grid-cols-2 pt-4 border-t border-border">
+            <div className="grid gap-4 md:grid-cols-2 pt-4 border-t border-white/10">
               {/* 超时时间 */}
               <div className="space-y-2">
                 <Label htmlFor="usage-timeout">
@@ -1383,7 +1615,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                       timeout: validateTimeout(e.target.value),
                     })
                   }
-                  className="border-border"
+                  className="border-white/10"
                 />
               </div>
 
@@ -1417,7 +1649,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                       ),
                     })
                   }
-                  className="border-border"
+                  className="border-white/10"
                 />
               </div>
             </div>
@@ -1425,12 +1657,12 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
           {/* 提取器代码 - 专用模板不需要 */}
           {!NATIVE_USAGE_TEMPLATES.has(selectedTemplate || "") && (
-            <div className="space-y-4 glass rounded-xl border border-border p-6">
+            <div className="space-y-4 glass rounded-xl border border-white/10 p-6">
               <div className="flex items-center justify-between">
                 <Label className="text-base font-medium">
                   {t("usageScript.extractorCode")}
                 </Label>
-                <div className="text-xs text-muted-foreground">
+                <div className="text-xs text-fg-2">
                   {t("usageScript.extractorHint")}
                 </div>
               </div>
@@ -1450,21 +1682,21 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
           {/* 帮助信息 - 专用模板不需要 */}
           {!NATIVE_USAGE_TEMPLATES.has(selectedTemplate || "") && (
-            <div className="glass rounded-xl border border-border p-6 text-sm text-foreground/90">
+            <div className="glass rounded-xl border border-white/10 p-6 text-sm text-fg-1">
               <h4 className="font-medium mb-2">
                 {t("usageScript.scriptHelp")}
               </h4>
               <div className="space-y-3 text-xs">
                 <div>
                   <strong>{t("usageScript.configFormat")}</strong>
-                  <pre className="mt-1 p-2 bg-black/20 text-foreground rounded border border-border text-[10px] overflow-x-auto">
+                  <pre className="mt-1 p-2 bg-black/20 text-fg-1 rounded border border-white/10 text-badge overflow-x-auto">
                     {`({
   request: {
     url: "{{baseUrl}}/api/usage",
     method: "POST",
     headers: {
       "Authorization": "Bearer {{apiKey}}",
-      "User-Agent": "puppyrouter-app/1.0"
+      "User-Agent": "cc-switch/1.0"
     }
   },
   extractor: function(response) {
@@ -1492,7 +1724,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                   </ul>
                 </div>
 
-                <div className="text-muted-foreground">
+                <div className="text-fg-2">
                   <strong>{t("usageScript.tips")}</strong>
                   <ul className="mt-1 space-y-0.5 ml-2">
                     <li>

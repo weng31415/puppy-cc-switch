@@ -1,17 +1,26 @@
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 
-export const PUPPYROUTER_UNIVERSAL_ID = "puppyrouter";
-export const PUPPYROUTER_PROVIDER_IDS: Partial<Record<AppId, string>> = {
+export const PUPPYROUTER_PROVIDER_IDS: Record<AppId, string> = {
   claude: "universal-claude-puppyrouter",
   "claude-desktop": "universal-claude-desktop-puppyrouter",
   codex: "universal-codex-puppyrouter",
   gemini: "universal-gemini-puppyrouter",
   grokbuild: "universal-grokbuild-puppyrouter",
   opencode: "puppyrouter",
+  openclaw: "puppyrouter-cloud",
+  hermes: "puppyrouter-cloud",
+  pi: "puppyrouter-cloud",
+  mcode: "puppyrouter-cloud",
+  kimi: "puppyrouter-cloud",
+  dsh: "puppyrouter-cloud",
+  agy: "puppyrouter-cloud",
+  omp: "puppyrouter-cloud",
+  copilot: "puppyrouter-cloud",
+  workbuddy: "puppyrouter-cloud",
 };
 
-export const OFFICIAL_PROVIDER_IDS: Partial<Record<AppId, string>> = {
+const OFFICIAL_PROVIDER_IDS: Partial<Record<AppId, string>> = {
   claude: "claude-official",
   "claude-desktop": "claude-desktop-official",
   codex: "codex-official",
@@ -19,47 +28,31 @@ export const OFFICIAL_PROVIDER_IDS: Partial<Record<AppId, string>> = {
   grokbuild: "grokbuild-official",
 };
 
-export const LOCKED_PROVIDER_APP_IDS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "grokbuild",
-  "opencode",
-];
-
-export function isLockedProviderApp(appId: AppId): boolean {
-  return LOCKED_PROVIDER_APP_IDS.includes(appId);
-}
-
 export function isPuppyRouterProvider(
   provider: Provider | undefined | null,
   appId?: AppId,
 ): boolean {
-  if (!provider) return false;
-  if (appId && PUPPYROUTER_PROVIDER_IDS[appId] === provider.id) {
-    return true;
-  }
+  if (
+    !provider ||
+    (provider.id === "puppyrouter-cloud" &&
+      provider.meta?.providerType !== "puppyrouter")
+  )
+    return false;
+  if (appId) return PUPPYROUTER_PROVIDER_IDS[appId] === provider.id;
   return Object.values(PUPPYROUTER_PROVIDER_IDS).includes(provider.id);
-}
-
-export function isPuppyRouterProviderId(providerId: string, appId: AppId) {
-  return PUPPYROUTER_PROVIDER_IDS[appId] === providerId;
-}
-
-export function isOfficialProviderId(providerId: string, appId: AppId) {
-  return OFFICIAL_PROVIDER_IDS[appId] === providerId;
-}
-
-export function isOfficialProvider(provider: Provider | undefined | null) {
-  return provider?.category === "official";
 }
 
 export function isLockedProvider(
   provider: Provider | undefined | null,
   appId?: AppId,
 ): boolean {
-  return isOfficialProvider(provider) || isPuppyRouterProvider(provider, appId);
+  return Boolean(
+    provider &&
+      ((appId
+        ? OFFICIAL_PROVIDER_IDS[appId] === provider.id
+        : Object.values(OFFICIAL_PROVIDER_IDS).includes(provider.id)) ||
+        isPuppyRouterProvider(provider, appId)),
+  );
 }
 
 export function getLockedProviderRank(
@@ -67,6 +60,14 @@ export function getLockedProviderRank(
   appId: AppId,
 ): number | null {
   if (isPuppyRouterProvider(provider, appId)) return 0;
-  if (isOfficialProvider(provider)) return 1;
+  if (OFFICIAL_PROVIDER_IDS[appId] === provider.id) return 1;
   return null;
+}
+
+/** Running sessions of these four applications need a restart after switching a built-in card in direct mode. */
+export function restartNoticeProvider(app: AppId, id: string): string | null {
+  if (!["claude", "claude-desktop", "codex", "grokbuild"].includes(app))
+    return null;
+  if (PUPPYROUTER_PROVIDER_IDS[app] === id) return "PuppyRouter";
+  return OFFICIAL_PROVIDER_IDS[app] === id ? "Official" : null;
 }

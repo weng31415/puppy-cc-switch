@@ -1,6 +1,6 @@
 //! Skill import from deep link
 //!
-//! Handles importing skill repository configurations via puppyrouter:// URLs.
+//! Handles importing skill repository configurations via ccswitch:// URLs.
 
 use super::DeepLinkImportRequest;
 use crate::error::AppError;
@@ -35,9 +35,10 @@ pub fn import_skill_from_deeplink(
     let name = parts[1].to_string();
     let branch = request.branch.unwrap_or_else(|| "main".to_string());
 
-    // Deep links are untrusted and branch is embedded in an archive URL.
-    // Validate before persisting so malformed values cannot linger in
-    // skill_repos even though download_repo validates again at use time.
+    // deeplink 是不可信输入，且 branch 会被拼进归档下载 URL：URL 解析会消解点段，
+    // `../../../releases/download/v1/evil` 之类会把落点改写成攻击者可上传的
+    // release asset。主防线在 SkillService::download_repo，这里是入库前的纵深拦截，
+    // 让用户当场看到错误而不是让脏数据沉淀进 skill_repos 表。
     crate::services::skill::SkillService::validate_repo_ref(&owner, &name, &branch).map_err(
         |_| {
             AppError::InvalidInput(format!(
@@ -48,6 +49,7 @@ pub fn import_skill_from_deeplink(
 
     // Create SkillRepo
     let repo = SkillRepo {
+        host: crate::services::skill::GITHUB_HOST.to_string(),
         owner: owner.clone(),
         name: name.clone(),
         branch,

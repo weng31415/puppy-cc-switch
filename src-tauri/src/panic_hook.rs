@@ -3,16 +3,20 @@
 //! 在应用崩溃时捕获 panic 信息并记录到 `<app_config_dir>/crash.log` 文件中（默认 `~/.puppyrouter-app/crash.log`）。
 //! 便于用户和开发者诊断闪退问题。
 
-use std::fs::OpenOptions;
+use crate::sync_utils::MutexExt;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::panic;
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// 应用版本号（从 Cargo.toml 读取）
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CRASH_LOG_MAX_SIZE: u64 = 5 * 1024 * 1024;
+const CRASH_LOG_ARCHIVES_TO_KEEP: usize = 2;
 
 static APP_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static CRASH_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn init_app_config_dir(dir: PathBuf) {
     let _ = APP_CONFIG_DIR.set(dir);
@@ -20,9 +24,7 @@ pub fn init_app_config_dir(dir: PathBuf) {
 
 /// 获取默认应用配置目录（不会 panic）
 fn default_app_config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".puppyrouter-app")
+    crate::config::get_home_dir().join(".puppyrouter-app")
 }
 
 /// 获取应用配置目录（优先使用初始化时写入的值；不会 panic）
@@ -36,6 +38,50 @@ fn get_app_config_dir() -> PathBuf {
 /// 获取崩溃日志文件路径
 fn get_crash_log_path() -> PathBuf {
     get_app_config_dir().join("crash.log")
+}
+
+fn rotated_crash_log_path(path: &Path, index: usize) -> PathBuf {
+    let mut rotated = path.as_os_str().to_os_string();
+    rotated.push(format!(".{index}"));
+    PathBuf::from(rotated)
+}
+
+fn rotate_crash_log_if_needed_with_limit(
+    path: &Path,
+    max_size: u64,
+    archives_to_keep: usize,
+) -> std::io::Result<()> {
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if size < max_size || archives_to_keep == 0 {
+        return Ok(());
+    }
+
+    for index in (1..=archives_to_keep).rev() {
+        let source = if index == 1 {
+            path.to_path_buf()
+        } else {
+            rotated_crash_log_path(path, index - 1)
+        };
+        if !source.exists() {
+            continue;
+        }
+
+        let destination = rotated_crash_log_path(path, index);
+        if destination.exists() {
+            fs::remove_file(&destination)?;
+        }
+        fs::rename(source, destination)?;
+    }
+
+    Ok(())
+}
+
+fn rotate_crash_log_if_needed(path: &Path) -> std::io::Result<()> {
+    rotate_crash_log_if_needed_with_limit(path, CRASH_LOG_MAX_SIZE, CRASH_LOG_ARCHIVES_TO_KEEP)
 }
 
 /// 获取日志目录路径
@@ -167,16 +213,22 @@ Stack Trace (Backtrace)
 "#
         );
 
-        // 写入文件（追加模式）
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
-            let _ = file.write_all(crash_entry.as_bytes());
-            let _ = file.flush();
+        // 将 size check、轮转和追加合成同一个临界区，避免多线程同时 panic
+        // 时两个 hook 竞争 rename 而丢失归档。
+        let crash_log_guard = CRASH_LOG_LOCK.lock_recover();
+        let _ = rotate_crash_log_if_needed(&log_path);
+        let saved =
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+                let _ = file.write_all(crash_entry.as_bytes());
+                let _ = file.flush();
+                true
+            } else {
+                false
+            };
+        drop(crash_log_guard);
 
-            // 记录日志文件位置到 stderr
-            eprintln!(
-                "\n[puppyrouter-app] Crash log saved to: {}",
-                log_path.display()
-            );
+        if saved {
+            eprintln!("\n[CC-Switch] Crash log saved to: {}", log_path.display());
         }
 
         // 同时输出到 stderr（便于开发调试）
@@ -204,5 +256,42 @@ mod tests {
         assert!(info.contains("OS:"));
         assert!(info.contains("Arch:"));
         assert!(info.contains("App Version:"));
+    }
+
+    #[test]
+    fn crash_log_rotation_keeps_bounded_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crash.log");
+
+        fs::write(&path, b"first").unwrap();
+        rotate_crash_log_if_needed_with_limit(&path, 4, 2).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read(rotated_crash_log_path(&path, 1)).unwrap(),
+            b"first"
+        );
+
+        fs::write(&path, b"second").unwrap();
+        rotate_crash_log_if_needed_with_limit(&path, 4, 2).unwrap();
+        assert_eq!(
+            fs::read(rotated_crash_log_path(&path, 1)).unwrap(),
+            b"second"
+        );
+        assert_eq!(
+            fs::read(rotated_crash_log_path(&path, 2)).unwrap(),
+            b"first"
+        );
+
+        fs::write(&path, b"third").unwrap();
+        rotate_crash_log_if_needed_with_limit(&path, 4, 2).unwrap();
+        assert_eq!(
+            fs::read(rotated_crash_log_path(&path, 1)).unwrap(),
+            b"third"
+        );
+        assert_eq!(
+            fs::read(rotated_crash_log_path(&path, 2)).unwrap(),
+            b"second"
+        );
+        assert!(!rotated_crash_log_path(&path, 3).exists());
     }
 }

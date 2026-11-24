@@ -1,0 +1,7 @@
+.claude.json 600
+.claude/settings.json 600
+.codex/config.toml 600
+.codex/puppyrouter-app-model-catalog.json 644
+.gemini/.env 600
+.gemini/settings.json 644
+.grok/config.toml 600

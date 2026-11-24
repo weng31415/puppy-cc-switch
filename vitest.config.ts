@@ -1,5 +1,5 @@
 import path from "node:path";
-import { configDefaults, defineConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -10,14 +10,10 @@ export default defineConfig({
     },
   },
   test: {
+    include: ["{src,tests}/**/*.{test,spec}.{ts,tsx,js,jsx}"],
     environment: "jsdom",
     setupFiles: ["./tests/setupGlobals.ts", "./tests/setupTests.ts"],
     globals: true,
-    exclude: [
-      ...configDefaults.exclude,
-      ".artifacts/**",
-      "src-tauri/target/**",
-    ],
     coverage: {
       reporter: ["text", "lcov"],
     },

@@ -1,20 +1,30 @@
+import { useCallback } from "react";
 import {
+  useIsMutating,
   useMutation,
   useQuery,
   useQueryClient,
   keepPreviousData,
+  type QueryClient,
 } from "@tanstack/react-query";
 import {
   skillsApi,
   type SkillBackupEntry,
   type DiscoverableSkill,
+  type SkillRepo,
   type ImportSkillSelection,
   type InstalledSkill,
+  type SkillDiscoveryResult,
+  type SkillUpdateCheckResult,
   type SkillUpdateInfo,
-  type SkillsShSearchResult,
 } from "@/lib/api/skills";
 import type { AppId } from "@/lib/api/types";
-import { mergeImportedSkills } from "@/hooks/useSkills.helpers";
+import {
+  mergeImportedSkills,
+  replaceRepoDiscovery,
+} from "@/hooks/useSkills.helpers";
+import { readLocalCache, writeLocalCache } from "@/lib/localCache";
+import { runSequentialBulkAction } from "@/lib/utils/sequentialBulkAction";
 
 /**
  * 查询所有已安装的 Skills
@@ -30,6 +40,31 @@ export function useInstalledSkills() {
   });
 }
 
+/**
+ * 后台刷新本地 Skill 的过期元数据（手动编辑 SSOT 的 SKILL.md 后同步描述与哈希）。
+ *
+ * 与列表查询分离：列表只读数据库并立即渲染，目录哈希在 Tauri 阻塞线程池里
+ * 计算；切换应用开关、安装等导致的列表失效不会重复触发扫描。进入技能页时
+ * 自动执行（缓存保持期间不重复扫描），有更新时才刷新列表（issue #7848）。
+ */
+export function useRefreshLocalSkillMetadata() {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: ["skills", "localMetadataRefresh"],
+    queryFn: async () => {
+      const refreshed = await skillsApi.refreshLocalMetadata();
+      if (refreshed > 0) {
+        await queryClient.invalidateQueries({
+          queryKey: ["skills", "installed"],
+        });
+      }
+      return refreshed;
+    },
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 export function useSkillBackups() {
   return useQuery({
     queryKey: ["skills", "backups"],
@@ -42,9 +77,16 @@ export function useDeleteSkillBackup() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (backupId: string) => skillsApi.deleteBackup(backupId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "backups"] });
+    onSuccess: (_result, backupId) => {
+      queryClient.setQueryData<SkillBackupEntry[]>(
+        ["skills", "backups"],
+        (oldData) => oldData?.filter((backup) => backup.backupId !== backupId),
+      );
     },
+    // remove_dir_all can partially change the backup directory before
+    // returning an error, so reconcile the authoritative list either way.
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "backups"] }),
   });
 }
 
@@ -53,18 +95,111 @@ export function useDeleteSkillBackup() {
  * 使用 staleTime: Infinity 和 placeholderData: keepPreviousData
  * 实现首次进入使用缓存，只有刷新时才重新获取
  */
+// 发现要从 GitHub 下载每个仓库，很慢：上次的结果存在本地，打开时先显示，
+// 每次启动只在后台重新拉一次（之后同一次运行里不再自动拉，手动刷新照常）
+const DISCOVER_CACHE_KEY = "skills.discoverable.v1";
+const DISCOVERABLE_QUERY_KEY = ["skills", "discoverable"];
+let discoverRevalidated = false;
+// 下一次发现绕过后端按仓库的缓存（只有手动刷新会置位）
+let discoverForceNext = false;
+// 按仓库改过缓存就加一：被取消的旧请求晚到时不能再覆盖本地缓存
+let discoverGeneration = 0;
+
+const discoverableQuery = {
+  queryKey: DISCOVERABLE_QUERY_KEY,
+  queryFn: async () => {
+    const force = discoverForceNext;
+    discoverForceNext = false;
+    const generation = discoverGeneration;
+    const result = await skillsApi.discoverAvailable(force);
+    if (generation === discoverGeneration) {
+      discoverRevalidated = true;
+      writeLocalCache(DISCOVER_CACHE_KEY, result);
+    }
+    return result;
+  },
+  staleTime: Infinity,
+  initialData: () => readLocalCache<SkillDiscoveryResult>(DISCOVER_CACHE_KEY),
+  // 本地缓存是旧数据：时间记成 0，配合 refetchOnMount 在后台刷新
+  initialDataUpdatedAt: 0,
+  refetchOnMount: () => (discoverRevalidated ? false : ("always" as const)),
+  placeholderData: keepPreviousData,
+};
+
 export function useDiscoverableSkills() {
-  return useQuery({
-    queryKey: ["skills", "discoverable"],
-    queryFn: () => skillsApi.discoverAvailable(),
-    staleTime: Infinity,
-    placeholderData: keepPreviousData,
+  return useQuery({ ...discoverableQuery, select: selectDiscoveredSkills });
+}
+
+/**
+ * 手动刷新发现列表：绕过后端缓存，所有启用的仓库都重新下载
+ */
+export function useRefreshDiscoverableSkills() {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    discoverForceNext = true;
+    return queryClient.refetchQueries({
+      queryKey: DISCOVERABLE_QUERY_KEY,
+      exact: true,
+    });
+  }, [queryClient]);
+}
+
+/**
+ * 只改发现缓存里一个仓库的部分（next 不传就是删掉这个仓库）。
+ * 先取消进行中的整体发现：它读的是改动前的仓库表，晚到会把这次改动盖掉。
+ */
+async function patchRepoDiscovery(
+  queryClient: QueryClient,
+  repo: { owner: string; name: string },
+  next?: SkillDiscoveryResult,
+) {
+  await queryClient.cancelQueries({
+    queryKey: DISCOVERABLE_QUERY_KEY,
+    exact: true,
   });
+  // 还没有任何发现结果（首次发现被上面取消了，或压根没开始）：没有底可以
+  // 打补丁，重新整体发现一次，此时读到的仓库表已包含这次改动
+  if (!queryClient.getQueryData(DISCOVERABLE_QUERY_KEY)) {
+    void queryClient.invalidateQueries({
+      queryKey: DISCOVERABLE_QUERY_KEY,
+      exact: true,
+    });
+    return;
+  }
+  discoverGeneration += 1;
+  const updated = queryClient.setQueryData<SkillDiscoveryResult>(
+    DISCOVERABLE_QUERY_KEY,
+    (old) => replaceRepoDiscovery(old, repo, next),
+  );
+  if (updated) writeLocalCache(DISCOVER_CACHE_KEY, updated);
+}
+
+// 同一仓库的增删改各记一个序号：单仓库发现要下载归档，期间如果又停用 /
+// 删除 / 改了分支，晚到的旧结果不能再写回缓存
+const repoMutationSeq = new Map<string, number>();
+const nextRepoMutation = (repo: { owner: string; name: string }) => {
+  const key = `${repo.owner}/${repo.name}`;
+  const seq = (repoMutationSeq.get(key) ?? 0) + 1;
+  repoMutationSeq.set(key, seq);
+  return { key, seq };
+};
+const isLatestRepoMutation = (ctx?: { key: string; seq: number }) =>
+  !!ctx && repoMutationSeq.get(ctx.key) === ctx.seq;
+
+const selectDiscoveredSkills = (result: SkillDiscoveryResult) => result.skills;
+const selectDiscoveryFailures = (result: SkillDiscoveryResult) =>
+  result.failures;
+
+/**
+ * 发现时没读到的仓库（和 useDiscoverableSkills 共用一次请求）
+ */
+export function useDiscoverableSkillsFailures() {
+  return useQuery({ ...discoverableQuery, select: selectDiscoveryFailures });
 }
 
 /**
  * 安装 Skill
- * 成功后直接更新缓存，不触发重新加载/刷新
+ * 成功后先合并缓存，并在结束后刷新权威列表
  */
 export function useInstallSkill() {
   const queryClient = useQueryClient();
@@ -76,74 +211,59 @@ export function useInstallSkill() {
       skill: DiscoverableSkill;
       currentApp: AppId;
     }) => skillsApi.installUnified(skill, currentApp),
-    onSuccess: (installedSkill, _vars, _ctx) => {
-      const { skill } = _vars;
-      // 直接更新 installed 缓存
+    onSuccess: (installedSkill) => {
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed"],
-        (oldData) => {
-          if (!oldData) return [installedSkill];
-          return [...oldData, installedSkill];
-        },
-      );
-
-      // 更新 discoverable 缓存中对应技能的 installed 状态
-      const installName =
-        skill.directory.split(/[/\\]/).pop()?.toLowerCase() ||
-        skill.directory.toLowerCase();
-      const skillKey = `${installName}:${skill.repoOwner.toLowerCase()}:${skill.repoName.toLowerCase()}`;
-
-      queryClient.setQueryData<DiscoverableSkill[]>(
-        ["skills", "discoverable"],
-        (oldData) => {
-          if (!oldData) return oldData;
-          return oldData.map((s) => {
-            if (s.key === skillKey) {
-              return { ...s, installed: true };
-            }
-            return s;
-          });
-        },
+        (oldData) => mergeImportedSkills(oldData, [installedSkill]),
       );
     },
+    // The backend can persist the installation before live-config sync fails.
+    // Always refresh the authoritative list, including rejected mutations.
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+        queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] }),
+      ]),
   });
 }
 
 /**
  * 卸载 Skill
- * 成功后直接更新缓存，不触发重新加载/刷新
+ * 成功后直接移除已安装缓存，并在结束后收敛备份与未管理列表
  */
 export function useUninstallSkill() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, skillKey }: { id: string; skillKey: string }) =>
-      skillsApi
-        .uninstallUnified(id)
-        .then((result) => ({ ...result, skillKey })),
-    onSuccess: ({ skillKey }, _vars) => {
+    mutationFn: (id: string) => skillsApi.uninstallUnified(id),
+    onSuccess: (_result, id) => {
       // 直接更新 installed 缓存，移除该 skill
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed"],
         (oldData) => {
           if (!oldData) return oldData;
-          return oldData.filter((s) => s.id !== _vars.id);
+          return oldData.filter((s) => s.id !== id);
         },
       );
 
-      // 更新 discoverable 缓存中对应技能的 installed 状态
-      queryClient.setQueryData<DiscoverableSkill[]>(
-        ["skills", "discoverable"],
-        (oldData) => {
-          if (!oldData) return oldData;
-          return oldData.map((s) => {
-            if (s.key === skillKey) {
-              return { ...s, installed: false };
-            }
-            return s;
-          });
-        },
+      // A completed update check may still contain this Skill. Remove it so
+      // Update All cannot target an ID that was just uninstalled.
+      queryClient.setQueryData<SkillUpdateCheckResult>(
+        ["skills", "updates"],
+        (oldData) =>
+          oldData && {
+            ...oldData,
+            updates: oldData.updates.filter((update) => update.id !== id),
+          },
       );
     },
+    // Uninstall creates a backup before removing SSOT/DB state. It may reject
+    // after that backup exists, and best-effort app cleanup can also leave an
+    // unmanaged copy after a successful uninstall.
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["skills", "backups"] }),
+        queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] }),
+      ]),
   });
 }
 
@@ -157,10 +277,11 @@ export function useRestoreSkillBackup() {
       backupId: string;
       currentApp: AppId;
     }) => skillsApi.restoreBackup(backupId, currentApp),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
-      queryClient.invalidateQueries({ queryKey: ["skills", "backups"] });
-    },
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+        queryClient.invalidateQueries({ queryKey: ["skills", "backups"] }),
+      ]),
   });
 }
 
@@ -179,9 +300,53 @@ export function useToggleSkillApp() {
       app: AppId;
       enabled: boolean;
     }) => skillsApi.toggleApp(id, app, enabled),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
+    // 乐观更新：点了格子立刻翻过来，不等写完再刷新；失败时回滚
+    onMutate: async ({ id, app, enabled }) => {
+      await queryClient.cancelQueries({ queryKey: ["skills", "installed"] });
+      const previous = queryClient.getQueryData<InstalledSkill[]>([
+        "skills",
+        "installed",
+      ]);
+      if (previous) {
+        queryClient.setQueryData<InstalledSkill[]>(
+          ["skills", "installed"],
+          previous.map((skill) =>
+            skill.id === id
+              ? { ...skill, apps: { ...skill.apps, [app]: enabled } }
+              : skill,
+          ),
+        );
+      }
+      return { previous };
     },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["skills", "installed"], context.previous);
+      }
+    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+  });
+}
+
+/** Toggle multiple Skills serially because each operation writes app files. */
+export function useBulkToggleSkillApp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      ids,
+      app,
+      enabled,
+    }: {
+      ids: string[];
+      app: AppId;
+      enabled: boolean;
+    }) =>
+      runSequentialBulkAction(ids, (id) =>
+        skillsApi.toggleApp(id, app, enabled),
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
   });
 }
 
@@ -205,7 +370,7 @@ export function useScanUnmanagedSkills(options?: { enabled?: boolean }) {
 
 /**
  * 从应用目录导入 Skills
- * 成功后直接更新缓存，不触发重新加载/刷新
+ * 成功后先合并缓存，并在结束后刷新所有可能受影响的列表
  */
 export function useImportSkillsFromApps() {
   const queryClient = useQueryClient();
@@ -213,13 +378,30 @@ export function useImportSkillsFromApps() {
     mutationFn: (imports: ImportSkillSelection[]) =>
       skillsApi.importFromApps(imports),
     onSuccess: (importedSkills) => {
-      // 直接更新 installed 缓存
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed"],
         (oldData) => mergeImportedSkills(oldData, importedSkills),
       );
-      // 刷新 unmanaged 列表（已被导入的应该移除）
-      queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] });
+    },
+    // Import may persist Skills or auto-discovered repositories before a
+    // later item fails, so refresh every affected authoritative collection.
+    // 只等导入弹窗关心的两个列表：mutation 要等 onSettled 返回的 Promise
+    // 才结束，「发现」重拉要从 GitHub 下载仓库，等它会让弹窗一直锁着（#7994）
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["skills", "repos"] });
+      // 导入可能新增了来源仓库。没人在看发现列表时 invalidate 不会马上重拉，
+      // 而 refetchOnMount 在本次运行验证过一次后就是 false，下次打开还是旧
+      // 结果（新仓库显示 0 个，#9273）：清掉标记，下次挂载时重新发现。
+      // 代次加一：导入前开始的整体发现读的是旧仓库表，晚到不能写回本地缓存
+      discoverRevalidated = false;
+      discoverGeneration += 1;
+      void queryClient.invalidateQueries({
+        queryKey: ["skills", "discoverable"],
+      });
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+        queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] }),
+      ]);
     },
   });
 }
@@ -235,17 +417,81 @@ export function useSkillRepos() {
 }
 
 /**
- * 添加仓库
+ * 添加仓库（也用来改启用状态：add_skill_repo 是 INSERT OR REPLACE）
+ *
+ * 只发现这一个仓库并合并进发现缓存，不重拉其它仓库（#1426）；停用的仓库
+ * 直接从缓存里去掉。返回这个仓库的发现结果，读取单仓库失败时为 null。
  */
 export function useAddSkillRepo() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: skillsApi.addRepo,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "repos"] });
-      queryClient.invalidateQueries({ queryKey: ["skills", "discoverable"] });
+    mutationFn: async (repo: SkillRepo) => {
+      await skillsApi.addRepo(repo);
+      // 写库后马上刷新仓库列表：勾选框读的是它，不能等下面的归档下载完
+      void queryClient.invalidateQueries({ queryKey: ["skills", "repos"] });
+      if (!repo.enabled) return { skills: [], failures: [] };
+      try {
+        return await skillsApi.discoverRepo(repo.owner, repo.name);
+      } catch (error) {
+        console.error("[useAddSkillRepo] discover repo failed", error);
+        return null;
+      }
+    },
+    onMutate: nextRepoMutation,
+    onSuccess: async (discovery, repo, ctx) => {
+      if (!isLatestRepoMutation(ctx)) return;
+      if (discovery) {
+        await patchRepoDiscovery(queryClient, repo, discovery);
+      } else {
+        void queryClient.invalidateQueries({
+          queryKey: DISCOVERABLE_QUERY_KEY,
+        });
+      }
     },
   });
+}
+
+const REPO_TOKENS_QUERY_KEY = ["skills", "repoTokens"];
+
+/**
+ * 设置了访问令牌的主机（#9666）
+ */
+export function useSkillRepoTokens() {
+  return useQuery({
+    queryKey: REPO_TOKENS_QUERY_KEY,
+    queryFn: () => skillsApi.getRepoTokens(),
+  });
+}
+
+/**
+ * 保存或删除一台主机的访问令牌。
+ *
+ * 成功后重新发现一次：后端只缓存读成功的仓库，之前因为没令牌读不到的会重新下载，
+ * 读成功过的仍走缓存，不会把所有仓库再下一遍。
+ */
+export function useSkillRepoTokenActions() {
+  const queryClient = useQueryClient();
+  const onSuccess = () => {
+    void queryClient.invalidateQueries({ queryKey: REPO_TOKENS_QUERY_KEY });
+    void queryClient.invalidateQueries({
+      queryKey: DISCOVERABLE_QUERY_KEY,
+      exact: true,
+    });
+  };
+  const setToken = useMutation({
+    mutationFn: ({ host, token }: { host: string; token: string }) =>
+      skillsApi.setRepoToken(host, token),
+    onSuccess,
+  });
+  const deleteToken = useMutation({
+    mutationFn: (host: string) => skillsApi.deleteRepoToken(host),
+    onSuccess,
+  });
+  return {
+    setToken: (host: string, token: string) =>
+      setToken.mutateAsync({ host, token }),
+    deleteToken: (host: string) => deleteToken.mutateAsync(host),
+  };
 }
 
 /**
@@ -256,16 +502,18 @@ export function useRemoveSkillRepo() {
   return useMutation({
     mutationFn: ({ owner, name }: { owner: string; name: string }) =>
       skillsApi.removeRepo(owner, name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "repos"] });
-      queryClient.invalidateQueries({ queryKey: ["skills", "discoverable"] });
+    onMutate: nextRepoMutation,
+    onSuccess: async (_result, repo, ctx) => {
+      void queryClient.invalidateQueries({ queryKey: ["skills", "repos"] });
+      if (!isLatestRepoMutation(ctx)) return;
+      await patchRepoDiscovery(queryClient, repo);
     },
   });
 }
 
 /**
  * 从 ZIP 文件安装 Skills
- * 成功后直接更新缓存，不触发重新加载/刷新
+ * 成功后先合并缓存，并在结束后刷新权威列表
  */
 export function useInstallSkillsFromZip() {
   const queryClient = useQueryClient();
@@ -277,23 +525,26 @@ export function useInstallSkillsFromZip() {
       filePath: string;
       currentApp: AppId;
     }) => skillsApi.installFromZip(filePath, currentApp),
-    onSuccess: (installedSkills) => {
-      // 直接更新 installed 缓存
+    onSuccess: (result) => {
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed"],
-        (oldData) => {
-          if (!oldData) return installedSkills;
-          return [...oldData, ...installedSkills];
-        },
+        (oldData) => mergeImportedSkills(oldData, result.installed),
       );
     },
+    // A ZIP can install multiple Skills before a later item or config sync
+    // fails, so refresh even when the mutation rejects.
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+        queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] }),
+      ]),
   });
 }
 
 // ========== 更新检测 ==========
 
 /**
- * 检查 Skills 更新（手动触发）
+ * 检查 Skills 更新（手动触发）；结果里带着没读到的仓库
  */
 export function useCheckSkillUpdates() {
   return useQuery({
@@ -321,14 +572,21 @@ export function useUpdateSkill() {
           );
         },
       );
-      queryClient.setQueryData<SkillUpdateInfo[]>(
+      queryClient.setQueryData<SkillUpdateCheckResult>(
         ["skills", "updates"],
         (oldData) => {
           if (!oldData) return oldData;
-          return oldData.filter((u) => u.id !== updatedSkill.id);
+          return {
+            ...oldData,
+            updates: oldData.updates.filter((u) => u.id !== updatedSkill.id),
+          };
         },
       );
     },
+    // Updating creates an uninstall-style backup before replacing SSOT files;
+    // refresh even when replacement or persistence fails later.
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "backups"] }),
   });
 }
 
@@ -360,6 +618,37 @@ export type {
   ImportSkillSelection,
   SkillBackupEntry,
   SkillUpdateInfo,
-  SkillsShSearchResult,
   AppId,
 };
+
+const SKILLS_RESYNC_MUTATION_KEY = ["skills", "resyncToApps"] as const;
+
+/**
+ * 立即重新同步：按开关和当前同步方式把 Skill 重新投影到各应用目录
+ */
+export function useResyncSkillsToApps() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: SKILLS_RESYNC_MUTATION_KEY,
+    mutationFn: () => skillsApi.resyncToApps(),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+  });
+}
+
+/** 任一入口（⋯ 菜单或「存储与同步」对话框）的重新同步是否在进行：两处共用，避免并发重建同一目录 */
+export function useIsResyncingSkills() {
+  return useIsMutating({ mutationKey: SKILLS_RESYNC_MUTATION_KEY }) > 0;
+}
+
+/**
+ * puppyrouter app 目录下放 Skill 主副本的真实路径（改过配置目录就是改后的）
+ */
+export function useCcSwitchSkillsDir(enabled = true) {
+  return useQuery({
+    queryKey: ["skills", "ccSwitchDir"],
+    queryFn: () => skillsApi.getCcSwitchSkillsDir(),
+    enabled,
+    staleTime: Infinity,
+  });
+}

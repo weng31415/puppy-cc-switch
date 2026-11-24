@@ -1,10 +1,10 @@
 import { useState, useCallback } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
 import {
   streamCheckProvider,
   type StreamCheckResult,
-} from "@/lib/api/model-test";
+} from "@/lib/api/connectivity-check";
 import type { AppId } from "@/lib/api";
 
 /**

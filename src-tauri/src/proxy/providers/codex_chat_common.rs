@@ -1,8 +1,5 @@
 use serde_json::{json, Map, Value};
 
-const THINK_OPEN_TAG: &str = "<think>";
-const THINK_CLOSE_TAG: &str = "</think>";
-
 // 穷举上游可能的 reasoning 回传字段，优先级：reasoning_content > reasoning(字符串/对象) > reasoning_details。
 // 不依赖 provider meta 的 outputFormat 声明，因此对各家 Chat 兼容接口都能兜底提取。
 pub(crate) fn extract_reasoning_field_text(value: &Value) -> Option<String> {
@@ -102,6 +99,52 @@ pub(crate) fn extract_reasoning_summary_text(value: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// 上游响应 `content` 里按顺序取出的一段正文或思考。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChatContentSegment {
+    Text(String),
+    Thinking(String),
+}
+
+/// 把上游响应的 `content` 拆成有序的正文 / 思考段，空段丢弃。
+///
+/// `content` 可以是字符串，也可以是分段数组：Mistral 开思考后返回
+/// `[{"type":"thinking","thinking":[{"type":"text","text":..}]}, {"type":"text","text":..}]`，
+/// 流式里数组和字符串会在同一条流里交替出现（#9902）。只认 text / output_text /
+/// thinking 三种段，refusal 等其余段由调用方自己处理。
+pub(crate) fn chat_content_segments(content: &Value) -> Vec<ChatContentSegment> {
+    match content {
+        Value::String(text) if !text.is_empty() => vec![ChatContentSegment::Text(text.clone())],
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("text" | "output_text") => part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| ChatContentSegment::Text(text.to_string())),
+                Some("thinking") => chat_thinking_part_text(part).map(ChatContentSegment::Thinking),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `{"type":"thinking"}` 段的思考文本。`thinking` 字段是字符串，或 TextChunk 数组
+/// （Mistral）；数组里是同一段思考的连续片段，直接拼接。
+pub(crate) fn chat_thinking_part_text(part: &Value) -> Option<String> {
+    let text = match part.get("thinking")? {
+        Value::String(text) => text.clone(),
+        Value::Array(chunks) => chunks
+            .iter()
+            .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 pub(crate) fn append_reasoning_content(message: &mut Map<String, Value>, reasoning: &str) -> bool {
     let reasoning = reasoning.trim();
     if reasoning.is_empty() {
@@ -148,6 +191,105 @@ pub(crate) fn attach_optional_reasoning_content_field(
         return false;
     };
     attach_reasoning_content_field(item, reasoning)
+}
+
+/// Gemini 的 OpenAI 兼容接口把 thought signature 放在 tool call 的
+/// `extra_content.google.thought_signature` 里，下一轮必须原样带回，否则工具调用回放报 400。
+/// 这里只做透传：从 `source` 复制非空的 `extra_content` 到 `target`。
+pub(crate) fn copy_tool_call_extra_content(target: &mut Value, source: &Value) -> bool {
+    let Some(extra) = tool_call_extra_content(source) else {
+        return false;
+    };
+    let Some(obj) = target.as_object_mut() else {
+        return false;
+    };
+    obj.insert("extra_content".to_string(), extra.clone());
+    true
+}
+
+pub(crate) fn tool_call_extra_content(source: &Value) -> Option<&Value> {
+    source
+        .get("extra_content")
+        .filter(|value| value.as_object().is_some_and(|obj| !obj.is_empty()))
+}
+
+/// Gemini 文档给的跳过签名校验的占位值，只在真签名找不回来时兜底用（会影响模型表现）。
+pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// 签名靠 CodexChatHistoryStore 在内存里补回，puppyrouter app 在一轮工具调用中途重启就丢了。
+/// Gemini 只校验当前轮（最后一条 user 消息之后）每个 assistant 步骤里第一个工具调用的签名，
+/// 这里只给这些缺签名的调用填占位值；并行的后续调用照原样不带。只对 Gemini 3 及以后的模型生效。
+pub(crate) fn fill_gemini_thought_signature_fallback(chat_body: &mut Value) -> usize {
+    if !chat_body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(requires_gemini_thought_signature)
+    {
+        return 0;
+    }
+    let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let turn_start = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .map_or(0, |index| index + 1);
+    let mut filled = 0;
+    for message in &mut messages[turn_start..] {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(first_call) = message
+            .get_mut("tool_calls")
+            .and_then(Value::as_array_mut)
+            .and_then(|calls| calls.first_mut())
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let has_signature = first_call
+            .get("extra_content")
+            .and_then(|extra| extra.pointer("/google/thought_signature"))
+            .and_then(Value::as_str)
+            .is_some_and(|signature| !signature.is_empty());
+        if has_signature {
+            continue;
+        }
+        let extra = first_call
+            .entry("extra_content")
+            .or_insert_with(|| json!({}));
+        if !extra.is_object() {
+            *extra = json!({});
+        }
+        let google = extra
+            .as_object_mut()
+            .expect("extra_content is an object")
+            .entry("google")
+            .or_insert_with(|| json!({}));
+        if !google.is_object() {
+            *google = json!({});
+        }
+        google["thought_signature"] = Value::String(GEMINI_SKIP_THOUGHT_SIGNATURE.to_string());
+        filled += 1;
+    }
+    filled
+}
+
+/// 模型名（可带 `google/` 之类的中转前缀）是 Gemini 3 及以后的版本：这些版本才强制校验工具调用签名。
+pub(crate) fn requires_gemini_thought_signature(model: &str) -> bool {
+    let name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let Some(version) = name.strip_prefix("gemini-") else {
+        return false;
+    };
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 3)
 }
 
 pub(crate) fn response_function_call_item(
@@ -208,32 +350,111 @@ pub(crate) fn is_empty_value(value: &Value) -> bool {
     }
 }
 
-pub(crate) fn split_leading_think_block(text: &str) -> Option<(String, String)> {
-    let leading_ws_len = text.len() - text.trim_start().len();
-    let after_ws = &text[leading_ws_len..];
-    if !after_ws.starts_with(THINK_OPEN_TAG) {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assistant_call(id: &str, extra: Option<Value>) -> Value {
+        let mut call = json!({
+            "id": id,
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        });
+        if let Some(extra) = extra {
+            call["extra_content"] = extra;
+        }
+        call
     }
 
-    let body_start = leading_ws_len + THINK_OPEN_TAG.len();
-    let close_relative = text[body_start..].find(THINK_CLOSE_TAG)?;
-    let close_start = body_start + close_relative;
-    let answer_start = close_start + THINK_CLOSE_TAG.len();
+    #[test]
+    fn content_segments_keep_order_of_mistral_thinking_and_text_chunks() {
+        let content = json!([
+            {"type": "thinking", "thinking": [{"type": "text", "text": "We "}, {"type": "text", "text": "add"}], "closed": true},
+            {"type": "text", "text": "391"},
+            {"type": "thinking", "thinking": "plain"},
+            {"type": "text", "text": ""},
+            {"type": "image_url", "image_url": {"url": "x"}}
+        ]);
+        assert_eq!(
+            chat_content_segments(&content),
+            vec![
+                ChatContentSegment::Thinking("We add".to_string()),
+                ChatContentSegment::Text("391".to_string()),
+                ChatContentSegment::Thinking("plain".to_string()),
+            ]
+        );
+        assert_eq!(
+            chat_content_segments(&json!("hi")),
+            vec![ChatContentSegment::Text("hi".to_string())]
+        );
+        assert!(chat_content_segments(&json!("")).is_empty());
+        assert!(chat_content_segments(&Value::Null).is_empty());
+    }
 
-    Some((
-        text[body_start..close_start].trim().to_string(),
-        strip_think_answer_separator(&text[answer_start..]).to_string(),
-    ))
-}
+    #[test]
+    fn gemini_fallback_fills_first_call_of_each_current_turn_step() {
+        let signed = json!({"google": {"thought_signature": "sig-real"}});
+        let mut body = json!({
+            "model": "gemini-4-argon",
+            "messages": [
+                {"role": "user", "content": "old turn"},
+                {"role": "assistant", "tool_calls": [assistant_call("call_old", None)]},
+                {"role": "tool", "tool_call_id": "call_old", "content": "x"},
+                {"role": "user", "content": "current turn"},
+                {"role": "assistant", "tool_calls": [
+                    assistant_call("call_1", None),
+                    assistant_call("call_2", None)
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "a"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "b"},
+                {"role": "assistant", "tool_calls": [assistant_call("call_3", Some(signed.clone()))]},
+                {"role": "tool", "tool_call_id": "call_3", "content": "c"}
+            ]
+        });
 
-pub(crate) fn strip_leading_think_open_tag(text: &str) -> Option<String> {
-    let leading_ws_len = text.len() - text.trim_start().len();
-    let after_ws = &text[leading_ws_len..];
-    after_ws
-        .strip_prefix(THINK_OPEN_TAG)
-        .map(|value| value.trim().to_string())
-}
+        assert_eq!(fill_gemini_thought_signature_fallback(&mut body), 1);
+        let messages = body["messages"].as_array().unwrap();
+        // 上一轮不校验，保持原样
+        assert!(messages[1]["tool_calls"][0].get("extra_content").is_none());
+        assert_eq!(
+            messages[4]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            GEMINI_SKIP_THOUGHT_SIGNATURE
+        );
+        // 并行的后续调用不填
+        assert!(messages[4]["tool_calls"][1].get("extra_content").is_none());
+        // 真签名不覆盖
+        assert_eq!(messages[7]["tool_calls"][0]["extra_content"], signed);
+    }
 
-fn strip_think_answer_separator(text: &str) -> &str {
-    text.trim_start_matches(['\r', '\n', '\t', ' '])
+    #[test]
+    fn gemini_fallback_skips_models_without_signature_validation() {
+        for model in ["gemini-2.5-pro", "gpt-5.5", "glm-5.3", "gemma-4-27b"] {
+            let mut body = json!({
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "tool_calls": [assistant_call("call_1", None)]}
+                ]
+            });
+            assert_eq!(
+                fill_gemini_thought_signature_fallback(&mut body),
+                0,
+                "{model}"
+            );
+            assert!(body["messages"][1]["tool_calls"][0]
+                .get("extra_content")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn gemini_fallback_accepts_relay_prefixed_model_names() {
+        assert!(requires_gemini_thought_signature(
+            "google/gemini-3-pro-preview"
+        ));
+        assert!(requires_gemini_thought_signature("Gemini-4-Argon"));
+        assert!(requires_gemini_thought_signature("gemini-10-flash"));
+        assert!(!requires_gemini_thought_signature("gemini-2.5-flash"));
+        assert!(!requires_gemini_thought_signature("gemini-pro"));
+    }
 }

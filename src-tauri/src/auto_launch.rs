@@ -60,14 +60,6 @@ pub fn disable_auto_launch() -> Result<(), AppError> {
     Ok(())
 }
 
-/// 检查是否已启用开机自启
-pub fn is_auto_launch_enabled() -> Result<bool, AppError> {
-    let auto_launch = get_auto_launch()?;
-    auto_launch
-        .is_enabled()
-        .map_err(|e| AppError::Message(format!("检查开机自启状态失败: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
@@ -106,7 +98,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_not_in_bundle() {
-        let exe_path = std::path::Path::new("/usr/local/bin/puppyrouter-app");
+        let exe_path = std::path::Path::new("/usr/local/bin/cc-switch");
         let result = get_macos_app_bundle_path(exe_path);
         assert_eq!(result, None);
     }
@@ -115,7 +107,7 @@ mod tests {
     #[test]
     fn test_get_macos_app_bundle_path_dev_build() {
         // 开发环境下的路径通常不在 .app bundle 内
-        let exe_path = std::path::Path::new("/Users/dev/project/target/debug/puppyrouter-app");
+        let exe_path = std::path::Path::new("/Users/dev/project/target/debug/cc-switch");
         let result = get_macos_app_bundle_path(exe_path);
         assert_eq!(result, None);
     }

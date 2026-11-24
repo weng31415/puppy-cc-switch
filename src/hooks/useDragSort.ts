@@ -1,3 +1,7 @@
+import {
+  getLockedProviderRank,
+  isLockedProvider,
+} from "@/utils/lockedProviders";
 import { useCallback, useMemo } from "react";
 import {
   KeyboardSensor,
@@ -8,32 +12,24 @@ import {
 } from "@dnd-kit/core";
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
 import type { Provider } from "@/types";
 import { providersApi, type AppId } from "@/lib/api";
-import { getLockedProviderRank } from "@/utils/lockedProviders";
+import { appHas } from "@/config/appSpecs";
+import { getLocaleFromLanguage } from "@/components/usage/format";
 
 export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
   const queryClient = useQueryClient();
   const { t, i18n } = useTranslation();
 
   const sortedProviders = useMemo(() => {
-    const locale =
-      i18n.language === "zh"
-        ? "zh-CN"
-        : i18n.language === "zh-TW"
-          ? "zh-TW"
-          : "en-US";
+    const locale = getLocaleFromLanguage(i18n.language ?? "");
     return Object.values(providers).sort((a, b) => {
-      const rankA = getLockedProviderRank(a, appId);
-      const rankB = getLockedProviderRank(b, appId);
-      if (rankA !== null || rankB !== null) {
-        if (rankA === null) return 1;
-        if (rankB === null) return -1;
-        return rankA - rankB;
-      }
-
+      const rank =
+        (getLockedProviderRank(a, appId) ?? 2) -
+        (getLockedProviderRank(b, appId) ?? 2);
+      if (rank) return rank;
       if (a.sortIndex !== undefined && b.sortIndex !== undefined) {
         return a.sortIndex - b.sortIndex;
       }
@@ -73,21 +69,12 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
         (provider) => provider.id === over.id,
       );
 
-      if (oldIndex === -1 || newIndex === -1) {
-        return;
-      }
-
-      const activeProvider = sortedProviders[oldIndex];
-      const overProvider = sortedProviders[newIndex];
       if (
-        getLockedProviderRank(activeProvider, appId) !== null ||
-        getLockedProviderRank(overProvider, appId) !== null
+        oldIndex === -1 ||
+        newIndex === -1 ||
+        isLockedProvider(sortedProviders[oldIndex], appId) ||
+        getLockedProviderRank(sortedProviders[newIndex], appId) !== null
       ) {
-        toast.info(
-          t("provider.lockedSort", {
-            defaultValue: "PuppyRouter 和 Official 的顺序已锁定",
-          }),
-        );
         return;
       }
 
@@ -103,10 +90,12 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
           queryKey: ["providers", appId],
         });
 
-        // 刷新故障转移队列（因为队列顺序依赖 sort_index）
-        await queryClient.invalidateQueries({
-          queryKey: ["failoverQueue", appId],
-        });
+        // Routing apps derive failover order from sort_index.
+        if (appHas(appId, "localProxy")) {
+          await queryClient.invalidateQueries({
+            queryKey: ["failoverQueue", appId],
+          });
+        }
 
         // 更新托盘菜单以反映新的排序（失败不影响主操作）
         try {
@@ -124,6 +113,8 @@ export function useDragSort(providers: Record<string, Provider>, appId: AppId) {
         );
       } catch (error) {
         console.error("Failed to update provider sort order", error);
+        // 排序可能已经存下、只是聚合名单没发布成：按库里的顺序重画，再拖一次会重试发布。
+        void queryClient.invalidateQueries({ queryKey: ["providers", appId] });
         toast.error(
           t("provider.sortUpdateFailed", {
             defaultValue: "排序更新失败",

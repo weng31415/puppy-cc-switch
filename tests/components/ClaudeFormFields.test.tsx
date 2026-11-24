@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type { ComponentProps, PropsWithChildren } from "react";
 import { useForm } from "react-hook-form";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +19,7 @@ const copilotApiMock = vi.hoisted(() => ({
 const modelFetchApiMock = vi.hoisted(() => ({
   fetchCodexOauthModels: vi.fn(),
   fetchModelsForConfig: vi.fn(),
+  modelFetchRequestHeaders: vi.fn(),
   showFetchModelsError: vi.fn(),
 }));
 
@@ -21,9 +28,13 @@ vi.mock("@/lib/api/copilot", () => ({
   copilotGetModelsForAccount: copilotApiMock.copilotGetModelsForAccount,
 }));
 
-vi.mock("@/lib/api/model-fetch", () => ({
+vi.mock("@/lib/api/model-fetch", async (importOriginal) => ({
+  claudeModelFetchApiFormat: (
+    await importOriginal<typeof import("@/lib/api/model-fetch")>()
+  ).claudeModelFetchApiFormat,
   fetchCodexOauthModels: modelFetchApiMock.fetchCodexOauthModels,
   fetchModelsForConfig: modelFetchApiMock.fetchModelsForConfig,
+  modelFetchRequestHeaders: modelFetchApiMock.modelFetchRequestHeaders,
   showFetchModelsError: modelFetchApiMock.showFetchModelsError,
 }));
 
@@ -85,10 +96,13 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     defaultOpusModelName: "",
     defaultFableModel: "",
     defaultFableModelName: "",
+    subagentModel: "",
     onModelChange: vi.fn(),
     speedTestEndpoints: [],
     apiFormat: "anthropic",
     onApiFormatChange: vi.fn(),
+    reasoningEffort: "auto",
+    onReasoningEffortChange: vi.fn(),
     apiKeyField: "ANTHROPIC_AUTH_TOKEN",
     onApiKeyFieldChange: vi.fn(),
     isFullUrl: false,
@@ -135,6 +149,42 @@ describe("ClaudeFormFields", () => {
     expect(copilotApiMock.copilotGetModelsForAccount).not.toHaveBeenCalled();
   });
 
+  it.each(["classic", "stack"] as const)(
+    "Copilot %s 布局显示自动协议并禁用无效的手选格式",
+    (variant) => {
+      renderCopilotForm({ variant, apiFormat: "openai_responses" });
+      const control = screen.getByRole("combobox", { name: "上游格式" });
+      expect(control).toBeDisabled();
+      expect(control).toHaveTextContent("copilot.automaticFormat");
+      expect(screen.getByText(/copilot.automaticFormatHint/)).toBeVisible();
+    },
+  );
+
+  it.each(["classic", "stack"] as const)(
+    "%s 布局只在转成 OpenAI 格式时显示思考档位",
+    (variant) => {
+      const { unmount } = renderCopilotForm({
+        variant,
+        isCopilotPreset: false,
+        apiFormat: "openai_chat",
+      });
+      expect(screen.getByRole("combobox", { name: "思考档位" })).toBeVisible();
+      unmount();
+
+      renderCopilotForm({
+        variant,
+        isCopilotPreset: false,
+        apiFormat: "anthropic",
+      });
+      expect(screen.queryByRole("combobox", { name: "思考档位" })).toBeNull();
+    },
+  );
+
+  it("Copilot 卡不显示思考档位", () => {
+    renderCopilotForm({ apiFormat: "openai_chat" });
+    expect(screen.queryByRole("combobox", { name: "思考档位" })).toBeNull();
+  });
+
   it("点击获取模型列表后才请求当前 Copilot 账号的模型", async () => {
     renderCopilotForm();
 
@@ -174,61 +224,124 @@ describe("ClaudeFormFields", () => {
     });
   });
 
-  it("按获取结果分别应用最新 Claude 角色模型并保留缺失角色", async () => {
+  it("Genesis 使用当前 Key 拉取可用对话模型", async () => {
+    Element.prototype.scrollIntoView ??= vi.fn();
     const onModelChange = vi.fn();
-    modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
-      { id: "claude-opus-4-8", ownedBy: null },
-      { id: "claude-opus-5", ownedBy: null },
-      { id: "claude-sonnet-4-6", ownedBy: null },
-      { id: "claude-sonnet-5", ownedBy: null },
-      { id: "claude-haiku-4-5-20251001", ownedBy: null },
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValueOnce([
+      { id: "chat-model-a" },
+      { id: "chat-model-b" },
     ]);
-
     renderCopilotForm({
       isCopilotPreset: false,
       usesOAuth: false,
-      shouldShowApiKey: true,
       category: "aggregator",
-      apiKey: "sk-test",
-      baseUrl: "https://puppyrouter.com",
+      shouldShowApiKey: true,
+      apiKey: "test-key",
+      baseUrl: "https://token.moi.matrixorigin.cn",
+      defaultSonnetModel: "",
+      defaultSonnetModelName: "",
       onModelChange,
     });
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "providerForm.fetchModels",
+        name: "providerForm.advancedOptionsToggle",
       }),
     );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+
     await waitFor(() => {
-      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalled();
+      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://token.moi.matrixorigin.cn",
+        "test-key",
+        false,
+        "https://token.moi.matrixorigin.cn/v1/models?type=chat",
+        "",
+        { requestHeaders: undefined },
+      );
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Select model" })[0]);
+    fireEvent.click(screen.getByText("chat-model-b"));
+    expect(onModelChange).toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "chat-model-b",
+    );
+  });
+
+  it("Gemini Native 拉取模型时用 Google 的 API Key 头", async () => {
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValueOnce([]);
+    renderCopilotForm({
+      isCopilotPreset: false,
+      usesOAuth: false,
+      category: "custom",
+      shouldShowApiKey: true,
+      apiKey: "AIza-test",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiFormat: "gemini_native",
+    });
+
+    // 非 Anthropic 格式的高级选项默认展开，直接点获取模型
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+
+    await waitFor(() => {
+      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://generativelanguage.googleapis.com",
+        "AIza-test",
+        false,
+        undefined,
+        "",
+        { apiFormat: "google-generative-ai", requestHeaders: undefined },
+      );
+    });
+  });
+
+  it("一键设置会同时写入 Subagent 模型", () => {
+    const onModelChange = vi.fn();
+    renderCopilotForm({
+      claudeModel: "shared-model[1M]",
+      defaultSonnetModel: "",
+      defaultSonnetModelName: "",
+      onModelChange,
     });
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /一键设置|providerForm\.quickSetModels/,
-      }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /应用映射|providerForm\.quickSetConfirmButton/,
+        name: "一键设置",
       }),
     );
 
+    expect(onModelChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "应用映射" }));
     expect(onModelChange).toHaveBeenCalledWith(
-      "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "claude-sonnet-5",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+      "shared-model[1M]",
     );
-    expect(onModelChange).toHaveBeenCalledWith(
-      "ANTHROPIC_DEFAULT_OPUS_MODEL",
-      "claude-opus-5",
-    );
+  });
+
+  it("Haiku 行也能勾 1M：勾选状态即模型名的 [1M] 后缀", () => {
+    const onModelChange = vi.fn();
+    renderCopilotForm({
+      isCopilotPreset: false,
+      usesOAuth: false,
+      defaultHaikuModel: "glm-5.3-flash[1M]",
+      defaultHaikuModelName: "",
+      onModelChange,
+    });
+
+    const haikuRow = screen.getByText("Haiku").parentElement!;
+    expect(within(haikuRow).getByDisplayValue("glm-5.3-flash")).toBeTruthy();
+    const checkbox = within(haikuRow).getByRole("checkbox");
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(checkbox);
     expect(onModelChange).toHaveBeenCalledWith(
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "claude-haiku-4-5-20251001",
-    );
-    expect(onModelChange).not.toHaveBeenCalledWith(
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
-      expect.any(String),
+      "glm-5.3-flash",
     );
   });
 });

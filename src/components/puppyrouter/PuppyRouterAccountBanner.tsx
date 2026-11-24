@@ -1,8 +1,15 @@
+import { appHas } from "@/config/appSpecs";
+import { proxyApi } from "@/lib/api/proxy";
+import { extractCodexBaseUrl } from "@/utils/codexConfigUtils";
+import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
+const extractGrokBuildApiKey = (text: string) =>
+  parseGrokBuildConfig(text).apiKey;
+import { APP_IDS } from "@/config/appSpecs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { motion } from "framer-motion";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   CheckCircle2,
@@ -52,17 +59,14 @@ import {
   formatQuotaForDisplay,
 } from "@/utils/displayCurrency";
 import { APP_ICON_MAP } from "@/config/appConfig";
-import { PUPPYROUTER_PROVIDER_IDS } from "@/utils/lockedProviders";
+import {
+  isPuppyRouterProvider,
+  PUPPYROUTER_PROVIDER_IDS,
+} from "@/utils/lockedProviders";
 import { parse as parseToml } from "smol-toml";
 import { normalizeTomlText } from "@/utils/textNormalization";
-import {
-  extractCodexBaseUrl,
-  getApiKeyFromConfig,
-} from "@/utils/providerConfigUtils";
-import {
-  extractGrokBuildApiKey,
-  extractGrokBuildBaseUrl,
-} from "@/utils/grokBuildConfig";
+import { getApiKeyFromConfig } from "@/utils/providerConfigUtils";
+import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -84,16 +88,8 @@ interface PuppyRouterAccountBannerProps {
   activeApp: AppId;
 }
 
-const AUTO_APPLY_APP_IDS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "grokbuild",
-  "opencode",
-];
-
-const MANUAL_ONLY_APP_IDS: AppId[] = ["openclaw", "hermes"];
+const AUTO_APPLY_APP_IDS: AppId[] = [...APP_IDS];
+const MANUAL_ONLY_APP_IDS: AppId[] = [];
 const PUPPYROUTER_WALLET_URL = "https://puppyrouter.com/console/topup";
 
 type DiagnoseFixAction = "cloud" | "live";
@@ -109,6 +105,7 @@ interface DiagnoseResult {
   providerId?: string;
   selectedTokenId?: number;
   issues: DiagnoseIssue[];
+  scope?: string;
 }
 
 function keyStatusLabel(t: TFunction, status: number) {
@@ -124,14 +121,6 @@ function keyStatusLabel(t: TFunction, status: number) {
     default:
       return t("puppyrouterAccount.keyStatus.unknown");
   }
-}
-
-function chooseAutoApplyKey(keys: PuppyRouterApiKey[]) {
-  return (
-    keys.find((key) => key.active) ??
-    keys.find((key) => key.recommended && key.usable) ??
-    keys.find((key) => key.usable)
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -165,7 +154,7 @@ function isPuppyRouterUrl(value: string) {
     const host = new URL(value).hostname.replace(/^www\./, "");
     return host === "puppyrouter.com";
   } catch {
-    return value.includes("puppyrouter.com");
+    return false;
   }
 }
 
@@ -174,9 +163,11 @@ function resolveOpenCodeProviderSettings(
   providerId?: string,
 ): unknown {
   if (!providerId || !isRecord(settings)) return settings;
-  const providers = settings.provider;
-  if (!isRecord(providers)) return settings;
-  return providers[providerId] ?? settings;
+  for (const providers of [settings.providers, settings.provider]) {
+    if (isRecord(providers) && isRecord(providers[providerId]))
+      return providers[providerId];
+  }
+  return settings;
 }
 
 const CODEX_RESERVED_PROVIDER_IDS = new Set([
@@ -288,18 +279,33 @@ function readBaseUrlFromSettings(
   if (appId === "codex") {
     return extractCodexBaseUrl(readStringPath(settings, ["config"])) ?? "";
   }
-  if (appId === "gemini") {
+  if (appId === "gemini" || appId === "agy") {
     return readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]);
   }
   if (appId === "grokbuild") {
     return extractGrokBuildBaseUrl(readStringPath(settings, ["config"]));
   }
   if (appId === "opencode") {
-    return readStringPath(
-      resolveOpenCodeProviderSettings(settings, providerId),
-      ["options", "baseURL"],
-    );
+    const entry = resolveOpenCodeProviderSettings(settings, providerId);
+    return readStringPath(entry, [
+      isRecord(entry) && "settings" in entry ? "settings" : "options",
+      "baseURL",
+    ]);
   }
+  if (["mcode", "dsh"].includes(appId))
+    return readStringPath(settings, ["options", "baseURL"]);
+  if (["openclaw", "pi", "omp"].includes(appId))
+    return readStringPath(settings, ["baseUrl"]);
+  if (appId === "hermes") return readStringPath(settings, ["base_url"]);
+  if (appId === "kimi")
+    return readStringPath(settings, ["provider", "base_url"]);
+  if (appId === "copilot")
+    return readStringPath(settings, ["provider", "baseUrl"]);
+  if (appId === "workbuddy")
+    return readStringPath(settings, ["url"]).replace(
+      /\/chat\/completions\/?$/,
+      "",
+    );
   return readStringPath(settings, ["env", "ANTHROPIC_BASE_URL"]);
 }
 
@@ -309,16 +315,55 @@ function readApiKeyFromSettings(
   providerId?: string,
 ) {
   if (appId === "opencode") {
-    return readStringPath(
-      resolveOpenCodeProviderSettings(settings, providerId),
-      ["options", "apiKey"],
-    );
+    const entry = resolveOpenCodeProviderSettings(settings, providerId);
+    return readStringPath(entry, [
+      isRecord(entry) && "settings" in entry ? "settings" : "options",
+      "apiKey",
+    ]);
   }
   if (appId === "grokbuild") {
     return extractGrokBuildApiKey(readStringPath(settings, ["config"]));
   }
+  if (["mcode", "dsh"].includes(appId))
+    return readStringPath(settings, ["options", "apiKey"]);
+  if (["openclaw", "pi", "omp", "workbuddy"].includes(appId))
+    return readStringPath(settings, ["apiKey"]);
+  if (appId === "hermes") return readStringPath(settings, ["api_key"]);
+  if (appId === "kimi")
+    return readStringPath(settings, ["provider", "api_key"]);
+  if (appId === "copilot")
+    return readStringPath(settings, ["provider", "apiKey"]);
+  if (appId === "agy")
+    return readStringPath(settings, ["env", "GEMINI_API_KEY"]);
   if (!isRecord(settings)) return "";
   return getApiKeyFromConfig(JSON.stringify(settings), appId);
+}
+
+async function puppyRouterIsConfigured(app: AppId): Promise<boolean> {
+  const id = PUPPYROUTER_PROVIDER_IDS[app];
+  if (!id) return false;
+  if (appHas(app, "routeMode")) {
+    const mode = await proxyApi.getAppMode(app);
+    if (mode.mode !== "direct") {
+      if (!mode.attached) return false;
+      if (mode.routeProviderId === id) return true;
+      return (
+        mode.mode === "stack" &&
+        (await proxyApi.getProxyStack(app)).members.some(
+          (row) => row.providerId === id,
+        )
+      );
+    }
+  }
+  if (app === "agy") return (await providersApi.getCurrent(app)) === id;
+  if (app === "claude-desktop")
+    return isPuppyRouterUrl(
+      (await providersApi.getClaudeDesktopStatus()).actualBaseUrl ?? "",
+    );
+  const live = appHas(app, "additive")
+    ? await puppyrouterAccountApi.readNativeProvider(app)
+    : await vscodeApi.getLiveProviderSettings(app);
+  return isPuppyRouterUrl(readBaseUrlFromSettings(app, live, id));
 }
 
 export function PuppyRouterAccountBanner({
@@ -326,6 +371,11 @@ export function PuppyRouterAccountBanner({
 }: PuppyRouterAccountBannerProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const { data: configured } = useQuery({
+    queryKey: ["providers", activeApp, "puppyrouterLiveConfig"],
+    queryFn: () => puppyRouterIsConfigured(activeApp),
+    retry: false,
+  });
   const { data: settings } = useSettingsQuery();
   const {
     data: account,
@@ -426,54 +476,27 @@ export function PuppyRouterAccountBanner({
     [],
   );
 
-  const loadKeys = useCallback(
-    async (options?: { autoApplyDefault?: boolean }) => {
-      setIsRefreshingKeys(true);
-      try {
-        const result = await puppyrouterAccountApi.listApiKeys(activeApp);
-        queryClient.setQueryData(
-          puppyrouterAccountKeys.apiKeys(activeApp),
-          result,
-        );
-
-        if (options?.autoApplyDefault && !isManualOnlyApp) {
-          const target = chooseAutoApplyKey(result.keys);
-          if (target && !target.active && target.usable) {
-            setApplyingKeyId(target.id);
-            const applied = await puppyrouterAccountApi.applyApiKey(
-              target.id,
-              activeApp,
-            );
-            queryClient.setQueryData(
-              puppyrouterAccountKeys.apiKeys(activeApp),
-              markPuppyRouterApiKeyActive(result, target.id),
-            );
-            void queryClient.invalidateQueries({
-              queryKey: ["providers"],
-            });
-            toast.success(
-              t("puppyrouterAccount.autoSyncSuccess", {
-                name: applied.name,
-                app: APP_ICON_MAP[activeApp].label,
-              }),
-            );
-          }
-        }
-      } catch (error) {
-        if (isPuppyRouterSessionExpiredError(error)) return;
-        console.error("[PuppyRouterAccountBanner] Failed to load keys", error);
-        toast.error(
-          t("puppyrouterAccount.loadKeysFailed", {
-            error: extractErrorMessage(error),
-          }),
-        );
-      } finally {
-        setIsRefreshingKeys(false);
-        setApplyingKeyId(null);
-      }
-    },
-    [activeApp, isManualOnlyApp, queryClient, t],
-  );
+  const loadKeys = useCallback(async () => {
+    setIsRefreshingKeys(true);
+    try {
+      const result = await puppyrouterAccountApi.listApiKeys(activeApp);
+      queryClient.setQueryData(
+        puppyrouterAccountKeys.apiKeys(activeApp),
+        result,
+      );
+    } catch (error) {
+      if (isPuppyRouterSessionExpiredError(error)) return;
+      console.error("[PuppyRouterAccountBanner] Failed to load keys", error);
+      toast.error(
+        t("puppyrouterAccount.loadKeysFailed", {
+          error: extractErrorMessage(error),
+        }),
+      );
+    } finally {
+      setIsRefreshingKeys(false);
+      setApplyingKeyId(null);
+    }
+  }, [activeApp, queryClient, t]);
 
   const loadBalance = useCallback(async () => {
     setIsRefreshingBalance(true);
@@ -517,7 +540,7 @@ export function PuppyRouterAccountBanner({
       resetLoginState();
       toast.success(t("puppyrouterAccount.loginSuccess"));
       try {
-        await loadKeys({ autoApplyDefault: true });
+        await loadKeys();
         await loadBalance();
       } finally {
         queryClient.setQueryData(
@@ -765,7 +788,7 @@ export function PuppyRouterAccountBanner({
     try {
       const providers = await providersApi.getAll(activeApp);
       const provider = providers[providerId];
-      if (!provider) {
+      if (!provider || !isPuppyRouterProvider(provider, activeApp)) {
         setDiagnoseResult({
           appLabel: APP_ICON_MAP[activeApp].label,
           providerId,
@@ -804,7 +827,45 @@ export function PuppyRouterAccountBanner({
         });
       }
 
-      if (activeApp !== "opencode") {
+      if (appHas(activeApp, "routeMode")) {
+        const mode = await proxyApi.getAppMode(activeApp);
+        if (mode.mode !== "direct") {
+          if (!mode.attached)
+            issues.push({
+              id: "proxy-detached",
+              message: t("puppyrouterAccount.diagnoseProxyDetached", {
+                defaultValue: "本地路由尚未接入，请在模式栏重新启用路由。",
+              }),
+            });
+          setDiagnoseResult({
+            appLabel: APP_ICON_MAP[activeApp].label,
+            providerId,
+            selectedTokenId: cloudKeys.selectedTokenId,
+            issues,
+            scope: t("puppyrouterAccount.diagnoseProxyScope", {
+              defaultValue:
+                "已检查云端密钥和路由接入状态。路由与聚合使用本地代理凭据；连通性请使用供应商卡片的测试功能。",
+            }),
+          });
+          setIsDiagnoseOpen(true);
+          return;
+        }
+      }
+      if (activeApp === "agy") {
+        setDiagnoseResult({
+          appLabel: APP_ICON_MAP[activeApp].label,
+          providerId,
+          selectedTokenId: cloudKeys.selectedTokenId,
+          issues,
+          scope: t("puppyrouterAccount.diagnoseLaunchScope", {
+            defaultValue:
+              "已检查云端密钥与本地配置。此应用在从供应商卡片启动时注入密钥，无需写入全局配置文件。",
+          }),
+        });
+        setIsDiagnoseOpen(true);
+        return;
+      }
+      if (!appHas(activeApp, "additive")) {
         const currentId = await providersApi
           .getCurrent(activeApp)
           .catch(() => "");
@@ -890,7 +951,9 @@ export function PuppyRouterAccountBanner({
 
       let liveSettings: unknown;
       try {
-        liveSettings = await vscodeApi.getLiveProviderSettings(activeApp);
+        liveSettings = appHas(activeApp, "additive")
+          ? await puppyrouterAccountApi.readNativeProvider(activeApp)
+          : await vscodeApi.getLiveProviderSettings(activeApp);
       } catch (error) {
         setDiagnoseResult({
           appLabel: APP_ICON_MAP[activeApp].label,
@@ -907,6 +970,25 @@ export function PuppyRouterAccountBanner({
         return;
       }
 
+      if (liveSettings == null && appHas(activeApp, "additive")) {
+        setDiagnoseResult({
+          appLabel: APP_ICON_MAP[activeApp].label,
+          providerId,
+          selectedTokenId: cloudKeys.selectedTokenId,
+          issues: [
+            ...issues,
+            {
+              id: "provider-not-current",
+              message: t("puppyrouterAccount.diagnoseProviderNotCurrent", {
+                app: APP_ICON_MAP[activeApp].label,
+              }),
+              fixAction: "live",
+            },
+          ],
+        });
+        setIsDiagnoseOpen(true);
+        return;
+      }
       const liveBaseUrl = readBaseUrlFromSettings(
         activeApp,
         liveSettings,
@@ -1011,7 +1093,15 @@ export function PuppyRouterAccountBanner({
             }),
           );
         }
-        await providersApi.switch(providerId, activeApp);
+        if (appHas(activeApp, "additive")) {
+          const provider = (await providersApi.getAll(activeApp))[providerId];
+          if (provider) await providersApi.update(provider, activeApp);
+        }
+        if (activeApp === "kimi" || activeApp === "copilot") {
+          await providersApi.addToLiveConfig(providerId, activeApp);
+        } else {
+          await providersApi.switch(providerId, activeApp);
+        }
       }
 
       await queryClient.invalidateQueries({
@@ -1062,6 +1152,14 @@ export function PuppyRouterAccountBanner({
 
   return (
     <section className="mt-2 space-y-3">
+      {configured === false && (
+        <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+          <ShieldAlert className="h-4 w-4 shrink-0" />
+          {t("puppyrouterAccount.clientNotConfiguredWarning", {
+            app: APP_ICON_MAP[activeApp].label,
+          })}
+        </p>
+      )}
       {(sessionState === "offline" || sessionState === "server_error") && (
         <div className="flex flex-col gap-3 rounded-lg border border-amber-500/30 dark:border-amber-400/35 bg-amber-400/10 px-4 py-3 text-amber-950 dark:text-amber-50 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
@@ -1524,6 +1622,11 @@ export function PuppyRouterAccountBanner({
           </DialogHeader>
 
           <div className="space-y-3 px-6 py-5">
+            {diagnoseResult?.scope && (
+              <p className="text-sm text-muted-foreground">
+                {diagnoseResult.scope}
+              </p>
+            )}
             {diagnoseResult && diagnoseResult.issues.length === 0 ? (
               <div className="flex items-start gap-3 rounded-lg border border-emerald-600/30 dark:border-emerald-400/35 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-50">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />

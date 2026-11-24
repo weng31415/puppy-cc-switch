@@ -1,0 +1,12 @@
+{
+  "version": "3.19.4",
+  "items": [
+    {
+      "type": "fix",
+      "zh": "恢复 Codex 官方认证要求，并更新 Claude 模型映射。",
+      "zh-TW": "恢復 Codex 官方驗證要求，並更新 Claude 模型對應。",
+      "en": "Restored the Codex OpenAI authentication requirement and updated Claude model mappings.",
+      "ja": "Codex の OpenAI 認証要件を復元し、Claude のモデル設定を更新しました。"
+    }
+  ]
+}

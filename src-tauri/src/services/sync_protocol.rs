@@ -4,7 +4,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::future::Future;
 use std::process::Command;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -12,17 +15,18 @@ use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
 use crate::error::AppError;
+use crate::services::skill::{skill_state_read_guard, skill_state_write_guard};
 
 // Re-export archive functions for use by transport layers.
 pub(crate) use super::webdav_sync::archive::{
-    backup_current_skills, restore_skills_from_backup, restore_skills_zip, zip_skills_ssot,
+    backup_current_skills, restore_skills_zip, zip_skills_ssot,
 };
 
 // ─── Protocol constants ──────────────────────────────────────
 
 /// Wire-format identifier stored in remote manifests.
 /// Retains historic "webdav" naming for backward compatibility with existing remotes.
-pub(crate) const PROTOCOL_FORMAT: &str = "puppyrouter-app-webdav-sync";
+pub(crate) const PROTOCOL_FORMAT: &str = "cc-switch-webdav-sync";
 pub(crate) const PROTOCOL_VERSION: u32 = 2;
 pub(crate) const DB_COMPAT_VERSION: u32 = 6;
 pub(crate) const LEGACY_DB_COMPAT_VERSION: u32 = 5;
@@ -32,6 +36,90 @@ pub(crate) const REMOTE_MANIFEST: &str = "manifest.json";
 pub(crate) const MAX_DEVICE_NAME_LEN: usize = 64;
 pub(crate) const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_SYNC_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+
+// ─── Transfer timeouts ──────────────────────────────────────
+
+/// Floor of the overall timeout for large transfers (db.sql, skills.zip).
+const TRANSFER_BASE_TIMEOUT_SECS: u64 = 300;
+/// Slowest throughput the overall timeout still accommodates (16 KiB/s).
+const TRANSFER_MIN_BYTES_PER_SEC: u64 = 16 * 1024;
+/// A transfer that makes no progress for this long (waiting for response
+/// headers, or between two body chunks) is treated as stalled.
+pub(crate) const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Overall timeout for transferring up to `len` bytes.
+///
+/// reqwest's request timeout covers the whole body, so a fixed 300 s cut off
+/// healthy-but-slow downloads of large skills.zip archives mid-stream (#8428).
+/// The budget now grows with the payload size; stalls are caught separately by
+/// [`TRANSFER_IDLE_TIMEOUT`] where the transport can observe progress.
+pub(crate) fn transfer_timeout(len: u64) -> Duration {
+    Duration::from_secs(TRANSFER_BASE_TIMEOUT_SECS.saturating_add(len / TRANSFER_MIN_BYTES_PER_SEC))
+}
+
+/// Describe a WebDAV/S3 transport failure as `(zh, en)`: a short category plus
+/// the reqwest cause chain (URL stripped).
+///
+/// `is_request()` means the request was built but failed while being sent
+/// (connection reset or closed mid-body, TLS / HTTP-2 errors…); only
+/// `is_builder()` is a request build failure. Labelling the former "request
+/// build failed" and dropping the cause left users with nothing to act on (#9559).
+pub(crate) fn transport_failure_reason(err: reqwest::Error) -> (String, String) {
+    let (zh, en) = if err.is_timeout() {
+        ("请求超时", "request timed out")
+    } else if err.is_connect() {
+        ("连接失败", "connection failed")
+    } else if err.is_builder() {
+        ("请求构造失败", "request build failed")
+    } else if err.is_request() {
+        ("发送失败", "failed to send")
+    } else {
+        ("网络请求失败", "network request failed")
+    };
+    let detail = crate::proxy::error::describe_reqwest_error(err);
+    (format!("{zh}: {detail}"), format!("{en}: {detail}"))
+}
+
+// ─── Sync operation lock ────────────────────────────────────
+
+/// Serialize every snapshot upload/download across all transports.
+///
+/// WebDAV and S3 used to own separate mutexes, which allowed two transports to
+/// restore the database and Skills SSOT concurrently. Keep the lock in this
+/// transport-agnostic layer so future transports automatically share it too.
+pub(crate) fn sync_mutex() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+pub(crate) async fn run_with_sync_lock<T, Fut>(operation: Fut) -> Result<T, AppError>
+where
+    Fut: Future<Output = Result<T, AppError>>,
+{
+    let _guard = sync_mutex().lock().await;
+    operation.await
+}
+
+/// Tables whose changes make the remote configuration snapshot stale.
+///
+/// Keep this transport-agnostic so WebDAV and S3 cannot silently drift apart.
+/// `model_pricing` is intentionally excluded while its local JSON sidecar is
+/// the user-owned SSOT.
+pub(crate) fn should_trigger_auto_sync_for_table(table: &str) -> bool {
+    let normalized = table.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "providers"
+            | "provider_endpoints"
+            | "mcp_servers"
+            | "prompts"
+            | "skills"
+            | "skill_repos"
+            | "profiles"
+            | "settings"
+            | "proxy_config"
+    )
+}
 
 // ─── Error helpers ───────────────────────────────────────────
 
@@ -105,6 +193,10 @@ impl RemoteLayout {
 pub(crate) fn build_local_snapshot(
     db: &crate::database::Database,
 ) -> Result<LocalSnapshot, AppError> {
+    // Keep the DB's skill rows and the filesystem SSOT at one logical point in
+    // time. Skill writers take the matching write guard around both mutations.
+    let _skill_state_guard = skill_state_read_guard();
+
     // Export database to SQL string
     let sql_string = db.export_sql_string_for_sync()?;
     let db_sql = sql_string.into_bytes();
@@ -318,22 +410,16 @@ pub(crate) fn apply_snapshot(
             format!("SQL is not valid UTF-8: {e}"),
         )
     })?;
+    // Exclude installs, uninstalls, updates, and local projection while Skills
+    // are backed up/replaced and the corresponding database snapshot is applied.
+    let _skill_state_guard = skill_state_write_guard();
     let skills_backup = backup_current_skills()?;
 
     // Replace skills first, then import database; roll back skills on DB failure.
     restore_skills_zip(skills_zip)?;
 
     if let Err(db_err) = db.import_sql_string_for_sync(sql_str) {
-        if let Err(rollback_err) = restore_skills_from_backup(&skills_backup) {
-            return Err(localized(
-                "sync.db_import_and_rollback_failed",
-                format!("导入数据库失败: {db_err}; 同时回滚 Skills 失败: {rollback_err}"),
-                format!(
-                    "Database import failed: {db_err}; skills rollback also failed: {rollback_err}"
-                ),
-            ));
-        }
-        return Err(db_err);
+        return Err(skills_backup.rollback_after_import_error(db_err));
     }
 
     Ok(())
@@ -419,10 +505,102 @@ where
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn transport_failure_reason_reports_send_failure_with_cause() {
+        // #9559: a server dropping the connection mid-PUT is a send failure, not a
+        // request build failure, and the cause must survive into the message.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+
+        let err = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .put(format!(
+                "http://127.0.0.1:{port}/dav/db.sql?token=secret-token"
+            ))
+            .body(vec![0u8; 64 * 1024])
+            .send()
+            .await
+            .expect_err("connection is dropped before a response");
+        assert!(err.is_request() && !err.is_connect() && !err.is_builder());
+
+        let (zh, en) = transport_failure_reason(err);
+        assert!(zh.starts_with("发送失败: error sending request"), "{zh}");
+        assert!(
+            en.starts_with("failed to send: error sending request: "),
+            "{en}"
+        );
+        assert!(!en.contains("secret-token"), "{en}");
+    }
+
+    #[test]
+    fn transfer_timeout_grows_with_payload_size() {
+        assert_eq!(transfer_timeout(0), Duration::from_secs(300));
+        // #8428: a ~90 MiB skills.zip took ~927 s at ~99 KiB/s; the budget must
+        // cover it with room to spare instead of cutting off at 300 s.
+        let skills_zip = transfer_timeout(94_218_061);
+        assert!(skills_zip > Duration::from_secs(927 * 2), "{skills_zip:?}");
+        assert!(transfer_timeout(MAX_SYNC_ARTIFACT_BYTES) > transfer_timeout(94_218_061));
+    }
+
+    #[tokio::test]
+    async fn webdav_and_s3_operations_share_one_sync_mutex() {
+        let webdav_lock = crate::services::webdav_sync::sync_mutex();
+        let s3_lock = crate::services::s3_sync::sync_mutex();
+        assert!(
+            std::ptr::eq(webdav_lock, s3_lock),
+            "every transport must expose the same global sync lock"
+        );
+
+        let guard = webdav_lock.lock().await;
+        assert!(s3_lock.try_lock().is_err());
+        drop(guard);
+        assert!(s3_lock.try_lock().is_ok());
+    }
+
     fn artifact(sha256: &str, size: u64) -> ArtifactMeta {
         ArtifactMeta {
             sha256: sha256.to_string(),
             size,
+        }
+    }
+
+    #[test]
+    fn auto_sync_table_filter_covers_shared_configuration() {
+        for table in [
+            "providers",
+            "provider_endpoints",
+            "mcp_servers",
+            "prompts",
+            "skills",
+            "skill_repos",
+            "profiles",
+            "settings",
+            "proxy_config",
+        ] {
+            assert!(
+                should_trigger_auto_sync_for_table(table),
+                "{table} should trigger an automatic snapshot upload"
+            );
+        }
+
+        assert!(should_trigger_auto_sync_for_table("  PROFILES  "));
+        for table in [
+            "proxy_request_logs",
+            "provider_health",
+            "session_log_sync",
+            "model_pricing",
+        ] {
+            assert!(
+                !should_trigger_auto_sync_for_table(table),
+                "{table} should not trigger automatic snapshot upload"
+            );
         }
     }
 

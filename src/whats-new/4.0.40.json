@@ -1,0 +1,39 @@
+{
+  "version": "4.0.40",
+  "items": [
+    {
+      "type": "new",
+      "zh": "在侧边栏管理 16 个应用，按应用选择 PuppyRouter 密钥。",
+      "zh-TW": "在側邊欄管理 16 個應用程式，並分別選擇 PuppyRouter 金鑰。",
+      "en": "Manage 16 apps in the sidebar and choose a PuppyRouter key for each.",
+      "ja": "サイドバーで 16 個のアプリを管理し、アプリごとに PuppyRouter キーを設定できます。"
+    },
+    {
+      "type": "new",
+      "zh": "Grok 官方卡可绑定授权中心的 xAI 账号，多账号切换",
+      "zh-TW": "Grok 官方卡可綁定授權中心的 xAI 帳號，多帳號切換",
+      "en": "Bind Grok Official cards to xAI accounts and switch between them",
+      "ja": "Grok 公式カードに xAI アカウントを紐付けて切り替え可能に"
+    },
+    {
+      "type": "new",
+      "zh": "插件页支持 Antigravity CLI",
+      "zh-TW": "外掛頁支援 Antigravity CLI",
+      "en": "The Plugins page now supports Antigravity CLI",
+      "ja": "プラグイン画面が Antigravity CLI に対応"
+    },
+    {
+      "type": "new",
+      "zh": "用量统计按供应商和模型显示缓存命中率",
+      "zh-TW": "用量統計按供應商和模型顯示快取命中率",
+      "en": "See the cache hit rate per provider and per model in usage stats",
+      "ja": "使用量でプロバイダー別・モデル別のキャッシュヒット率を表示"
+    }
+  ],
+  "details": {
+    "zh": "从 3.19.5 升级时，保留账户、已有供应商、密钥选择和自定义模型。新增应用需要单独选择密钥并明确启用。支持的应用可在直连、路由和聚合之间切换。Grok Build 可管理 MCP、Skills、提示词和会话，并可切回已有的官方登录。\n\n加固多处安全检查，数据库、路由和会话搜索更快",
+    "zh-TW": "從 3.19.5 升級會保留帳戶、供應商、金鑰選擇與自訂模型。新增的應用程式須個別選擇並啟用金鑰。支援的應用程式可使用直連、路由及聚合。Grok Build 可管理 MCP、Skills、提示詞及工作階段，亦可切回原有的官方登入。\n\n加固多處安全檢查，資料庫、路由和工作階段搜尋更快",
+    "en": "Upgrading from 3.19.5 keeps your account, providers, key choices and custom models. Choose and enable a key separately for each new app. Compatible apps support Direct, Route and Stack. Grok Build now manages MCP, Skills, prompts and sessions and can restore the existing official login.\n\nHardened security checks; faster database, routing and session search",
+    "ja": "3.19.5 から更新しても、アカウント、プロバイダー、選択済みのキー、カスタムモデルは引き継がれます。追加されたアプリではキーを個別に選択して有効にしてください。対応アプリでは直結、ルーティング、集約を選べます。Grok Build では MCP、Skills、プロンプト、セッションを管理でき、元の公式ログインにも戻せます。\n\nセキュリティチェックを強化し、データベース・ルーティング・会話検索を高速化"
+  }
+}

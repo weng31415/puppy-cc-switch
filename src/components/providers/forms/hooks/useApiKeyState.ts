@@ -9,6 +9,11 @@ import {
 interface UseApiKeyStateProps {
   initialConfig?: string;
   onConfigChange: (config: string) => void;
+  /**
+   * 现读当前配置。`initialConfig` 是调用方渲染期取的快照，可能早于别处（如 JSON
+   * 编辑器）的写入，改 API Key 时若基于旧快照重建整份 JSON 会覆盖那些改动。
+   */
+  getConfig?: () => string;
   selectedPresetId: string | null;
   category?: ProviderCategory;
   appType?: string;
@@ -22,6 +27,7 @@ interface UseApiKeyStateProps {
 export function useApiKeyState({
   initialConfig,
   onConfigChange,
+  getConfig,
   selectedPresetId,
   category,
   appType,
@@ -57,18 +63,15 @@ export function useApiKeyState({
       setApiKey(key);
 
       const configString = setApiKeyInConfig(
-        initialConfig || "{}",
+        getConfig ? getConfig() || "{}" : initialConfig || "{}",
         key.trim(),
         {
-          // 最佳实践：仅在"新增模式"且"非官方类别"时补齐缺失字段
-          // - 新增模式：selectedPresetId !== null
-          // - 非官方类别：category !== undefined && category !== "official"
+          // 最佳实践：仅在"非官方/非云厂商类别"时补齐缺失字段
           // - 官方类别：不创建字段（UI 也会禁用输入框）
-          // - 未传入 category：不创建字段（避免意外行为）
+          // - 云厂商类别：通常使用专用鉴权字段，不自动创建 Anthropic key
+          // - 未传入 category：按历史导入/自定义 provider 处理，允许补齐
           createIfMissing:
-            selectedPresetId !== null &&
-            category !== undefined &&
-            category !== "official",
+            category !== "official" && category !== "cloud_provider",
           appType,
           apiKeyField,
         },
@@ -77,6 +80,7 @@ export function useApiKeyState({
       onConfigChange(configString);
     },
     [
+      getConfig,
       initialConfig,
       selectedPresetId,
       category,
@@ -90,10 +94,13 @@ export function useApiKeyState({
     (config: string, isEditMode: boolean) => {
       return (
         selectedPresetId !== null ||
+        (isEditMode &&
+          category !== "official" &&
+          category !== "cloud_provider") ||
         (isEditMode && hasApiKeyField(config, appType))
       );
     },
-    [selectedPresetId, appType],
+    [selectedPresetId, category, appType],
   );
 
   return {

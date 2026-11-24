@@ -7,9 +7,17 @@ export type AppType =
   | "claude-desktop"
   | "codex"
   | "gemini"
+  | "grokbuild"
   | "opencode"
   | "openclaw"
-  | "hermes";
+  | "hermes"
+  | "pi"
+  | "mcode"
+  | "kimi"
+  | "dsh"
+  | "agy"
+  | "omp"
+  | "copilot";
 
 /** Skill 应用启用状态 */
 export interface SkillApps {
@@ -17,9 +25,25 @@ export interface SkillApps {
   "claude-desktop"?: boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild?: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
+  mcode?: boolean;
+  kimi?: boolean;
+  dsh?: boolean;
+  agy?: boolean;
+  omp?: boolean;
+  copilot?: boolean;
+  workbuddy?: boolean;
+}
+
+/** 设置了访问令牌的主机（读私有仓库用，令牌本身不经前端读回） */
+export interface SkillRepoTokens {
+  hosts: string[];
+  /** 令牌存在系统凭据存储里；false 时存在本机仅自己可读的文件里 */
+  secureStorage: boolean;
 }
 
 /** 已安装的 Skill（v3.10.0+ 统一结构） */
@@ -28,6 +52,8 @@ export interface InstalledSkill {
   name: string;
   description?: string;
   directory: string;
+  /** 仓库所在主机；不写即 github.com，GitLab 仓库是实例的主机名 */
+  repoHost?: string;
   repoOwner?: string;
   repoName?: string;
   repoBranch?: string;
@@ -40,6 +66,8 @@ export interface InstalledSkill {
 
 export interface SkillUninstallResult {
   backupPath?: string;
+  preservedPiPath?: string;
+  piCleanupIncomplete?: boolean;
 }
 
 export interface SkillBackupEntry {
@@ -56,6 +84,8 @@ export interface DiscoverableSkill {
   description: string;
   directory: string;
   readmeUrl?: string;
+  /** 仓库所在主机；不写即 github.com（后端总会带上，skills.sh 的结果不带） */
+  repoHost?: string;
   repoOwner: string;
   repoName: string;
   repoBranch: string;
@@ -76,25 +106,56 @@ export interface ImportSkillSelection {
   apps: SkillApps;
 }
 
-/** 技能对象（兼容旧 API） */
-export interface Skill {
-  key: string;
-  name: string;
-  description: string;
-  directory: string;
-  readmeUrl?: string;
-  installed: boolean;
-  repoOwner?: string;
-  repoName?: string;
-  repoBranch?: string;
-}
-
 /** Skill 更新信息 */
 export interface SkillUpdateInfo {
   id: string;
   name: string;
   currentHash?: string;
   remoteHash: string;
+}
+
+/** 没有读到的仓库（发现、检查更新时逐仓库报告） */
+export interface SkillRepoFailure {
+  owner: string;
+  name: string;
+  branch: string;
+  /** 原始错误；下载类错误是结构化 JSON，用 formatSkillError / skillErrorReason 解析 */
+  error: string;
+}
+
+/** 发现结果：读到的 Skill + 没读到的仓库 */
+export interface SkillDiscoveryResult {
+  skills: DiscoverableSkill[];
+  failures: SkillRepoFailure[];
+}
+
+/** 检查更新结果：可更新的 Skill + 没读到的仓库 */
+export interface SkillUpdateCheckResult {
+  updates: SkillUpdateInfo[];
+  failures: SkillRepoFailure[];
+}
+
+/** ZIP 里因目录名已被占用而跳过的 Skill（#3749） */
+export interface ZipSkippedSkill {
+  directory: string;
+  existingId: string;
+  existingName: string;
+}
+
+/** 从 ZIP 安装的结果 */
+export interface ZipInstallResult {
+  installed: InstalledSkill[];
+  skipped: ZipSkippedSkill[];
+}
+
+/** 「立即重新同步」里单个应用的结果 */
+export interface SkillAppSyncOutcome {
+  app: AppType;
+  ok: boolean;
+  /** 整个应用没同步 */
+  error?: string;
+  /** 应用同步了，但这些 Skill 失败 */
+  failedSkills: Array<{ directory: string; error: string }>;
 }
 
 /** 存储位置迁移结果 */
@@ -125,6 +186,11 @@ export interface SkillsShSearchResult {
 
 /** 仓库配置 */
 export interface SkillRepo {
+  /**
+   * 仓库所在主机；不写即 github.com，其余按 GitLab 处理（自建实例可带端口）。
+   * 只是属性：仓库仍按 owner + name 定位，GitLab 的 owner 是分组路径，可含 `/`。
+   */
+  host?: string;
   owner: string;
   name: string;
   branch: string;
@@ -139,6 +205,11 @@ export const skillsApi = {
   /** 获取所有已安装的 Skills */
   async getInstalled(): Promise<InstalledSkill[]> {
     return await invoke("get_installed_skills");
+  },
+
+  /** 刷新本地 Skill 的过期元数据，返回实际更新的数量 */
+  async refreshLocalMetadata(): Promise<number> {
+    return await invoke("refresh_local_skill_metadata");
   },
 
   /** 获取可恢复的 Skill 备份列表 */
@@ -189,14 +260,30 @@ export const skillsApi = {
     return await invoke("import_skills_from_apps", { imports });
   },
 
-  /** 发现可安装的 Skills（从仓库获取） */
-  async discoverAvailable(): Promise<DiscoverableSkill[]> {
-    return await invoke("discover_available_skills");
+  /**
+   * 发现可安装的 Skills（从仓库获取），附带没读到的仓库。
+   * 后端按仓库缓存发现结果，forceRefresh 绕过缓存（手动刷新用）。
+   */
+  async discoverAvailable(forceRefresh = false): Promise<SkillDiscoveryResult> {
+    return await invoke("discover_available_skills", { forceRefresh });
   },
 
-  /** 检查 Skills 更新 */
-  async checkUpdates(): Promise<SkillUpdateInfo[]> {
+  /** 只发现一个已保存的仓库；仓库不存在或已停用时结果为空 */
+  async discoverRepo(
+    owner: string,
+    name: string,
+  ): Promise<SkillDiscoveryResult> {
+    return await invoke("discover_repo_skills", { owner, name });
+  },
+
+  /** 检查 Skills 更新，附带没读到的仓库 */
+  async checkUpdates(): Promise<SkillUpdateCheckResult> {
     return await invoke("check_skill_updates");
+  },
+
+  /** 立即重新同步：按开关和当前同步方式把 Skill 重新投影到各应用目录 */
+  async resyncToApps(): Promise<SkillAppSyncOutcome[]> {
+    return await invoke("resync_skills_to_apps");
   },
 
   /** 更新单个 Skill */
@@ -211,6 +298,21 @@ export const skillsApi = {
     return await invoke("migrate_skill_storage", { target });
   },
 
+  /** puppyrouter app 目录下放 Skill 主副本的路径（改过配置目录就是改后的） */
+  async getCcSwitchSkillsDir(): Promise<string> {
+    return await invoke("get_cc_switch_skills_dir");
+  },
+
+  /** 在文件管理器里打开 puppyrouter app 目录下的 Skills 目录 */
+  async openCcSwitchSkillsDir(): Promise<void> {
+    await invoke("open_cc_switch_skills_dir");
+  },
+
+  /** 在文件管理器里打开某个已安装 Skill 的目录 */
+  async openSkillDir(directory: string): Promise<void> {
+    await invoke("open_skill_dir", { directory });
+  },
+
   /** 搜索 skills.sh 公共目录 */
   async searchSkillsSh(
     query: string,
@@ -218,35 +320,6 @@ export const skillsApi = {
     offset: number,
   ): Promise<SkillsShSearchResult> {
     return await invoke("search_skills_sh", { query, limit, offset });
-  },
-
-  // ========== 兼容旧 API ==========
-
-  /** 获取技能列表（兼容旧 API） */
-  async getAll(app: AppId = "claude"): Promise<Skill[]> {
-    if (app === "claude") {
-      return await invoke("get_skills");
-    }
-    return await invoke("get_skills_for_app", { app });
-  },
-
-  /** 安装技能（兼容旧 API） */
-  async install(directory: string, app: AppId = "claude"): Promise<boolean> {
-    if (app === "claude") {
-      return await invoke("install_skill", { directory });
-    }
-    return await invoke("install_skill_for_app", { app, directory });
-  },
-
-  /** 卸载技能（兼容旧 API） */
-  async uninstall(
-    directory: string,
-    app: AppId = "claude",
-  ): Promise<SkillUninstallResult> {
-    if (app === "claude") {
-      return await invoke("uninstall_skill", { directory });
-    }
-    return await invoke("uninstall_skill_for_app", { app, directory });
   },
 
   // ========== 仓库管理 ==========
@@ -266,6 +339,23 @@ export const skillsApi = {
     return await invoke("remove_skill_repo", { owner, name });
   },
 
+  // ========== 仓库访问令牌（按主机，只在本机） ==========
+
+  /** 设置了访问令牌的主机（不含令牌本身） */
+  async getRepoTokens(): Promise<SkillRepoTokens> {
+    return await invoke("get_skill_repo_tokens");
+  },
+
+  /** 保存（覆盖）一台主机的访问令牌，返回规范化后的主机名 */
+  async setRepoToken(host: string, token: string): Promise<string> {
+    return await invoke("set_skill_repo_token", { host, token });
+  },
+
+  /** 删除一台主机的访问令牌，返回规范化后的主机名 */
+  async deleteRepoToken(host: string): Promise<string> {
+    return await invoke("delete_skill_repo_token", { host });
+  },
+
   // ========== ZIP 安装 ==========
 
   /** 打开 ZIP 文件选择对话框 */
@@ -277,7 +367,7 @@ export const skillsApi = {
   async installFromZip(
     filePath: string,
     currentApp: AppId,
-  ): Promise<InstalledSkill[]> {
+  ): Promise<ZipInstallResult> {
     return await invoke("install_skills_from_zip", { filePath, currentApp });
   },
 };

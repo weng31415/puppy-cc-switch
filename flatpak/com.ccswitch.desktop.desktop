@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=puppyrouter app
-Comment=All-in-One Assistant for Claude Code, Codex & Gemini CLI
-Exec=puppyrouter-app
+Name=PuppyRouter App
+Comment=Manage model providers for 16 AI applications
+Exec=puppyrouter-app %u
+MimeType=x-scheme-handler/puppyrouter;x-scheme-handler/ccswitch;
 Icon=com.ccswitch.desktop
 Terminal=false
 Categories=Utility;Development;

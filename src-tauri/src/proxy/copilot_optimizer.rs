@@ -28,6 +28,40 @@ pub struct CopilotClassification {
     pub is_subagent: bool,
 }
 
+/// Classify the latest user/tool input without applying Claude-specific heuristics.
+pub fn classify_responses_request(body: &Value) -> CopilotClassification {
+    let initiator_for_item = |item: &Value| {
+        let item_type = item.get("type").and_then(Value::as_str);
+        if item_type.is_some_and(super::providers::codex_chat_history::is_call_output_item_type) {
+            return Some("agent");
+        }
+        match item.get("role").and_then(Value::as_str) {
+            Some("user") => Some("user"),
+            Some("assistant" | "system" | "developer") => None,
+            _ => match item_type {
+                Some("reasoning" | "function_call" | "custom_tool_call" | "tool_search_call") => {
+                    None
+                }
+                _ => Some("user"),
+            },
+        }
+    };
+    // Full-history requests can contain old tool outputs before a new user turn.
+    let initiator = match body.get("input") {
+        Some(Value::Array(items)) => items.iter().rev().find_map(initiator_for_item),
+        Some(item @ Value::Object(_)) => initiator_for_item(item),
+        _ => None,
+    }
+    .unwrap_or("user");
+
+    CopilotClassification {
+        initiator,
+        is_warmup: false,
+        is_compact: false,
+        is_subagent: false,
+    }
+}
+
 /// 分类 Anthropic 格式的请求体，决定 Copilot 请求头。
 ///
 /// 分类算法（只检查最后一条消息，与参考实现 caozhiyuan/copilot-api 对齐）：
@@ -185,10 +219,16 @@ fn is_compact_request(body: &Value) -> bool {
 /// tool_result + text 的用户消息。text block 的存在让 Copilot 将其计为 premium request。
 ///
 /// **跨消息合并**（补充）：连续的 tool_result-only 用户消息合并为一条。
-pub fn merge_tool_results(mut body: Value) -> Value {
+#[cfg(test)]
+pub fn merge_tool_results(body: Value) -> Value {
+    merge_tool_results_with_changes(body).0
+}
+
+pub(crate) fn merge_tool_results_with_changes(mut body: Value) -> (Value, bool) {
+    let mut changed = false;
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(msgs) if !msgs.is_empty() => msgs,
-        _ => return body,
+        _ => return (body, changed),
     };
 
     // Phase 1: 消息内部合并 — 将 text block 吸收进 tool_result block
@@ -226,43 +266,39 @@ pub fn merge_tool_results(mut body: Value) -> Value {
         // 合并策略（与参考实现对齐）
         let merged = merge_blocks_into_tool_results(tool_results, text_blocks);
         msg["content"] = Value::Array(merged);
+        changed = true;
     }
 
     // Phase 2: 跨消息合并 — 连续的 tool_result-only 用户消息合并
-    let messages = match body.get("messages").and_then(|m| m.as_array()) {
-        Some(messages) => messages.clone(),
-        None => return body,
-    };
-    if messages.len() <= 1 {
-        return body;
+    if !messages
+        .windows(2)
+        .any(|pair| is_tool_result_only_message(&pair[0]) && is_tool_result_only_message(&pair[1]))
+    {
+        return (body, changed);
     }
 
     let mut merged_msgs: Vec<Value> = Vec::with_capacity(messages.len());
-    let mut i = 0;
-
-    while i < messages.len() {
-        if is_tool_result_only_message(&messages[i]) {
-            let mut combined_content: Vec<Value> = Vec::new();
-            while i < messages.len() && is_tool_result_only_message(&messages[i]) {
-                if let Some(content) = messages[i].get("content").and_then(|c| c.as_array()) {
-                    combined_content.extend(content.iter().cloned());
-                }
-                i += 1;
+    let mut messages = std::mem::take(messages).into_iter().peekable();
+    while let Some(mut message) = messages.next() {
+        if is_tool_result_only_message(&message)
+            && messages.peek().is_some_and(is_tool_result_only_message)
+        {
+            let mut combined_content = std::mem::take(message["content"].as_array_mut().unwrap());
+            while messages.peek().is_some_and(is_tool_result_only_message) {
+                let mut next = messages.next().unwrap();
+                combined_content.append(next["content"].as_array_mut().unwrap());
             }
-            if !combined_content.is_empty() {
-                merged_msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": combined_content
-                }));
-            }
-        } else {
-            merged_msgs.push(messages[i].clone());
-            i += 1;
+            message = serde_json::json!({
+                "role": "user",
+                "content": combined_content
+            });
+            changed = true;
         }
+        merged_msgs.push(message);
     }
 
     body["messages"] = Value::Array(merged_msgs);
-    body
+    (body, changed)
 }
 
 /// 基于最后一条用户消息内容生成确定性 Request ID。
@@ -374,10 +410,16 @@ fn detect_subagent(body: &Value) -> bool {
 /// 但后续 user 消息中的 tool_result 仍在。上游 API 可能因不匹配而报错/重试。
 ///
 /// 与 copilot-api 的 `sanitizeOrphanToolResults` 对齐。
-pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
+#[cfg(test)]
+pub fn sanitize_orphan_tool_results(body: Value) -> Value {
+    sanitize_orphan_tool_results_with_changes(body).0
+}
+
+pub(crate) fn sanitize_orphan_tool_results_with_changes(mut body: Value) -> (Value, bool) {
+    let mut changed = false;
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(msgs) if msgs.len() >= 2 => msgs,
-        _ => return body,
+        _ => return (body, changed),
     };
 
     // Anthropic 协议要求 tool_result 紧跟其对应 tool_use 所在的 assistant turn。
@@ -434,6 +476,7 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
                         .join("\n"),
                     _ => String::new(),
                 };
+                changed = true;
                 *block = serde_json::json!({
                     "type": "text",
                     "text": format!("[Tool result for {}]: {}", tool_use_id, content_text)
@@ -442,7 +485,7 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
         }
     }
 
-    body
+    (body, changed)
 }
 
 /// 请求前主动剥离所有 assistant 消息里的 thinking / redacted_thinking block
@@ -626,6 +669,70 @@ fn is_tool_result_only_message(msg: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn responses_classification_uses_the_latest_user_or_tool_input() {
+        let tool = json!({
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "done"
+        });
+        let user = json!({"role": "user", "content": "A new question"});
+        for (input, expected) in [
+            (json!([user.clone(), tool.clone()]), "agent"),
+            (json!([tool.clone(), user.clone()]), "user"),
+            (
+                json!([
+                    user.clone(),
+                    tool.clone(),
+                    {"type": "reasoning", "summary": []},
+                    {"role": "developer", "content": "Use the output"}
+                ]),
+                "agent",
+            ),
+            (
+                json!([
+                    tool.clone(),
+                    user,
+                    {"role": "system", "content": "Continue"}
+                ]),
+                "user",
+            ),
+            (tool.clone(), "agent"),
+            (json!("A new question"), "user"),
+            (json!([]), "user"),
+            (json!(null), "user"),
+            (json!([tool, {"type": "unknown"}]), "user"),
+        ] {
+            let body = json!({"input": input, "previous_response_id": "resp-previous"});
+            let result = classify_responses_request(&body);
+            assert_eq!(result.initiator, expected, "{body}");
+            assert!(!result.is_warmup);
+            assert!(!result.is_compact);
+            assert!(!result.is_subagent);
+        }
+    }
+
+    #[test]
+    fn responses_classification_does_not_use_claude_message_heuristics() {
+        for body in [
+            json!({}),
+            json!({
+                "input": "A new question",
+                "system": "You are a helpful AI assistant tasked with summarizing conversations",
+                "messages": [{"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"},
+                    {"type": "text", "text": "__SUBAGENT_MARKER__"}
+                ]}]
+            }),
+        ] {
+            let result = classify_responses_request(&body);
+            assert_eq!(result.initiator, "user");
+            assert!(!result.is_warmup);
+            assert!(!result.is_compact);
+            assert!(!result.is_subagent);
+        }
+    }
 
     // === classify_request 测试 ===
 
@@ -934,6 +1041,62 @@ mod tests {
         assert_eq!(messages.len(), 3);
         let merged_content = messages[2]["content"].as_array().unwrap();
         assert_eq!(merged_content.len(), 2);
+    }
+
+    #[test]
+    fn isolated_tool_results_keep_metadata_and_history_allocations() {
+        let body = serde_json::json!({"messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "x".repeat(1024 * 1024)},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "one", "content": "result"}], "metadata": {"keep": true}},
+            {"role": "assistant", "content": "next"},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "two", "content": "result"}]}
+        ]});
+        let expected = body.clone();
+        let history = body["messages"][1]["content"].as_str().unwrap().as_ptr();
+
+        let (result, changed) = merge_tool_results_with_changes(body);
+
+        assert!(!changed);
+        assert_eq!(result, expected);
+        assert_eq!(
+            result["messages"][1]["content"].as_str().unwrap().as_ptr(),
+            history
+        );
+    }
+
+    #[test]
+    fn only_actual_tool_result_merges_mark_the_body_changed() {
+        let single = serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "one", "content": "result"}
+        ], "metadata": {"keep": true}});
+        let body = serde_json::json!({"messages": [
+            single,
+            {"role": "assistant", "content": "next"},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "two", "content": "second"}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "three", "content": "third"}]}
+        ]});
+        let (result, changed) = merge_tool_results_with_changes(body);
+        assert!(changed);
+        assert_eq!(result["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(result["messages"][0], single);
+        assert_eq!(result["messages"][2]["content"][0]["tool_use_id"], "two");
+        assert_eq!(result["messages"][2]["content"][1]["tool_use_id"], "three");
+
+        let (result, changed) = merge_tool_results_with_changes(serde_json::json!({"messages": [{
+            "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "one", "content": "result"},
+                {"type": "text", "text": "hook reminder"}
+            ]
+        }]}));
+        assert!(
+            changed,
+            "an in-message merge still requires privacy filtering"
+        );
+        assert_eq!(
+            result["messages"][0]["content"].as_array().unwrap().len(),
+            1
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Pencil, RotateCcw, Check, X, Download, Trash2 } from "lucide-react";
 import {
   Dialog,
@@ -18,25 +18,29 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { HoverTip } from "@/components/ui/hover-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useBackupManager } from "@/hooks/useBackupManager";
+import {
+  BackupStorageSection,
+  formatBytes,
+} from "@/components/settings/BackupStorageSection";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface BackupListSectionProps {
   backupIntervalHours?: number;
   backupRetainCount?: number;
+  backupMaxTotalMb?: number;
   onSettingsChange: (updates: {
     backupIntervalHours?: number;
     backupRetainCount?: number;
+    backupMaxTotalMb?: number;
   }) => void;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+/** Size limit choices in GB; 0 means unlimited (the default). */
+const MAX_TOTAL_GB_OPTIONS = [1, 2, 5, 10, 20];
 
 function formatBackupDate(isoString: string): string {
   try {
@@ -64,9 +68,16 @@ function getDisplayName(filename: string): string {
 export function BackupListSection({
   backupIntervalHours,
   backupRetainCount,
+  backupMaxTotalMb,
   onSettingsChange,
 }: BackupListSectionProps) {
   const { t } = useTranslation();
+  const renameLabel = t("settings.backupManager.rename", {
+    defaultValue: "Rename",
+  });
+  const deleteLabel = t("settings.backupManager.delete", {
+    defaultValue: "Delete",
+  });
   const {
     backups,
     isLoading,
@@ -164,6 +175,7 @@ export function BackupListSection({
 
   const intervalValue = String(backupIntervalHours ?? 24);
   const retainValue = String(backupRetainCount ?? 10);
+  const maxTotalValue = String(backupMaxTotalMb ?? 0);
 
   return (
     <div className="space-y-4">
@@ -250,6 +262,46 @@ export function BackupListSection({
         </div>
       </div>
 
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-sm">
+              {t("settings.backupManager.maxTotalLabel", {
+                defaultValue: "Backup Size Limit",
+              })}
+            </Label>
+            <Select
+              value={maxTotalValue}
+              onValueChange={(v) =>
+                onSettingsChange({ backupMaxTotalMb: Number(v) })
+              }
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">
+                  {t("settings.backupManager.maxTotalUnlimited", {
+                    defaultValue: "No limit",
+                  })}
+                </SelectItem>
+                {MAX_TOTAL_GB_OPTIONS.map((gb) => (
+                  <SelectItem key={gb} value={String(gb * 1024)}>
+                    {`${gb} GB`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <p className="text-xs text-fg-2">
+          {t("settings.backupManager.maxTotalHint", {
+            defaultValue:
+              "Off by default. When set, the oldest backups are deleted once the backups folder grows past this size. The newest backup and any backup used by a restore are always kept, so the folder can stay above the limit when a single backup is larger. Applies at the next backup or the daily maintenance run.",
+          })}
+        </p>
+      </div>
+
       {/* Backup list */}
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -293,9 +345,9 @@ export function BackupListSection({
         </div>
 
         {isLoading ? (
-          <div className="text-sm text-muted-foreground py-2">Loading...</div>
+          <div className="text-sm text-fg-2 py-2">Loading...</div>
         ) : backups.length === 0 ? (
-          <div className="text-sm text-muted-foreground py-2">
+          <div className="text-sm text-fg-2 py-2">
             {t("settings.backupManager.empty", {
               defaultValue: "No backups yet",
             })}
@@ -305,7 +357,7 @@ export function BackupListSection({
             {backups.map((backup) => (
               <div
                 key={backup.filename}
-                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors text-sm"
+                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-subtle hover:bg-subtle transition-colors text-sm"
               >
                 <div className="flex-1 min-w-0">
                   {editingFilename === backup.filename ? (
@@ -349,8 +401,8 @@ export function BackupListSection({
                       <div className="font-mono text-xs truncate">
                         {getDisplayName(backup.filename)}
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatBackupDate(backup.createdAt)} &middot;{" "}
+                      <div className="text-xs text-fg-2">
+                        {formatBackupDate(backup.createdAt)} &middot;{""}
                         {formatBytes(backup.sizeBytes)}
                       </div>
                     </>
@@ -358,30 +410,30 @@ export function BackupListSection({
                 </div>
                 {editingFilename !== backup.filename && (
                   <div className="flex items-center gap-1 shrink-0">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => handleStartRename(backup.filename)}
-                      disabled={isRestoring || isRenaming || isDeleting}
-                      title={t("settings.backupManager.rename", {
-                        defaultValue: "Rename",
-                      })}
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-destructive hover:text-destructive"
-                      onClick={() => setDeleteFilename(backup.filename)}
-                      disabled={isRestoring || isDeleting}
-                      title={t("settings.backupManager.delete", {
-                        defaultValue: "Delete",
-                      })}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    <HoverTip content={renameLabel}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => handleStartRename(backup.filename)}
+                        disabled={isRestoring || isRenaming || isDeleting}
+                        aria-label={renameLabel}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    </HoverTip>
+                    <HoverTip content={deleteLabel}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        onClick={() => setDeleteFilename(backup.filename)}
+                        disabled={isRestoring || isDeleting}
+                        aria-label={deleteLabel}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </HoverTip>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -405,6 +457,8 @@ export function BackupListSection({
           </div>
         )}
       </div>
+
+      <BackupStorageSection />
 
       {/* Restore Confirmation Dialog */}
       <Dialog

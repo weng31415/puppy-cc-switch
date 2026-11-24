@@ -26,7 +26,7 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
         ProxyError::UpstreamError { status, .. } => *status,
 
         // 超时错误：504 Gateway Timeout
-        ProxyError::Timeout(_) | ProxyError::StreamIdleTimeout(_) => 504,
+        ProxyError::Timeout(_) => 504,
 
         // 转发失败/连接失败：502 Bad Gateway
         ProxyError::ForwardFailed(_) => 502,
@@ -43,14 +43,12 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
         // 重试耗尽：503 Service Unavailable
         ProxyError::MaxRetriesExceeded => 503,
 
-        // Provider 不健康：503 Service Unavailable
-        ProxyError::ProviderUnhealthy(_) => 503,
-
         // 配置错误/无效请求：400 Bad Request
         ProxyError::ConfigError(_) | ProxyError::InvalidRequest(_) => 400,
 
         // 认证错误：401 Unauthorized
         ProxyError::AuthError(_) => 401,
+        ProxyError::CodexQuotaProtection(_) | ProxyError::CodexOfficialLoginPaused => 403,
 
         // 数据库错误：500 Internal Server Error
         ProxyError::DatabaseError(_) => 500,
@@ -67,11 +65,13 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 pub fn get_error_message(error: &ProxyError) -> String {
     match error {
         ProxyError::UpstreamError { status, body } => {
-            if let Some(body) = body {
-                format!("上游错误 ({status}): {body}")
-            } else {
-                format!("上游错误 ({status})")
-            }
+            // 上游没给内容时要明说，否则用户会以为是 puppyrouter app 把错误内容吞了（#6895）
+            let body = body
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("上游未返回错误内容");
+            format!("上游错误 ({status}): {body}")
         }
         ProxyError::Timeout(msg) => format!("请求超时: {msg}"),
         ProxyError::ForwardFailed(msg) => format!("转发失败: {msg}"),
@@ -79,7 +79,6 @@ pub fn get_error_message(error: &ProxyError) -> String {
         ProxyError::AllProvidersCircuitOpen => "所有供应商已熔断，无可用渠道".to_string(),
         ProxyError::NoProvidersConfigured => "未配置供应商".to_string(),
         ProxyError::MaxRetriesExceeded => "所有 Provider 都失败，重试耗尽".to_string(),
-        ProxyError::ProviderUnhealthy(msg) => format!("Provider 不健康: {msg}"),
         ProxyError::DatabaseError(msg) => format!("数据库错误: {msg}"),
         ProxyError::TransformError(msg) => format!("请求/响应转换错误: {msg}"),
         _ => error.to_string(),
@@ -120,6 +119,14 @@ mod tests {
     #[test]
     fn test_map_status_matches_proxy_error_response_semantics() {
         assert_eq!(
+            map_proxy_error_to_status(&ProxyError::CodexQuotaProtection("protected".to_string())),
+            403
+        );
+        assert_eq!(
+            map_proxy_error_to_status(&ProxyError::CodexOfficialLoginPaused),
+            403
+        );
+        assert_eq!(
             map_proxy_error_to_status(&ProxyError::AuthError("bad token".to_string())),
             401
         );
@@ -135,10 +142,6 @@ mod tests {
             map_proxy_error_to_status(&ProxyError::TransformError("bad transform".to_string())),
             422
         );
-        assert_eq!(
-            map_proxy_error_to_status(&ProxyError::StreamIdleTimeout(30)),
-            504
-        );
     }
 
     #[test]
@@ -151,5 +154,26 @@ mod tests {
         assert!(msg.contains("上游错误"));
         assert!(msg.contains("500"));
         assert!(msg.contains("Internal Server Error"));
+    }
+
+    #[test]
+    fn test_get_error_message_empty_body() {
+        let error_empty = ProxyError::UpstreamError {
+            status: 502,
+            body: Some("   ".to_string()),
+        };
+        assert_eq!(
+            get_error_message(&error_empty),
+            "上游错误 (502): 上游未返回错误内容"
+        );
+
+        let error_none = ProxyError::UpstreamError {
+            status: 502,
+            body: None,
+        };
+        assert_eq!(
+            get_error_message(&error_none),
+            "上游错误 (502): 上游未返回错误内容"
+        );
     }
 }

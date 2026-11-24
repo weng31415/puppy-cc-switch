@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
@@ -22,7 +22,6 @@ export function RectifierConfigPanel() {
     enabled: false,
     thinkingOptimizer: true,
     cacheInjection: true,
-    cacheTtl: "1h",
   });
   const [isLoading, setIsLoading] = useState(true);
 
@@ -69,9 +68,6 @@ export function RectifierConfigPanel() {
       <div className="flex items-center justify-between">
         <div className="space-y-0.5">
           <Label>{t("settings.advanced.rectifier.enabled")}</Label>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.advanced.rectifier.enabledDescription")}
-          </p>
         </div>
         <Switch
           checked={config.enabled}
@@ -80,13 +76,13 @@ export function RectifierConfigPanel() {
       </div>
 
       <div className="space-y-4">
-        <h4 className="text-sm font-medium text-muted-foreground">
+        <h4 className="text-sm font-medium text-fg-2">
           {t("settings.advanced.rectifier.requestGroup")}
         </h4>
         <div className="flex items-center justify-between pl-4">
           <div className="space-y-0.5">
             <Label>{t("settings.advanced.rectifier.thinkingSignature")}</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-fg-2">
               {t("settings.advanced.rectifier.thinkingSignatureDescription")}
             </p>
           </div>
@@ -101,7 +97,7 @@ export function RectifierConfigPanel() {
         <div className="flex items-center justify-between pl-4">
           <div className="space-y-0.5">
             <Label>{t("settings.advanced.rectifier.thinkingBudget")}</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-fg-2">
               {t("settings.advanced.rectifier.thinkingBudgetDescription")}
             </p>
           </div>
@@ -116,7 +112,7 @@ export function RectifierConfigPanel() {
         <div className="flex items-center justify-between pl-4">
           <div className="space-y-0.5">
             <Label>{t("settings.advanced.rectifier.mediaFallback")}</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-fg-2">
               {t("settings.advanced.rectifier.mediaFallbackDescription")}
             </p>
           </div>
@@ -131,7 +127,7 @@ export function RectifierConfigPanel() {
         <div className="flex items-center justify-between pl-8">
           <div className="space-y-0.5">
             <Label>{t("settings.advanced.rectifier.mediaHeuristic")}</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-fg-2">
               {t("settings.advanced.rectifier.mediaHeuristicDescription")}
             </p>
           </div>
@@ -150,7 +146,7 @@ export function RectifierConfigPanel() {
           <h3 className="text-sm font-medium">
             {t("settings.advanced.optimizer.title")}
           </h3>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-fg-2">
             {t("settings.advanced.optimizer.description")}
           </p>
         </div>
@@ -174,7 +170,7 @@ export function RectifierConfigPanel() {
                 <Label>
                   {t("settings.advanced.optimizer.thinkingOptimizer")}
                 </Label>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-fg-2">
                   {t(
                     "settings.advanced.optimizer.thinkingOptimizerDescription",
                   )}
@@ -192,7 +188,7 @@ export function RectifierConfigPanel() {
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label>{t("settings.advanced.optimizer.cacheInjection")}</Label>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-fg-2">
                   {t("settings.advanced.optimizer.cacheInjectionDescription")}
                 </p>
               </div>
@@ -204,31 +200,6 @@ export function RectifierConfigPanel() {
                 }
               />
             </div>
-
-            {optimizerConfig.cacheInjection && (
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>{t("settings.advanced.optimizer.cacheTtl")}</Label>
-                </div>
-                <select
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                  value={optimizerConfig.cacheTtl}
-                  disabled={
-                    !optimizerConfig.enabled || !optimizerConfig.cacheInjection
-                  }
-                  onChange={(e) =>
-                    handleOptimizerChange({ cacheTtl: e.target.value })
-                  }
-                >
-                  <option value="5m">
-                    {t("settings.advanced.optimizer.cacheTtl5m")}
-                  </option>
-                  <option value="1h">
-                    {t("settings.advanced.optimizer.cacheTtl1h")}
-                  </option>
-                </select>
-              </div>
-            )}
           </div>
         </div>
       </div>

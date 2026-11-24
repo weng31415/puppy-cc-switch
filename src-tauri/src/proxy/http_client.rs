@@ -3,21 +3,78 @@
 //! 提供支持全局代理配置的 HTTP 客户端。
 //! 所有需要发送 HTTP 请求的模块都应使用此模块提供的客户端。
 
-use once_cell::sync::OnceCell;
 use reqwest::Client;
 use std::env;
 use std::net::IpAddr;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 /// 全局 HTTP 客户端实例
-static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+static GLOBAL_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
+
+/// 不跟随重定向的全局客户端（与 GLOBAL_CLIENT 共享代理配置，避免高频重建连接池）
+static NO_REDIRECT_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
+
+/// 仅允许 HTTPS 的全局客户端（与 GLOBAL_CLIENT 共享代理配置）
+static HTTPS_ONLY_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
+
+/// 不走任何代理的客户端：上游是本机地址（Ollama、LM Studio 等）时使用
+static DIRECT_CLIENT: OnceLock<Client> = OnceLock::new();
+
+/// 不走代理且不跟随重定向的本机直连客户端
+static DIRECT_NO_REDIRECT_CLIENT: OnceLock<Client> = OnceLock::new();
 
 /// 当前代理 URL（用于日志和状态查询）
-static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
+static CURRENT_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 
 /// puppyrouter app 代理服务器当前监听的端口
-static CC_SWITCH_PROXY_PORT: OnceCell<RwLock<u16>> = OnceCell::new();
+static CC_SWITCH_PROXY_PORT: OnceLock<RwLock<u16>> = OnceLock::new();
+
+/// 当前活跃的 puppyrouter app 代理监听地址与端口（用于防止内部请求回打自身代理）
+static ACTIVE_PROXY_LISTENERS: OnceLock<RwLock<Vec<(String, u16)>>> = OnceLock::new();
+
+/// 活跃代理监听器的 RAII 注册句柄，释放时自动反注册
+pub(crate) struct ActiveProxyListenerGuard {
+    address: String,
+    port: u16,
+}
+
+impl Drop for ActiveProxyListenerGuard {
+    fn drop(&mut self) {
+        if let Some(lock) = ACTIVE_PROXY_LISTENERS.get() {
+            if let Ok(mut list) = lock.write() {
+                if let Some(pos) = list
+                    .iter()
+                    .position(|(addr, port)| addr == &self.address && *port == self.port)
+                {
+                    list.swap_remove(pos);
+                }
+            }
+        }
+    }
+}
+
+/// 注册当前正在监听的 puppyrouter app 代理地址与端口
+pub(crate) fn register_active_proxy_listener(
+    address: impl Into<String>,
+    port: u16,
+) -> ActiveProxyListenerGuard {
+    let address = address.into();
+    let lock = ACTIVE_PROXY_LISTENERS.get_or_init(|| RwLock::new(Vec::new()));
+    if let Ok(mut list) = lock.write() {
+        list.push((address.clone(), port));
+    }
+    ActiveProxyListenerGuard { address, port }
+}
+
+/// 获取当前活跃的 puppyrouter app 代理监听地址列表
+pub(crate) fn active_proxy_listeners() -> Vec<(String, u16)> {
+    ACTIVE_PROXY_LISTENERS
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|list| list.clone())
+        .unwrap_or_default()
+}
 
 /// 设置 puppyrouter app 代理服务器的监听端口
 ///
@@ -49,10 +106,12 @@ fn get_proxy_port() -> u16 {
 ///
 /// # Arguments
 /// * `proxy_url` - 代理 URL，如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`
-///   传入 None 或空字符串表示不指定 App 代理，并跟随系统代理
+///   传入 None 或空字符串表示直连
 pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let client = build_client(effective_url)?;
+    let no_redirect_client = build_no_redirect_client(effective_url)?;
+    let https_only_client = build_https_only_client(effective_url)?;
 
     // 尝试初始化全局客户端，如果已存在则记录警告并使用 apply_proxy 更新
     if GLOBAL_CLIENT.set(RwLock::new(client.clone())).is_err() {
@@ -65,6 +124,9 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
         // 已初始化，改用 apply_proxy 更新
         return apply_proxy(proxy_url);
     }
+
+    set_or_replace_client(&NO_REDIRECT_CLIENT, no_redirect_client)?;
+    set_or_replace_client(&HTTPS_ONLY_CLIENT, https_only_client)?;
 
     // 初始化代理 URL 记录
     let _ = CURRENT_PROXY_URL.set(RwLock::new(effective_url.map(|s| s.to_string())));
@@ -85,7 +147,7 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
 /// 用于在持久化之前验证配置的有效性。
 ///
 /// # Arguments
-/// * `proxy_url` - 代理 URL，None 或空字符串表示跟随系统代理
+/// * `proxy_url` - 代理 URL，None 或空字符串表示直连
 ///
 /// # Returns
 /// 验证成功返回 Ok(())，失败返回错误信息
@@ -102,10 +164,12 @@ pub fn validate_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 /// 应在 validate_proxy 成功后调用。
 ///
 /// # Arguments
-/// * `proxy_url` - 代理 URL，None 或空字符串表示跟随系统代理
+/// * `proxy_url` - 代理 URL，None 或空字符串表示直连
 pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let new_client = build_client(effective_url)?;
+    let new_no_redirect = build_no_redirect_client(effective_url)?;
+    let new_https_only = build_https_only_client(effective_url)?;
 
     // 更新客户端
     if let Some(lock) = GLOBAL_CLIENT.get() {
@@ -118,6 +182,9 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         // 如果还没初始化，则初始化
         return init(proxy_url);
     }
+
+    set_or_replace_client(&NO_REDIRECT_CLIENT, new_no_redirect)?;
+    set_or_replace_client(&HTTPS_ONLY_CLIENT, new_https_only)?;
 
     // 更新代理 URL 记录
     if let Some(lock) = CURRENT_PROXY_URL.get() {
@@ -130,50 +197,6 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 
     log::info!(
         "[GlobalProxy] Applied: {}",
-        effective_url
-            .map(mask_url)
-            .unwrap_or_else(|| "direct connection".to_string())
-    );
-
-    Ok(())
-}
-
-/// 更新代理配置（热更新）
-///
-/// 可在运行时调用以更改代理设置，无需重启应用。
-/// 注意：此函数同时验证和应用，如果需要先验证后持久化再应用，
-/// 请使用 validate_proxy + apply_proxy 组合。
-///
-/// # Arguments
-/// * `proxy_url` - 新的代理 URL，None 或空字符串表示跟随系统代理
-#[allow(dead_code)]
-pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
-    let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
-    let new_client = build_client(effective_url)?;
-
-    // 更新客户端
-    if let Some(lock) = GLOBAL_CLIENT.get() {
-        let mut client = lock.write().map_err(|e| {
-            log::error!("[GlobalProxy] [GP-001] Failed to acquire write lock: {e}");
-            "Failed to update proxy: lock poisoned".to_string()
-        })?;
-        *client = new_client;
-    } else {
-        // 如果还没初始化，则初始化
-        return init(proxy_url);
-    }
-
-    // 更新代理 URL 记录
-    if let Some(lock) = CURRENT_PROXY_URL.get() {
-        let mut url = lock.write().map_err(|e| {
-            log::error!("[GlobalProxy] [GP-002] Failed to acquire URL write lock: {e}");
-            "Failed to update proxy URL record: lock poisoned".to_string()
-        })?;
-        *url = effective_url.map(|s| s.to_string());
-    }
-
-    log::info!(
-        "[GlobalProxy] Updated: {}",
         effective_url
             .map(mask_url)
             .unwrap_or_else(|| "direct connection".to_string())
@@ -196,9 +219,73 @@ pub fn get() -> Client {
         })
 }
 
+/// 按目标地址取客户端：本机地址直连，其余同 [`get`]
+///
+/// reqwest 不会自动绕开本机地址：配了全局代理时 `Proxy::all` 对所有目标生效，
+/// 跟随系统代理时也只认 `NO_PROXY` 环境变量（macOS 不读「不使用代理的主机」）。
+/// 本机推理服务因此会被送进代理，代理不能代连本机时请求就失败。
+pub fn get_for_url(url: &str) -> Client {
+    if is_loopback_url(url) {
+        direct_client()
+    } else {
+        get()
+    }
+}
+
+/// 发往 `url` 时应使用的上游代理：本机地址返回 None（直连），其余返回当前全局代理
+pub fn proxy_url_for(url: &str) -> Option<String> {
+    upstream_proxy_for(url, get_current_proxy_url())
+}
+
+fn upstream_proxy_for(url: &str, current: Option<String>) -> Option<String> {
+    if is_loopback_url(url) {
+        None
+    } else {
+        current
+    }
+}
+
+fn direct_client() -> Client {
+    DIRECT_CLIENT
+        .get_or_init(|| {
+            base_builder().no_proxy().build().unwrap_or_else(|e| {
+                log::warn!("[GlobalProxy] Failed to build direct client: {e}");
+                Client::new()
+            })
+        })
+        .clone()
+}
+
+/// 地址的主机是不是本机：`localhost`、`*.localhost`、`127.0.0.0/8`、`::1`
+pub fn is_loopback_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => host_is_loopback(domain),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        None => false,
+    }
+}
+
+fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return true;
+    }
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 /// 获取当前代理 URL
 ///
-/// 返回当前显式配置的代理 URL，None 表示跟随系统代理。
+/// 返回当前配置的代理 URL，None 表示直连。
 pub fn get_current_proxy_url() -> Option<String> {
     CURRENT_PROXY_URL
         .get()
@@ -206,15 +293,9 @@ pub fn get_current_proxy_url() -> Option<String> {
         .and_then(|url| url.clone())
 }
 
-/// 检查是否正在使用代理
-#[allow(dead_code)]
-pub fn is_proxy_enabled() -> bool {
-    get_current_proxy_url().is_some()
-}
-
-/// 构建 HTTP 客户端
-fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    let mut builder = Client::builder()
+/// 两种客户端共用的参数
+fn base_builder() -> reqwest::ClientBuilder {
+    Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
@@ -224,8 +305,121 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         .no_gzip()
         .no_brotli()
         .no_deflate()
-        .no_zstd();
+        .no_zstd()
+}
 
+fn set_or_replace_client(slot: &OnceLock<RwLock<Client>>, client: Client) -> Result<(), String> {
+    if let Some(lock) = slot.get() {
+        let mut guard = lock
+            .write()
+            .map_err(|_| "Failed to update HTTP client: lock poisoned".to_string())?;
+        *guard = client;
+    } else if let Err(existing) = slot.set(RwLock::new(client)) {
+        // 并发初始化竞争：改写已存在的槽位
+        if let Some(lock) = slot.get() {
+            let mut guard = lock
+                .write()
+                .map_err(|_| "Failed to update HTTP client: lock poisoned".to_string())?;
+            *guard = existing
+                .into_inner()
+                .map_err(|_| "Failed to update HTTP client: lock poisoned".to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn build_no_redirect_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_from(
+        base_builder().redirect(reqwest::redirect::Policy::none()),
+        proxy_url,
+    )
+}
+
+fn build_https_only_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_from(base_builder().https_only(true), proxy_url)
+}
+
+fn direct_no_redirect_client() -> Result<Client, String> {
+    if let Some(client) = DIRECT_NO_REDIRECT_CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = base_builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let _ = DIRECT_NO_REDIRECT_CLIENT.set(client.clone());
+    Ok(DIRECT_NO_REDIRECT_CLIENT.get().cloned().unwrap_or(client))
+}
+
+/// 不跟随重定向的客户端，代理设置与全局客户端一致。带自定义凭据请求头（如 `x-dsh-auth-token`）
+/// 的请求用它：reqwest 跨主机重定向时只剥掉标准认证头，自定义头会被带到新主机。
+pub fn no_redirect() -> Result<Client, String> {
+    if let Some(lock) = NO_REDIRECT_CLIENT.get() {
+        if let Ok(client) = lock.read() {
+            return Ok(client.clone());
+        }
+    }
+    let client = build_no_redirect_client(get_current_proxy_url().as_deref())?;
+    let _ = NO_REDIRECT_CLIENT.set(RwLock::new(client.clone()));
+    Ok(NO_REDIRECT_CLIENT
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|c| c.clone())
+        .unwrap_or(client))
+}
+
+/// 只走 https 的客户端（跳转到 http 直接报错），代理设置与全局客户端一致。
+/// 带 `Authorization` 的请求用它：reqwest 只在换主机或换端口时去掉认证头，同主机
+/// 同端口从 https 跳到 http（非默认端口时会发生）会把凭据明文发出去。
+pub fn https_only() -> Result<Client, String> {
+    if let Some(lock) = HTTPS_ONLY_CLIENT.get() {
+        if let Ok(client) = lock.read() {
+            return Ok(client.clone());
+        }
+    }
+    let client = build_https_only_client(get_current_proxy_url().as_deref())?;
+    let _ = HTTPS_ONLY_CLIENT.set(RwLock::new(client.clone()));
+    Ok(HTTPS_ONLY_CLIENT
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|c| c.clone())
+        .unwrap_or(client))
+}
+
+/// A one-off no-redirect client for an explicit proxy (`None` follows the system
+/// proxy), leaving the saved global proxy untouched.
+pub(crate) fn no_redirect_with_proxy(
+    proxy_url: Option<&str>,
+    timeout: Duration,
+) -> Result<Client, String> {
+    build_client_from(
+        base_builder()
+            .timeout(timeout)
+            .connect_timeout(timeout.min(Duration::from_secs(5)))
+            .redirect(reqwest::redirect::Policy::none()),
+        proxy_url,
+    )
+}
+
+/// 不跟随重定向、按目标地址选代理的客户端：本机地址直连，其余同 [`no_redirect`]。
+pub fn no_redirect_for_url(url: &str) -> Result<Client, String> {
+    if is_loopback_url(url) {
+        direct_no_redirect_client()
+    } else {
+        no_redirect()
+    }
+}
+
+/// 构建 HTTP 客户端
+fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_from(base_builder(), proxy_url)
+}
+
+fn build_client_from(
+    mut builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+) -> Result<Client, String> {
     // 有代理地址则使用代理，否则跟随系统代理
     if let Some(url) = proxy_url {
         // 先验证 URL 格式和 scheme
@@ -281,15 +475,6 @@ fn system_proxy_points_to_loopback() -> bool {
 }
 
 fn proxy_points_to_loopback(value: &str) -> bool {
-    fn host_is_loopback(host: &str) -> bool {
-        if host.eq_ignore_ascii_case("localhost") {
-            return true;
-        }
-        host.parse::<IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
-    }
-
     // 检查是否指向 puppyrouter app 自己的代理端口
     // 只有指向自己的代理才需要跳过，避免递归
     fn is_cc_switch_proxy_port(port: Option<u16>) -> bool {
@@ -372,36 +557,108 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_url_multibyte_boundary() {
-        // 解析失败的超长 URL 在截断时不能切在多字节字符中间（旧实现会 panic）。
-        // 空格让 Url::parse 失败；构造一个第 20 字节恰好落在 UTF-8 字符中间的输入。
-        let mut url = "not a url ".to_string();
-        while url.len() < 19 {
-            url.push('a');
-        }
-        url.push('中'); // 3 字节，占据 19..22，截断点 20 落在字符中间
-        url.push_str(&"b".repeat(30));
-        assert!(url.len() > 20);
-        let masked = mask_url(&url);
+    fn test_mask_url_does_not_panic_on_multibyte_boundary() {
+        // 一个无法被 Url::parse 解析、且在字节 20 处正好切在多字节字符中间的字符串。
+        // 回归 https://github.com/farion1231/cc-switch 的 mask_url 越界 panic。
+        let bad = "这是一个无效的代理地址不能解析";
+        assert!(bad.len() > 20 && !bad.is_char_boundary(20));
+        let masked = mask_url(bad);
         assert!(masked.ends_with("..."));
-        assert!(!masked.contains('中'));
+    }
+
+    #[test]
+    fn test_is_loopback_url() {
+        for url in [
+            "http://localhost:11434",
+            "http://LOCALHOST",
+            "http://localhost./v1",
+            "http://127.0.0.1:1234/v1",
+            "http://127.1.2.3",
+            "http://[::1]:8000",
+            "http://[::ffff:127.0.0.1]:8000",
+            "http://foo.localhost",
+            "https://Api.LocalHost:8443/v1",
+        ] {
+            assert!(is_loopback_url(url), "{url} should be loopback");
+        }
+        for url in [
+            "http://192.168.1.10:11434",
+            "http://10.0.0.2",
+            "https://example.com",
+            "https://localhost.evil.com",
+            "https://evillocalhost",
+            "http://[::2]",
+            "localhost:11434",
+            "",
+        ] {
+            assert!(!is_loopback_url(url), "{url} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn test_upstream_proxy_for_skips_loopback() {
+        let current = Some("http://127.0.0.1:7890".to_string());
+        assert_eq!(
+            upstream_proxy_for("http://localhost:11434/v1/messages", current.clone()),
+            None
+        );
+        assert_eq!(
+            upstream_proxy_for("http://127.0.0.1:1234/v1/chat/completions", current.clone()),
+            None
+        );
+        assert_eq!(
+            upstream_proxy_for("https://api.example.com/v1/messages", current.clone()),
+            current
+        );
+        assert_eq!(
+            upstream_proxy_for("https://api.example.com/v1/messages", None),
+            None
+        );
+    }
+
+    /// 起一个只回 200 的一次性本机 HTTP 服务，返回它的地址
+    fn spawn_ok_server() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            }
+        });
+        format!("http://{addr}/v1/models")
+    }
+
+    #[tokio::test]
+    async fn test_loopback_target_bypasses_unreachable_proxy() {
+        let url = spawn_ok_server();
+        // 代理指向一个连不上的端口：经代理的客户端连本机服务也会失败（缺口本身）
+        let proxied = build_client(Some("http://127.0.0.1:1")).unwrap();
+        assert!(proxied
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_err());
+        // 本机地址选到的直连客户端不受代理影响
+        assert!(is_loopback_url(&url));
+        let resp = direct_client()
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .expect("direct client should reach the local server");
+        assert_eq!(resp.status().as_u16(), 200);
     }
 
     #[test]
     fn test_build_client_direct() {
         let result = build_client(None);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_build_client_with_http_proxy() {
-        let result = build_client(Some("http://127.0.0.1:7890"));
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_build_client_with_socks5_proxy() {
-        let result = build_client(Some("socks5://127.0.0.1:1080"));
         assert!(result.is_ok());
     }
 
@@ -414,6 +671,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_proxy_points_to_loopback() {
         // 设置 puppyrouter app 代理端口为 15721（默认值）
         set_proxy_port(15721);
@@ -433,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_system_proxy_points_to_loopback() {
         let _guard = env_lock().lock().unwrap();
 
@@ -467,5 +726,60 @@ mod tests {
         for key in &keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[tokio::test]
+    async fn test_no_redirect_for_url_reuses_keep_alive_connection() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accepts_srv = accepts.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                accepts_srv.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        let resp =
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
+                        if stream.write_all(resp).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let url = format!("http://{addr}/ping");
+        for _ in 0..10 {
+            let body = no_redirect_for_url(&url)
+                .unwrap()
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), b"ok");
+        }
+        server.abort();
+
+        assert!(
+            accepts.load(Ordering::SeqCst) <= 2,
+            "cached no_redirect_for_url client should reuse keep-alive TCP connection"
+        );
     }
 }

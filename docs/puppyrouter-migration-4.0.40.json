@@ -1,0 +1,434 @@
+{
+  "baseline": "69a96331e5ee9b6473cc5e5e751746b6a05997af",
+  "upstream": "f19a9d4f4f08bda03106a7be87c77cbcdf55b019",
+  "version": "4.0.40",
+  "decisions": {
+    "newLayout": true,
+    "fullGrokFeatures": true,
+    "extendCloudKeysToCompatibleApps": true,
+    "hideThirdPartyPresets": true,
+    "noSponsoredAdvertising": true,
+    "productNavigation": "First-party PuppyRouter destinations. Version details and copyright notices are bundled offline."
+  },
+  "features": [
+    {
+      "id": "identity.product-name",
+      "status": "integrated",
+      "source": "src-tauri/tauri.conf.json"
+    },
+    {
+      "id": "identity.bundle-id",
+      "status": "integrated",
+      "source": "src-tauri/tauri.conf.json"
+    },
+    {
+      "id": "identity.data-directory",
+      "status": "integrated",
+      "source": "src-tauri/src/config.rs"
+    },
+    {
+      "id": "identity.database-name",
+      "status": "integrated",
+      "source": "src-tauri/src/lib.rs"
+    },
+    {
+      "id": "identity.deep-link-aliases",
+      "status": "integrated",
+      "source": "src-tauri/tauri.conf.json"
+    },
+    {
+      "id": "identity.autostart",
+      "status": "integrated",
+      "source": "src-tauri/src/auto_launch.rs"
+    },
+    {
+      "id": "identity.log-and-crash-paths",
+      "status": "integrated",
+      "source": "src-tauri/src/lib.rs"
+    },
+    {
+      "id": "identity.frontend-persistence",
+      "status": "integrated",
+      "source": "src/lib/navigation.ts"
+    },
+    {
+      "id": "account.browser-device-login",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.copy-login-url",
+      "status": "integrated",
+      "source": "src/components/puppyrouter/PuppyRouterAccountBanner.tsx"
+    },
+    {
+      "id": "account.poll-approval",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.expiry-versus-offline",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.logout-preserves-client-config",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.balance",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.wallet-link",
+      "status": "integrated",
+      "source": "src/components/puppyrouter/PuppyRouterAccountBanner.tsx"
+    },
+    {
+      "id": "account.key-status-and-quota",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.key-list-cache",
+      "status": "integrated",
+      "source": "src/lib/query/puppyrouterAccount.ts"
+    },
+    {
+      "id": "account.group-change",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.per-app-selection",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "account.legacy-global-selection-migration",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "providers.pinned-puppyrouter-card",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/puppyrouter.rs"
+    },
+    {
+      "id": "providers.pinned-default-official-card",
+      "status": "integrated",
+      "source": "src/utils/lockedProviders.ts"
+    },
+    {
+      "id": "providers.custom-provider-crud",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/mod.rs"
+    },
+    {
+      "id": "providers.hidden-third-party-presets",
+      "status": "integrated",
+      "source": "tests/components/PuppyRouterPresetPolicy.test.tsx"
+    },
+    {
+      "id": "providers.no-partner-promotions",
+      "status": "integrated",
+      "source": "src/components/providers/forms/shared/ApiKeySection.tsx"
+    },
+    {
+      "id": "providers.cloud-key-no-implicit-enable",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "providers.active-key-refresh",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/mod.rs"
+    },
+    {
+      "id": "providers.no-live-to-cloud-key-backfill",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/live.rs"
+    },
+    {
+      "id": "providers.preserve-provider-metadata",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/puppyrouter.rs"
+    },
+    {
+      "id": "providers.official-account-restoration",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/claude_official.rs"
+    },
+    {
+      "id": "models.claude-role-mapping-including-fable",
+      "status": "integrated",
+      "source": "src/utils/claudeModelMapping.ts"
+    },
+    {
+      "id": "models.legacy-default-only-model-migration",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/puppyrouter.rs"
+    },
+    {
+      "id": "models.model-fetch-confirmation",
+      "status": "integrated",
+      "source": "src/components/providers/forms/ClaudeFormFields.tsx"
+    },
+    {
+      "id": "models.codex-model-catalog",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "models.codex-reasoning-levels",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/puppyrouter_account.rs"
+    },
+    {
+      "id": "models.credential-source-precedence",
+      "status": "integrated",
+      "source": "src-tauri/src/services/provider/puppyrouter.rs"
+    },
+    {
+      "id": "models.client-config-diagnostics",
+      "status": "integrated",
+      "source": "src/components/puppyrouter/PuppyRouterAccountBanner.tsx"
+    },
+    {
+      "id": "models.opencode-additive-state",
+      "status": "integrated",
+      "source": "src-tauri/src/opencode_config.rs"
+    },
+    {
+      "id": "ui.upstream-sidebar-and-modes",
+      "status": "integrated",
+      "source": "src/App.tsx"
+    },
+    {
+      "id": "ui.puppyrouter-account-entry",
+      "status": "integrated",
+      "source": "src/components/puppyrouter/PuppyRouterAccountBanner.tsx"
+    },
+    {
+      "id": "ui.azure-light-theme",
+      "status": "integrated",
+      "source": "src/index.css"
+    },
+    {
+      "id": "ui.emerald-active-state",
+      "status": "integrated",
+      "source": "src/components/providers/ProviderCard.tsx"
+    },
+    {
+      "id": "ui.currency-preference",
+      "status": "integrated",
+      "source": "src/components/settings/CurrencySettings.tsx"
+    },
+    {
+      "id": "ui.restart-guidance",
+      "status": "integrated",
+      "source": "src/App.tsx"
+    },
+    {
+      "id": "ui.not-configured-guidance",
+      "status": "integrated",
+      "source": "src/components/puppyrouter/PuppyRouterAccountBanner.tsx"
+    },
+    {
+      "id": "ui.version-and-update-check",
+      "status": "integrated",
+      "source": "src/components/settings/AboutSection.tsx"
+    },
+    {
+      "id": "release.r2-auto-update-feed",
+      "status": "integrated",
+      "source": "src-tauri/tauri.conf.json"
+    },
+    {
+      "id": "release.separate-manual-feed",
+      "status": "integrated",
+      "source": "scripts/generate-release-manifests.mjs"
+    },
+    {
+      "id": "release.original-updater-public-key",
+      "status": "integrated",
+      "source": "src-tauri/tauri.conf.json"
+    },
+    {
+      "id": "release.macos-sign-and-notarize",
+      "status": "integrated",
+      "source": ".github/workflows/release.yml"
+    },
+    {
+      "id": "release.windows-x64-and-arm64",
+      "status": "integrated",
+      "source": ".github/workflows/release.yml"
+    },
+    {
+      "id": "release.linux-deb-marker-and-platform-keys",
+      "status": "integrated",
+      "source": "scripts/verify-linux-deb-updater.sh"
+    },
+    {
+      "id": "release.publish-artifacts-before-manifests",
+      "status": "integrated",
+      "source": ".github/workflows/publish-release-to-r2.yml"
+    },
+    {
+      "id": "upstream.all-16-apps",
+      "status": "integrated",
+      "source": "src/config/appSpecs.ts"
+    },
+    {
+      "id": "upstream.direct-routing-aggregation",
+      "status": "integrated",
+      "source": "src-tauri/src/mode/controller.rs"
+    },
+    {
+      "id": "upstream.full-grok-support",
+      "status": "integrated",
+      "source": "src/config/appSpecs.ts"
+    },
+    {
+      "id": "upstream.mcp",
+      "status": "integrated",
+      "source": "src/components/mcp/UnifiedMcpPanel.tsx"
+    },
+    {
+      "id": "upstream.skills",
+      "status": "integrated",
+      "source": "src/components/skills/SkillsPage.tsx"
+    },
+    {
+      "id": "upstream.plugins",
+      "status": "integrated",
+      "source": "src/components/plugins/PluginsPage.tsx"
+    },
+    {
+      "id": "upstream.prompts",
+      "status": "integrated",
+      "source": "src/components/prompts/PromptPanel.tsx"
+    },
+    {
+      "id": "upstream.sessions",
+      "status": "integrated",
+      "source": "src/components/sessions/SessionManagerPage.tsx"
+    },
+    {
+      "id": "upstream.authorization-center",
+      "status": "integrated",
+      "source": "src/components/settings/AuthCenterPanel.tsx"
+    },
+    {
+      "id": "upstream.usage-statistics",
+      "status": "integrated",
+      "source": "src-tauri/src/services/usage_stats.rs"
+    },
+    {
+      "id": "upstream.profiles",
+      "status": "integrated",
+      "source": "src-tauri/src/services/profile.rs"
+    },
+    {
+      "id": "upstream.webdav-s3-sync",
+      "status": "integrated",
+      "source": "src-tauri/src/services/sync_protocol.rs"
+    },
+    {
+      "id": "upstream.tool-management",
+      "status": "integrated",
+      "source": "src-tauri/src/commands/misc.rs"
+    },
+    {
+      "id": "upstream.privacy-filter",
+      "status": "integrated",
+      "source": "src-tauri/src/proxy/privacy_filter/mod.rs"
+    },
+    {
+      "id": "upstream.deep-link-security",
+      "status": "integrated",
+      "source": "src-tauri/src/deeplink/mcp.rs"
+    },
+    {
+      "id": "upstream.schema-11-to-27",
+      "status": "integrated",
+      "source": "src-tauri/src/database/schema.rs"
+    },
+    {
+      "id": "identity.first-party-project-links",
+      "status": "integrated",
+      "source": "src/components/settings/AboutSection.tsx"
+    },
+    {
+      "id": "release.offline-version-details",
+      "status": "integrated",
+      "source": "src/components/WhatsNewDialog.tsx"
+    }
+  ],
+  "validation": {
+    "databaseUpgradeFixture": "src-tauri/tests/fixtures/puppyrouter-3.19.5.sql",
+    "cloudKeyTests": "src-tauri/src/commands/puppyrouter_account.rs",
+    "presetPolicyTest": "tests/components/PuppyRouterPresetPolicy.test.tsx",
+    "scope": "Validated with local fixtures, native configuration round trips and an ad-hoc signed macOS arm64 preview. Production signing/notarization, Windows and Linux installers, real account authorization and paid model calls require separate verification.",
+    "releaseManifestFixture": {
+      "manualTargets": 4,
+      "updaterTargetsWithOptionalLinuxArm64AndUniversalMac": 6
+    },
+    "rustUnitTests": {
+      "passed": 5188,
+      "ignored": 12
+    },
+    "rustIntegrationTestsPassed": 224,
+    "macosPreview": {
+      "architecture": "arm64",
+      "bundleIdentifier": "com.puppyrouter.app",
+      "schemes": [
+        "puppyrouter",
+        "ccswitch"
+      ],
+      "signing": "ad-hoc",
+      "license": "Contents/Resources/LICENSE.txt"
+    },
+    "frontendTests": {
+      "total": 4442,
+      "files": 340,
+      "fullRunPassed": 4439,
+      "fullRunFailures": 3,
+      "affectedFiles": [
+        "tests/components/PiProviderForm.test.tsx",
+        "tests/components/SessionContentSearchToggle.test.tsx"
+      ],
+      "rerunFiles": 4,
+      "rerunPassed": 55,
+      "outstandingFailures": 0,
+      "note": "The local Mac entered maintenance sleep during the full run. All affected suites passed on a separate run."
+    },
+    "checks": [
+      "TypeScript typecheck",
+      "Prettier",
+      "Knip",
+      "Rust fmt",
+      "Rust Clippy (lib and tests, warnings denied)",
+      "macOS Tauri build and local code-signature validation"
+    ],
+    "productEntryAudit": {
+      "rendererChunksChecked": 45,
+      "partnerAssetCount": 0,
+      "verified": [
+        "no upstream or fork repository links in the renderer",
+        "no known affiliate query markers in the renderer",
+        "offline product release details",
+        "local MIT license matches source",
+        "first-party homepage and help links in Flatpak metadata"
+      ]
+    }
+  },
+  "previousVersion": "3.19.5",
+  "databaseSchema": {
+    "from": 11,
+    "to": 27
+  },
+  "commonAncestor": "61d7ac01fb9d0a3541f426c41dde7331049230a5"
+}

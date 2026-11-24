@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_config::AppType;
-use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta};
+use crate::provider::Provider;
 use crate::services::model_fetch::FetchedModel;
+use crate::services::provider::puppyrouter;
 use crate::services::ProviderService;
 use crate::store::AppState;
 
@@ -713,30 +714,6 @@ fn parse_target_app(target_app: Option<String>) -> Result<AppType, String> {
     AppType::from_str(&raw).map_err(|e| e.to_string())
 }
 
-fn is_auto_apply_app(app_type: &AppType) -> bool {
-    matches!(
-        app_type,
-        AppType::Claude
-            | AppType::ClaudeDesktop
-            | AppType::Codex
-            | AppType::Gemini
-            | AppType::GrokBuild
-            | AppType::OpenCode
-    )
-}
-
-fn puppyrouter_provider_id_for_app(app_type: &AppType) -> Option<&'static str> {
-    match app_type {
-        AppType::Claude => Some("universal-claude-puppyrouter"),
-        AppType::ClaudeDesktop => Some("universal-claude-desktop-puppyrouter"),
-        AppType::Codex => Some("universal-codex-puppyrouter"),
-        AppType::Gemini => Some("universal-gemini-puppyrouter"),
-        AppType::GrokBuild => Some("universal-grokbuild-puppyrouter"),
-        AppType::OpenCode => Some(PUPPYROUTER_UNIVERSAL_ID),
-        AppType::OpenClaw | AppType::Hermes => None,
-    }
-}
-
 fn selected_tokens_by_app(
     state: &AppState,
 ) -> Result<HashMap<String, StoredSelectedToken>, String> {
@@ -745,6 +722,15 @@ fn selected_tokens_by_app(
             .unwrap_or_default(),
     )
 }
+
+const LEGACY_CLOUD_APPS: [AppType; 6] = [
+    AppType::Claude,
+    AppType::ClaudeDesktop,
+    AppType::Codex,
+    AppType::Gemini,
+    AppType::GrokBuild,
+    AppType::OpenCode,
+];
 
 fn selected_token_for_app(
     state: &AppState,
@@ -757,7 +743,11 @@ fn selected_token_for_app(
 
     // Backward compatibility for users who selected a global key before
     // per-client key application existed.
-    setting_json(state, SELECTED_TOKEN_SETTING)
+    if LEGACY_CLOUD_APPS.contains(app_type) {
+        setting_json(state, SELECTED_TOKEN_SETTING)
+    } else {
+        Ok(None)
+    }
 }
 
 fn set_selected_token_for_app(
@@ -766,26 +756,15 @@ fn set_selected_token_for_app(
     selected: StoredSelectedToken,
 ) -> Result<(), String> {
     let mut selected_by_app = selected_tokens_by_app(state)?;
-    selected_by_app.insert(app_type.as_str().to_string(), selected);
-    set_setting_json(state, SELECTED_TOKEN_BY_APP_SETTING, &selected_by_app)
-}
-
-fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
-    match (base, patch) {
-        (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
-            for (key, patch_value) in patch_map {
-                match base_map.get_mut(key) {
-                    Some(base_value) => merge_json(base_value, patch_value),
-                    None => {
-                        base_map.insert(key.clone(), patch_value.clone());
-                    }
-                }
+    if selected_by_app.is_empty() {
+        if let Some(old) = setting_json::<StoredSelectedToken>(state, SELECTED_TOKEN_SETTING)? {
+            for legacy_app in LEGACY_CLOUD_APPS {
+                selected_by_app.insert(legacy_app.as_str().into(), old.clone());
             }
         }
-        (base_value, patch_value) => {
-            *base_value = patch_value.clone();
-        }
     }
+    selected_by_app.insert(app_type.as_str().to_string(), selected);
+    set_setting_json(state, SELECTED_TOKEN_BY_APP_SETTING, &selected_by_app)
 }
 
 fn codex_config_text(settings: &Value) -> Option<&str> {
@@ -873,17 +852,26 @@ fn fetched_models_to_codex_catalog(
     Some(json!({ "models": models }))
 }
 
+fn update_codex_model(config: &str, model: &str) -> Result<String, String> {
+    let mut doc = config
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| e.to_string())?;
+    doc["model"] = toml_edit::value(model);
+    Ok(doc.to_string())
+}
+
 async fn refresh_codex_model_catalog_from_puppyrouter(
     provider: &mut Provider,
     api_key: &str,
 ) -> Result<(), String> {
     let config_text = codex_config_text(&provider.settings_config).unwrap_or_default();
-    let base_url = crate::codex_config::extract_codex_base_url(config_text)
-        .unwrap_or_else(|| format!("{PUPPYROUTER_BASE_URL}/v1"));
+    let base_url = format!("{PUPPYROUTER_BASE_URL}/v1");
     let preferred_model = codex_model_from_config(config_text);
 
-    let fetched_models =
-        crate::services::model_fetch::fetch_models(&base_url, api_key, false, None, None).await?;
+    let fetched_models = crate::services::model_fetch::fetch_models(
+        &base_url, api_key, false, None, None, None, None,
+    )
+    .await?;
     let Some(model_catalog) =
         fetched_models_to_codex_catalog(&fetched_models, preferred_model.as_deref())
     else {
@@ -905,9 +893,7 @@ async fn refresh_codex_model_catalog_from_puppyrouter(
                 first_model,
                 settings.get("config").and_then(|value| value.as_str()),
             ) {
-                if let Ok(updated_config) =
-                    crate::codex_config::update_codex_toml_field(config, "model", &first_model)
-                {
+                if let Ok(updated_config) = update_codex_model(config, &first_model) {
                     settings.insert("config".to_string(), Value::String(updated_config));
                 }
             }
@@ -917,111 +903,42 @@ async fn refresh_codex_model_catalog_from_puppyrouter(
     Ok(())
 }
 
-fn puppyrouter_provider_for_app(
-    state: &AppState,
-    app_type: &AppType,
-    api_key: &str,
-) -> Result<Provider, String> {
-    if matches!(app_type, AppType::OpenCode) {
-        return Ok(puppyrouter_opencode_provider(api_key));
-    }
-    if matches!(app_type, AppType::GrokBuild) {
-        let existing = state
-            .db
-            .get_provider_by_id("universal-grokbuild-puppyrouter", app_type.as_str())
-            .map_err(|error| error.to_string())?;
-        return Ok(ProviderService::puppyrouter_grokbuild_provider(
-            api_key,
-            existing.as_ref(),
-        ));
-    }
-
-    let mut universal = ProviderService::get_universal(state, PUPPYROUTER_UNIVERSAL_ID)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "PuppyRouter universal provider 不存在。".to_string())?;
-    universal.api_key = api_key.to_string();
-
-    match app_type {
-        AppType::Claude => universal
-            .to_claude_provider()
-            .ok_or_else(|| "PuppyRouter 未启用 Claude Code 配置。".to_string()),
-        AppType::ClaudeDesktop => {
-            let mut provider = universal
-                .to_claude_provider()
-                .ok_or_else(|| "PuppyRouter 未启用 Claude Desktop 配置。".to_string())?;
-            provider.id = "universal-claude-desktop-puppyrouter".to_string();
-            provider.name = "PuppyRouter".to_string();
-            provider.website_url = Some(PUPPYROUTER_BASE_URL.to_string());
-            provider.category = Some("aggregator".to_string());
-            provider.sort_index = Some(0);
-            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-            meta.claude_desktop_mode
-                .get_or_insert(ClaudeDesktopMode::Direct);
-            Ok(provider)
-        }
-        AppType::Codex => universal
-            .to_codex_provider()
-            .ok_or_else(|| "PuppyRouter 未启用 Codex 配置。".to_string()),
-        AppType::Gemini => universal
-            .to_gemini_provider()
-            .ok_or_else(|| "PuppyRouter 未启用 Gemini 配置。".to_string()),
-        AppType::GrokBuild => unreachable!("handled before universal provider lookup"),
-        AppType::OpenCode => unreachable!("OpenCode handled above"),
-        AppType::OpenClaw | AppType::Hermes => {
-            Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string())
-        }
-    }
-}
-
 async fn save_puppyrouter_provider_for_app(
     state: &AppState,
     app_type: &AppType,
     api_key: &str,
 ) -> Result<(), String> {
-    if !is_auto_apply_app(app_type) {
-        return Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string());
-    }
-
-    let mut provider = puppyrouter_provider_for_app(state, app_type, api_key)?;
-    if let Some(existing) = state
+    let existing = state
         .db
-        .get_provider_by_id(&provider.id, app_type.as_str())
+        .get_provider_by_id(puppyrouter::provider_id(app_type), app_type)
         .map_err(|e| e.to_string())?
-    {
-        let mut merged_settings = existing.settings_config.clone();
-        merge_json(&mut merged_settings, &provider.settings_config);
-        provider.settings_config = merged_settings;
-        provider.created_at = existing.created_at.or(provider.created_at);
-        provider.notes = existing.notes.or(provider.notes);
-        provider.meta = existing.meta.or(provider.meta);
-        provider.in_failover_queue = existing.in_failover_queue;
+        .ok_or("PuppyRouter provider is missing")?;
+    if !puppyrouter::owns(app_type, &existing) {
+        return Err("PuppyRouter provider ID conflicts with an existing custom provider".into());
     }
-
-    if matches!(app_type, AppType::OpenCode) {
-        provider
-            .meta
-            .get_or_insert_with(ProviderMeta::default)
-            .live_config_managed = Some(false);
-    }
-    if matches!(app_type, AppType::GrokBuild) {
-        provider
-            .meta
-            .get_or_insert_with(ProviderMeta::default)
-            .provider_type = Some("puppyrouter".to_string());
-    }
-
+    let mut provider =
+        puppyrouter::with_api_key(app_type, &existing, api_key).map_err(|e| e.to_string())?;
     if matches!(app_type, AppType::Codex) {
-        if let Err(err) = refresh_codex_model_catalog_from_puppyrouter(&mut provider, api_key).await
+        if let Err(_error) =
+            refresh_codex_model_catalog_from_puppyrouter(&mut provider, api_key).await
         {
-            log::warn!(
-                "Failed to refresh PuppyRouter Codex model catalog during API key apply: {err}"
-            );
+            log::warn!("PuppyRouter model catalog refresh failed; keeping saved models");
+        }
+        // Fetching the catalog yields to the editor. A fresh apply can merge the user's latest edits.
+        let current = state
+            .db
+            .get_provider_by_id(&existing.id, app_type)
+            .map_err(|e| e.to_string())?;
+        if serde_json::to_value(current).map_err(|e| e.to_string())?
+            != serde_json::to_value(&existing).map_err(|e| e.to_string())?
+        {
+            return Err("模型列表加载期间供应商已更改，请重新选择密钥。".into());
         }
     }
-
-    state
-        .db
-        .save_provider(app_type.as_str(), &provider)
+    // Upstream update owns all live writes and preserves direct/routing/stack state.
+    // It updates an additive entry only if already present, and never enables it.
+    ProviderService::update(state, app_type.clone(), None, provider)
+        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
@@ -1029,21 +946,31 @@ fn puppyrouter_provider_api_key_for_app(
     state: &AppState,
     app_type: &AppType,
 ) -> Result<Option<String>, String> {
-    let Some(provider_id) = puppyrouter_provider_id_for_app(app_type) else {
-        return Ok(None);
-    };
+    let provider_id = puppyrouter::provider_id(app_type);
     let Some(provider) = state
         .db
-        .get_provider_by_id(provider_id, app_type.as_str())
+        .get_provider_by_id(provider_id, app_type)
         .map_err(|e| e.to_string())?
     else {
         return Ok(None);
     };
+    if !puppyrouter::owns(app_type, &provider) {
+        return Ok(None);
+    }
     let (_, api_key) = provider.resolve_usage_credentials(app_type);
     Ok((!api_key.trim().is_empty()).then_some(api_key))
 }
 
-fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType, local_only: bool) {
+fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType, state: &AppState) {
+    let id = puppyrouter::provider_id(target_app);
+    let live = if target_app.spec().additive {
+        crate::services::provider::provider_exists_in_live_config(target_app, id).unwrap_or(false)
+    } else {
+        *target_app != AppType::Agy
+            && !crate::mode::current::is_proxy(target_app)
+            && ProviderService::current(state, target_app.clone())
+                .is_ok_and(|current| current == id)
+    };
     let _ = app.emit(
         "universal-provider-synced",
         serde_json::json!({
@@ -1051,61 +978,10 @@ fn emit_universal_provider_synced(app: &AppHandle, target_app: &AppType, local_o
             "id": PUPPYROUTER_UNIVERSAL_ID,
             // localOnly=true means the client live config was not touched (provider
             // is not current); false means the live config was already refreshed.
-            "localOnly": local_only,
+            "localOnly": !live,
             "appType": target_app.as_str(),
         }),
     );
-}
-
-fn puppyrouter_opencode_provider(api_key: &str) -> Provider {
-    Provider {
-        id: PUPPYROUTER_UNIVERSAL_ID.to_string(),
-        name: "PuppyRouter".to_string(),
-        settings_config: json!({
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "PuppyRouter",
-            "options": {
-                "baseURL": format!("{PUPPYROUTER_BASE_URL}/v1"),
-                "apiKey": api_key,
-            },
-            "models": {
-                "gpt-5.5": {
-                    "name": "GPT-5.5",
-                    "limit": {
-                        "context": 400000,
-                        "output": 128000
-                    }
-                },
-                "claude-sonnet-4-6": {
-                    "name": "Claude Sonnet 4.6",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "gemini-3.5-flash": {
-                    "name": "Gemini 3.5 Flash",
-                    "limit": {
-                        "context": 1048576,
-                        "output": 65536
-                    }
-                }
-            }
-        }),
-        website_url: Some(PUPPYROUTER_BASE_URL.to_string()),
-        category: Some("aggregator".to_string()),
-        created_at: Some(chrono::Utc::now().timestamp_millis()),
-        sort_index: Some(0),
-        notes: None,
-        meta: Some(ProviderMeta {
-            live_config_managed: Some(false),
-            provider_type: Some("puppyrouter".to_string()),
-            ..ProviderMeta::default()
-        }),
-        icon: Some("openai".to_string()),
-        icon_color: Some("#F59E0B".to_string()),
-        in_failover_queue: false,
-    }
 }
 
 #[tauri::command]
@@ -1379,9 +1255,9 @@ pub async fn apply_puppyrouter_api_key(
     target_app: Option<String>,
 ) -> Result<PuppyRouterApplyKeyResult, String> {
     let target_app = parse_target_app(target_app)?;
-    if !is_auto_apply_app(&target_app) {
-        return Err("该客户端需要手动配置供应商，不能自动应用 PuppyRouter API key。".to_string());
-    }
+    // Applying two selections at once must preserve both per-app choices.
+    static APPLY_KEY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = APPLY_KEY.lock().await;
 
     let session =
         read_session(state.inner())?.ok_or_else(|| "请先登录 PuppyRouter 账号。".to_string())?;
@@ -1399,43 +1275,6 @@ pub async fn apply_puppyrouter_api_key(
     let full_key = fetch_token_key(state.inner(), &client, &session, token_id).await?;
     save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
 
-    let mut live_refreshed = false;
-    if let Some(provider_id) = puppyrouter_provider_id_for_app(&target_app) {
-        if target_app.is_additive_mode() {
-            // Additive apps (OpenCode): refresh the live entry only when the
-            // provider is already present in the client config, without
-            // re-selecting it as the active provider.
-            let in_live =
-                crate::services::provider::provider_exists_in_live_config(&target_app, provider_id)
-                    .map_err(|e| e.to_string())?;
-            if in_live {
-                let provider = state
-                    .db
-                    .get_provider_by_id(provider_id, target_app.as_str())
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-                crate::services::provider::write_live_with_common_config(
-                    state.db.as_ref(),
-                    &target_app,
-                    &provider,
-                )
-                .map_err(|e| format!("API key 已保存，但刷新客户端配置失败: {e}"))?;
-                live_refreshed = true;
-            }
-        } else {
-            let is_current =
-                crate::settings::get_effective_current_provider(&state.db, &target_app)
-                    .map_err(|e| e.to_string())?
-                    .as_deref()
-                    == Some(provider_id);
-            if is_current {
-                ProviderService::switch(state.inner(), target_app.clone(), provider_id)
-                    .map_err(|e| format!("API key 已保存，但刷新客户端配置失败: {e}"))?;
-                live_refreshed = true;
-            }
-        }
-    }
-
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
         token_id,
@@ -1445,7 +1284,7 @@ pub async fn apply_puppyrouter_api_key(
         applied_at: now_timestamp(),
     };
     set_selected_token_for_app(state.inner(), &target_app, selected)?;
-    emit_universal_provider_synced(&app, &target_app, !live_refreshed);
+    emit_universal_provider_synced(&app, &target_app, state.inner());
 
     Ok(PuppyRouterApplyKeyResult {
         synced: true,
@@ -1454,6 +1293,29 @@ pub async fn apply_puppyrouter_api_key(
         masked_key: display_puppyrouter_api_key(&token.key),
         group,
     })
+}
+
+/// Read only the PuppyRouter entry from a native additive config, without importing credentials.
+#[tauri::command]
+pub fn read_puppyrouter_native_provider(target_app: String) -> Result<Option<Value>, String> {
+    let app = AppType::from_str(&target_app)?;
+    let id = puppyrouter::provider_id(&app);
+    let result = match app {
+        AppType::OpenCode => crate::opencode_config::get_providers().map(|mut p| p.remove(id)),
+        AppType::OpenClaw => crate::openclaw_config::get_provider(id),
+        AppType::Hermes => crate::hermes_config::get_provider(id),
+        AppType::Pi => crate::pi_config::read_pi_native_provider(id),
+        AppType::Omp => crate::omp_config::get_providers().map(|mut p| p.shift_remove(id)),
+        AppType::Mcode => crate::mcode_config::get_providers().map(|mut p| p.shift_remove(id)),
+        AppType::Kimi => crate::kimi_config::get_providers().map(|mut p| p.shift_remove(id)),
+        AppType::Dsh => crate::dsh_config::get_providers().map(|mut p| p.shift_remove(id)),
+        AppType::WorkBuddy => {
+            crate::workbuddy_config::get_providers().map(|mut p| p.shift_remove(id))
+        }
+        AppType::Copilot => crate::copilot_config::get_providers().map(|mut p| p.shift_remove(id)),
+        _ => return Err("This application does not use a native additive provider entry".into()),
+    };
+    result.map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -1499,6 +1361,45 @@ mod tests {
             }
             let _ = crate::settings::reload_settings();
         }
+    }
+
+    #[test]
+    fn a_legacy_global_selection_only_carries_over_to_legacy_apps() {
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        let old = StoredSelectedToken {
+            token_id: 1,
+            name: "old".into(),
+            masked_key: "masked".into(),
+            group: None,
+            applied_at: 1,
+        };
+        set_setting_json(&state, SELECTED_TOKEN_SETTING, &old).unwrap();
+        assert!(selected_token_for_app(&state, &AppType::Kimi)
+            .unwrap()
+            .is_none());
+        set_selected_token_for_app(
+            &state,
+            &AppType::Pi,
+            StoredSelectedToken { token_id: 2, ..old },
+        )
+        .unwrap();
+        assert_eq!(
+            selected_token_for_app(&state, &AppType::Codex)
+                .unwrap()
+                .unwrap()
+                .token_id,
+            1
+        );
+        assert_eq!(
+            selected_token_for_app(&state, &AppType::Pi)
+                .unwrap()
+                .unwrap()
+                .token_id,
+            2
+        );
+        assert!(selected_token_for_app(&state, &AppType::Kimi)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1581,26 +1482,105 @@ mod tests {
     }
 
     #[test]
-    fn every_auto_apply_app_has_a_locked_puppyrouter_provider() {
-        for app_type in [
-            AppType::Claude,
-            AppType::ClaudeDesktop,
-            AppType::Codex,
-            AppType::Gemini,
-            AppType::GrokBuild,
-            AppType::OpenCode,
-        ] {
-            assert!(is_auto_apply_app(&app_type));
-            assert!(
-                puppyrouter_provider_id_for_app(&app_type).is_some(),
-                "{} must resolve to a local PuppyRouter provider before applying a cloud key",
-                app_type.as_str()
+    #[serial_test::serial]
+    fn every_cloud_key_can_be_staged_without_enabling_the_client() {
+        let home = TestHomeGuard::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        ProviderService::ensure_locked_puppyrouter_defaults(&state).unwrap();
+        for app in AppType::all() {
+            let key = format!("sk-fixture-staged-{}", app.as_str());
+            let id = puppyrouter::provider_id(&app);
+            let row = state.db.get_provider_by_id(id, &app).unwrap().unwrap();
+            let row = puppyrouter::with_api_key(&app, &row, &key).unwrap();
+            ProviderService::update(&state, app.clone(), None, row)
+                .unwrap_or_else(|error| panic!("{}: {error}", app.as_str()));
+            let stored = state.db.get_provider_by_id(id, &app).unwrap().unwrap();
+            assert!(puppyrouter::owns(&app, &stored), "{}", app.as_str());
+            assert_eq!(
+                stored.resolve_usage_credentials(&app).1,
+                key,
+                "{}",
+                app.as_str()
             );
         }
+        let mut dirs = vec![home._dir.path().to_owned()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    dirs.push(entry.path());
+                } else if entry.file_type().unwrap().is_file() {
+                    let content = std::fs::read(entry.path()).unwrap();
+                    assert!(
+                        !content
+                            .windows(b"sk-fixture-staged-".len())
+                            .any(|w| w == b"sk-fixture-staged-"),
+                        "key leaked to {:?}",
+                        entry.path()
+                    );
+                }
+            }
+        }
+    }
 
-        for app_type in [AppType::OpenClaw, AppType::Hermes] {
-            assert!(!is_auto_apply_app(&app_type));
-            assert!(puppyrouter_provider_id_for_app(&app_type).is_none());
+    #[test]
+    #[serial_test::serial]
+    fn additive_cloud_keys_round_trip_through_the_native_provider_commands() {
+        let _home = TestHomeGuard::new();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        ProviderService::ensure_locked_puppyrouter_defaults(&state).unwrap();
+        // Kimi protects its default model from removal. Keep an independent native model selected.
+        crate::kimi_config::add_and_commit("fixture-default", json!({"provider":{"type":"openai","base_url":"https://example.invalid/v1","api_key":"fixture"},"models":{"fixture-model":{"model":"fixture-model","max_context_size":32000}}}), || Ok(())).unwrap();
+        for app in AppType::all().filter(|app| app.spec().additive) {
+            let id = puppyrouter::provider_id(&app);
+            let row = state.db.get_provider_by_id(id, &app).unwrap().unwrap();
+            let row = puppyrouter::with_api_key(&app, &row, "sk-explicit-enable-fixture").unwrap();
+            ProviderService::update(&state, app.clone(), None, row.clone()).unwrap();
+            assert!(
+                read_puppyrouter_native_provider(app.as_str().into())
+                    .unwrap()
+                    .is_none(),
+                "{}",
+                app.as_str()
+            );
+            let enabled = if matches!(app, AppType::Kimi | AppType::Copilot) {
+                ProviderService::add_to_live_config(&state, app.clone(), id)
+            } else {
+                ProviderService::switch(&state, app.clone(), id).map(|_| ())
+            };
+            enabled.unwrap_or_else(|error| panic!("enable {}: {error}", app.as_str()));
+            let native = read_puppyrouter_native_provider(app.as_str().into())
+                .unwrap()
+                .unwrap_or_else(|| panic!("missing {} entry", app.as_str()));
+            let mut native_row = row;
+            native_row.settings_config = native;
+            assert_eq!(
+                native_row.resolve_usage_credentials(&app).1,
+                "sk-explicit-enable-fixture",
+                "{}",
+                app.as_str()
+            );
+            ProviderService::remove_from_live_config(&state, app.clone(), id)
+                .unwrap_or_else(|error| panic!("remove {}: {error}", app.as_str()));
+            assert!(
+                read_puppyrouter_native_provider(app.as_str().into())
+                    .unwrap()
+                    .is_none(),
+                "{}",
+                app.as_str()
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_provider_by_id(id, &app)
+                    .unwrap()
+                    .unwrap()
+                    .resolve_usage_credentials(&app)
+                    .1,
+                "sk-explicit-enable-fixture",
+                "{}",
+                app.as_str()
+            );
         }
     }
 
@@ -1613,10 +1593,9 @@ mod tests {
             .expect("seed locked Grok Build providers");
 
         let official_snapshot = "[settings]\ntheme = \"dark\"\n";
-        crate::grok_config::write_grok_live_settings(&json!({
-            "config": official_snapshot,
-        }))
-        .expect("seed official Grok Build live config");
+        let path = crate::grok_config::get_grok_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, official_snapshot).expect("seed official Grok Build live config");
 
         save_puppyrouter_provider_for_app(&state, &AppType::GrokBuild, "sk-cloud-selected")
             .await
@@ -1631,10 +1610,7 @@ mod tests {
 
         let staged = state
             .db
-            .get_provider_by_id(
-                "universal-grokbuild-puppyrouter",
-                AppType::GrokBuild.as_str(),
-            )
+            .get_provider_by_id("universal-grokbuild-puppyrouter", &AppType::GrokBuild)
             .expect("read staged provider")
             .expect("staged PuppyRouter provider");
         assert_eq!(
@@ -1659,12 +1635,13 @@ mod tests {
             Some("sk-cloud-selected")
         );
 
-        crate::grok_config::write_grok_live_settings(&json!({
-            "config": crate::grok_config::build_puppyrouter_config(
+        std::fs::write(
+            &path,
+            crate::grok_config::build_puppyrouter_config(
                 enabled["config"].as_str(),
                 "sk-wrong-live",
             ),
-        }))
+        )
         .expect("simulate an externally modified live key");
 
         ProviderService::switch(
@@ -1682,10 +1659,7 @@ mod tests {
 
         let saved = state
             .db
-            .get_provider_by_id(
-                "universal-grokbuild-puppyrouter",
-                AppType::GrokBuild.as_str(),
-            )
+            .get_provider_by_id("universal-grokbuild-puppyrouter", &AppType::GrokBuild)
             .expect("read preserved provider")
             .expect("preserved PuppyRouter provider");
         assert_eq!(

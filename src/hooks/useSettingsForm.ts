@@ -1,58 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsQuery } from "@/lib/query";
+import {
+  DEFAULT_LANGUAGE,
+  isLanguage,
+  isTraditionalChineseTag,
+  normalizeLanguageTag,
+  type Language,
+} from "@/i18n/languages";
 import type { Settings } from "@/types";
-
-type Language = "zh" | "zh-TW" | "en" | "ja";
+import { sanitizeDirectoryFields } from "@/config/directoryApps";
 
 export type SettingsFormState = Omit<Settings, "language"> & {
   language: Language;
 };
 
 const normalizeLanguage = (lang?: string | null): Language => {
-  if (!lang) return "en";
-  const normalized = lang.toLowerCase().replace(/_/g, "-");
-
-  if (normalized === "zh") {
-    return "zh";
-  }
-
-  if (
-    normalized === "zh-tw" ||
-    normalized.startsWith("zh-hant") ||
-    normalized.startsWith("zh-hk") ||
-    normalized.startsWith("zh-mo")
-  ) {
-    return "zh-TW";
-  }
-
-  if (normalized.startsWith("en")) {
-    return "en";
-  }
-
-  if (normalized.startsWith("ja")) {
-    return "ja";
-  }
-
-  if (normalized.startsWith("zh")) {
-    return "zh";
-  }
-
-  return "en";
+  if (!lang) return DEFAULT_LANGUAGE;
+  const normalized = normalizeLanguageTag(lang);
+  if (isTraditionalChineseTag(normalized)) return "zh-TW";
+  return isLanguage(normalized) ? normalized : DEFAULT_LANGUAGE;
 };
 
 const isSupportedLanguage = (lang?: string | null): boolean => {
   if (!lang) return false;
-  const normalized = lang.toLowerCase().replace(/_/g, "-");
-  return (
-    normalized === "en" || normalized === "ja" || normalized.startsWith("zh")
-  );
-};
-
-const sanitizeDir = (value?: string | null): string | undefined => {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  const normalized = normalizeLanguageTag(lang);
+  return isLanguage(normalized) || normalized.startsWith("zh-");
 };
 
 export interface UseSettingsFormResult {
@@ -81,9 +54,7 @@ export function useSettingsForm(): UseSettingsFormResult {
     null,
   );
 
-  const initialLanguageRef = useRef<Language>(
-    normalizeLanguage(i18n.resolvedLanguage || i18n.language),
-  );
+  const initialLanguageRef = useRef<Language>("zh");
 
   const readPersistedLanguage = useCallback((): Language => {
     if (typeof window !== "undefined") {
@@ -124,14 +95,9 @@ export function useSettingsForm(): UseSettingsFormResult {
       skipClaudeOnboarding: data.skipClaudeOnboarding ?? false,
       preserveCodexOfficialAuthOnSwitch:
         data.preserveCodexOfficialAuthOnSwitch ?? false,
-      unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? true,
-      displayCurrency: data.displayCurrency ?? "auto",
-      claudeConfigDir: sanitizeDir(data.claudeConfigDir),
-      codexConfigDir: sanitizeDir(data.codexConfigDir),
-      geminiConfigDir: sanitizeDir(data.geminiConfigDir),
-      grokConfigDir: sanitizeDir(data.grokConfigDir),
-      opencodeConfigDir: sanitizeDir(data.opencodeConfigDir),
-      openclawConfigDir: sanitizeDir(data.openclawConfigDir),
+      unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
+      codexStackClassicTools: data.codexStackClassicTools ?? true,
+      ...sanitizeDirectoryFields(data),
       language: normalizedLanguage,
     };
 
@@ -152,8 +118,8 @@ export function useSettingsForm(): UseSettingsFormResult {
             enableClaudePluginIntegration: false,
             skipClaudeOnboarding: false,
             preserveCodexOfficialAuthOnSwitch: false,
-            unifyCodexSessionHistory: true,
-            displayCurrency: "auto",
+            unifyCodexSessionHistory: false,
+            codexStackClassicTools: true,
             language: readPersistedLanguage(),
           } as SettingsFormState);
 
@@ -193,14 +159,9 @@ export function useSettingsForm(): UseSettingsFormResult {
         skipClaudeOnboarding: serverData.skipClaudeOnboarding ?? false,
         preserveCodexOfficialAuthOnSwitch:
           serverData.preserveCodexOfficialAuthOnSwitch ?? false,
-        unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? true,
-        displayCurrency: serverData.displayCurrency ?? "auto",
-        claudeConfigDir: sanitizeDir(serverData.claudeConfigDir),
-        codexConfigDir: sanitizeDir(serverData.codexConfigDir),
-        geminiConfigDir: sanitizeDir(serverData.geminiConfigDir),
-        grokConfigDir: sanitizeDir(serverData.grokConfigDir),
-        opencodeConfigDir: sanitizeDir(serverData.opencodeConfigDir),
-        openclawConfigDir: sanitizeDir(serverData.openclawConfigDir),
+        unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,
+        codexStackClassicTools: serverData.codexStackClassicTools ?? true,
+        ...sanitizeDirectoryFields(serverData),
         language: normalizedLanguage,
       };
 

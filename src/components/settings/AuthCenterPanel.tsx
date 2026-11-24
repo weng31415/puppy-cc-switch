@@ -1,74 +1,278 @@
-import { Github, ShieldCheck } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Badge } from "@/components/ui/badge";
-import { CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
+import { XaiOAuthSection } from "@/components/providers/forms/XaiOAuthSection";
+import { AgyOAuthSection } from "@/components/providers/forms/AgyOAuthSection";
+import { ClaudeOfficialSection } from "@/components/providers/forms/ClaudeOfficialSection";
+import { KimiAccountLogin } from "@/components/providers/KimiAccountLogin";
+import { DshAccountLogin } from "@/components/providers/DshAccount";
+import { WorkBuddyAccountSection } from "@/components/settings/auth/WorkBuddyAccountSection";
+import { canSwitchAgyAccount } from "@/lib/authBinding";
+import { Switch } from "@/components/ui/switch";
+import { useAuthOpenBrowser, writeAuthOpenBrowser } from "@/lib/authLoginLink";
+import type { AuthCenterTarget } from "@/lib/api";
+import type { AppId } from "@/lib/api/types";
+import { DEFAULT_VISIBLE_APPS, orderAppIds } from "@/config/appConfig";
+import { useSettingsQuery } from "@/lib/query";
 
-export function AuthCenterPanel() {
+interface AuthCenterPanelProps {
+  authScrollTarget?: AuthCenterTarget | null;
+  /**
+   * 页头没有「?」说明时（供应商表单里打开的全屏「授权中心」）在最上面写一行说明；
+   * 侧栏「授权中心」页的页头已经有了，就不再显示。
+   */
+  showIntro?: boolean;
+}
+
+/**
+ * 「登录时自动打开浏览器」：所有服务的登录共用。关掉后只复制登录链接，用户自己选浏览器打开
+ * （用独立浏览器环境管多个账号时，不让登录混进系统默认浏览器）。
+ */
+function OpenBrowserToggle() {
   const { t } = useTranslation();
+  const openBrowser = useAuthOpenBrowser();
+  const titleId = useId();
+  const descriptionId = useId();
+  return (
+    <div className="flex shrink-0 items-center gap-4 rounded-panel border border-border bg-surface py-3 pe-4 ps-4">
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p id={titleId} className="m-0 text-body font-medium text-fg-1">
+          {t("authCenter.openBrowser.title", {
+            defaultValue: "登录时自动打开浏览器",
+          })}
+        </p>
+        <p id={descriptionId} className="m-0 text-caption text-fg-2">
+          {t("authCenter.openBrowser.description", {
+            defaultValue:
+              "关掉后只复制登录链接，由你自己选浏览器打开，适合用独立的浏览器环境管理多个账号。",
+          })}
+        </p>
+      </div>
+      <Switch
+        checked={openBrowser}
+        onCheckedChange={writeAuthOpenBrowser}
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+      />
+    </div>
+  );
+}
+
+/** 定位到某一组时，卡片上沿离正文顶部留的距离 */
+const SECTION_SCROLL_MARGIN = 16;
+
+/** 最近的纵向可滚动祖先（FullScreenPanel 的正文） */
+function findScrollContainer(element: HTMLElement): HTMLElement | null {
+  for (
+    let node = element.parentElement;
+    node && node !== document.body;
+    node = node.parentElement
+  ) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+  }
+  return null;
+}
+
+interface AuthCard {
+  target: AuthCenterTarget;
+  /**
+   * 用到这个账号的应用。卡片排在其中侧栏最靠前的那个的位置；全部隐藏了才隐藏卡片
+   * （Copilot、ChatGPT、xAI 也能在 Claude Code 等应用里当供应商用，只看一个应用会把还在用的卡藏掉）。
+   */
+  apps: readonly AppId[];
+  render: () => ReactNode;
+  available?: () => boolean;
+}
+
+/** 没拖过侧栏顺序时按这张表的顺序排；排在同一位置的卡片之间也按它排 */
+const AUTH_CARDS: readonly AuthCard[] = [
+  {
+    target: "claude_official",
+    apps: ["claude"],
+    render: () => <ClaudeOfficialSection helpSide="bottom" />,
+  },
+  {
+    target: "github_copilot",
+    apps: ["copilot", "claude", "claude-desktop", "codex"],
+    render: () => <CopilotAuthSection />,
+  },
+  {
+    target: "codex_oauth",
+    apps: ["codex", "claude", "claude-desktop"],
+    render: () => <CodexOAuthSection showAccountQuota />,
+  },
+  {
+    target: "xai_oauth",
+    apps: ["claude", "claude-desktop", "codex"],
+    render: () => <XaiOAuthSection mode="manage" helpSide="bottom" />,
+  },
+  {
+    target: "kimi_oauth",
+    apps: ["kimi"],
+    render: () => <KimiAccountLogin helpSide="bottom" />,
+  },
+  {
+    target: "dsh_account",
+    apps: ["dsh"],
+    render: () => <DshAccountLogin helpSide="bottom" />,
+  },
+  {
+    target: "agy_oauth",
+    apps: ["agy"],
+    render: () => <AgyOAuthSection helpSide="bottom" />,
+    available: canSwitchAgyAccount,
+  },
+  {
+    target: "workbuddy_account",
+    apps: ["workbuddy"],
+    render: () => <WorkBuddyAccountSection helpSide="top" />,
+  },
+];
+
+/**
+ * 跟侧栏走：按「应用」页拖出来的顺序排，对应的应用全部隐藏的卡片不显示。
+ * 要定位的那张（供应商表单里点「管理账号」进来）总是显示，免得跳过去扑空。
+ */
+function useOrderedAuthCards(
+  pinned: AuthCenterTarget | null | undefined,
+): AuthCard[] {
+  const { data: settings } = useSettingsQuery();
+  const appOrder = settings?.appOrder;
+  const visibleApps = settings?.visibleApps;
+  return useMemo(() => {
+    const visible = { ...DEFAULT_VISIBLE_APPS, ...visibleApps };
+    const rank = new Map(orderAppIds(appOrder).map((app, i) => [app, i]));
+    const position = (apps: readonly AppId[]) =>
+      Math.min(...apps.map((app) => rank.get(app) ?? Infinity));
+    return AUTH_CARDS.flatMap((card) => {
+      if (card.available && !card.available()) return [];
+      const shownApps = card.apps.filter((app) => visible[app]);
+      if (shownApps.length === 0 && card.target !== pinned) return [];
+      return [
+        {
+          card,
+          position: position(shownApps.length ? shownApps : card.apps),
+        },
+      ];
+    })
+      .sort((a, b) => a.position - b.position)
+      .map(({ card }) => card);
+  }, [appOrder, visibleApps, pinned]);
+}
+
+/**
+ * 授权中心：Claude 官方账号、GitHub Copilot、ChatGPT、xAI、Kimi Code、DeepSeek Harness、WorkBuddy，一组一张卡片；
+ * macOS、Windows 上另有 Antigravity 一组（切 agy 的官方登录：macOS 钥匙串、Windows 凭据管理器）。
+ * WorkBuddy 收录桌面端登录的快照再切换（macOS 已确认路径，Windows / Linux 按推断路径）。
+ * 卡片的顺序和显示跟侧栏的应用设置走（见 `useOrderedAuthCards`）。
+ * 侧栏的「授权中心」页和供应商表单里「管理账号」打开的全屏页共用。
+ */
+export function AuthCenterPanel({
+  authScrollTarget,
+  showIntro = true,
+}: AuthCenterPanelProps) {
+  const { t } = useTranslation();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const sectionRefs = useRef(new Map<AuthCenterTarget, HTMLDivElement>());
+  const cards = useOrderedAuthCards(authScrollTarget);
+
+  useEffect(() => {
+    if (!authScrollTarget) return;
+    const root = rootRef.current;
+    if (!root) return;
+
+    const target = sectionRefs.current.get(authScrollTarget);
+    const container = findScrollContainer(root);
+    if (!target || !container) return;
+
+    // 不用 scrollIntoView：面板滑入时目标还在右侧视口外，它会连带滚动外壳里
+    // overflow-hidden 的 #content-area，把整块内容区横向/纵向带偏。只滚面板自己的正文。
+    // 上面几组的账号是异步加载的，加载完会把目标挤下去：内容尺寸变化时重新对齐，
+    // 直到用户自己滚动或操作。
+    // 对齐期间关掉正文的滚动锚定：否则上方分组变高时浏览器（Chromium / WebView2）
+    // 会自己改 scrollTop，被下面当成用户拖了滚动条而提前停止跟随。
+    const previousOverflowAnchor = container.style.overflowAnchor;
+    container.style.overflowAnchor = "none";
+    const inputListeners = new AbortController();
+    let resizeObserver: ResizeObserver | undefined;
+    let frame = 0;
+    let expectedTop: number | null = null;
+    const stopPinning = () => {
+      cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      inputListeners.abort();
+      container.style.overflowAnchor = previousOverflowAnchor;
+    };
+    const alignTarget = () => {
+      // 位置已被外部改变（比如拖滚动条）：让出控制
+      if (expectedTop !== null && container.scrollTop !== expectedTop) {
+        stopPinning();
+        return;
+      }
+      const viewportTop =
+        container.getBoundingClientRect().top + container.clientTop;
+      const delta =
+        target.getBoundingClientRect().top -
+        viewportTop -
+        SECTION_SCROLL_MARGIN;
+      container.scrollTop = Math.max(
+        0,
+        Math.min(
+          container.scrollTop + delta,
+          container.scrollHeight - container.clientHeight,
+        ),
+      );
+      expectedTop = container.scrollTop;
+    };
+
+    const inputOptions = {
+      capture: true,
+      passive: true,
+      signal: inputListeners.signal,
+    };
+    for (const event of ["wheel", "touchstart", "pointerdown"]) {
+      container.addEventListener(event, stopPinning, inputOptions);
+    }
+    window.addEventListener("keydown", stopPinning, inputOptions);
+
+    frame = requestAnimationFrame(() => {
+      alignTarget();
+      if (
+        inputListeners.signal.aborted ||
+        typeof ResizeObserver === "undefined"
+      )
+        return;
+      resizeObserver = new ResizeObserver(() => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(alignTarget);
+      });
+      resizeObserver.observe(root);
+    });
+
+    return stopPinning;
+  }, [authScrollTarget]);
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-primary" />
-              <h3 className="text-base font-semibold">
-                {t("settings.authCenter.title", {
-                  defaultValue: "OAuth 认证中心",
-                })}
-              </h3>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {t("settings.authCenter.description", {
-                defaultValue:
-                  "在 Claude Code 中使用您的其他订阅，请注意合规风险。",
-              })}
-            </p>
-          </div>
-          <Badge variant="secondary">
-            {t("settings.authCenter.beta", { defaultValue: "Beta" })}
-          </Badge>
+    <div ref={rootRef} className="flex flex-col gap-3">
+      {showIntro && (
+        <p className="m-0 max-w-[700px] text-caption text-fg-2">
+          {t("settings.authCenter.description")}
+        </p>
+      )}
+      <OpenBrowserToggle />
+      {cards.map((card) => (
+        <div
+          key={card.target}
+          ref={(element) => {
+            if (element) sectionRefs.current.set(card.target, element);
+            else sectionRefs.current.delete(card.target);
+          }}
+        >
+          {card.render()}
         </div>
-      </section>
-
-      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <Github className="h-5 w-5" />
-          </div>
-          <div>
-            <h4 className="font-medium">GitHub Copilot</h4>
-            <p className="text-sm text-muted-foreground">
-              {t("settings.authCenter.copilotDescription", {
-                defaultValue: "管理 GitHub Copilot 账号",
-              })}
-            </p>
-          </div>
-        </div>
-
-        <CopilotAuthSection />
-      </section>
-
-      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <CodexIcon size={20} />
-          </div>
-          <div>
-            <h4 className="font-medium">ChatGPT (Codex OAuth)</h4>
-            <p className="text-sm text-muted-foreground">
-              {t("settings.authCenter.codexOauthDescription", {
-                defaultValue: "管理 ChatGPT 账号",
-              })}
-            </p>
-          </div>
-        </div>
-
-        <CodexOAuthSection />
-      </section>
+      ))}
     </div>
   );
 }

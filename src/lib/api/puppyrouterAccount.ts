@@ -138,6 +138,9 @@ async function invokePuppyRouterAccount<T>(
 }
 
 export const puppyrouterAccountApi = {
+  async readNativeProvider(targetApp: string): Promise<unknown> {
+    return invoke("read_puppyrouter_native_provider", { targetApp });
+  },
   async getStatus(): Promise<PuppyRouterAccountStatus> {
     return await invokePuppyRouterAccount("get_puppyrouter_account_status");
   },

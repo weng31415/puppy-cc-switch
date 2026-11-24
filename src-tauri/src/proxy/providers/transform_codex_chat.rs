@@ -5,16 +5,25 @@
 //! OpenAI-compatible Chat Completions endpoint.
 
 use super::codex_chat_common::{
-    append_reasoning_content, extract_reasoning_field_text, extract_reasoning_summary_text,
-    response_function_call_item, response_function_call_item_with_namespace,
-    split_leading_think_block,
+    append_reasoning_content, chat_thinking_part_text, copy_tool_call_extra_content,
+    extract_reasoning_field_text, extract_reasoning_summary_text, response_function_call_item,
+    response_function_call_item_with_namespace,
 };
+use super::codex_compaction;
+use super::inline_think::split_leading_think_block;
+use super::transform::unwrap_chat_completion_envelope;
 use crate::provider::CodexChatReasoningConfig;
 use crate::proxy::{
     error::ProxyError,
     json_canonical::{
         canonical_json_string, canonicalize_json_string_if_parseable, canonicalize_tool_arguments,
         short_sha256_hex,
+    },
+    tool_media::{
+        chat_file_from_input_file, flush_pending_chat_tool_media, plan_chat_tool_output_media,
+        plan_chat_tool_output_media_with_marker, queue_chat_tool_output_media,
+        strip_and_clamp_media_from_tool_value, ToolMediaScope, TOOL_RESULT_MEDIA_ATTACHED_MARKER,
+        TOOL_RESULT_MEDIA_MOVED_MARKER,
     },
 };
 use serde_json::{json, Value};
@@ -39,10 +48,10 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 
 const TOOL_SEARCH_PROXY_NAME: &str = "tool_search";
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
+const ORPHAN_TOOL_OUTPUT_MARKER: &str = "[tool_result without a matching tool_call]";
 const CHAT_TOOL_NAME_MAX_LEN: usize = 64;
 const CUSTOM_TOOL_INPUT_DESCRIPTION: &str = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
 const CUSTOM_TOOL_PRESERVED_METADATA_HEADING: &str = "Original tool definition:";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CodexToolKind {
     Function,
@@ -63,12 +72,232 @@ pub(crate) struct CodexToolContext {
     chat_tools: Vec<Value>,
     seen_chat_names: HashSet<String>,
     chat_name_to_spec: HashMap<String, CodexToolSpec>,
-    namespace_name_to_chat_name: HashMap<(String, String), String>,
+    identity_to_chat_name: HashMap<(Option<String>, String), String>,
+    /// 这个请求是 Codex 远程压缩（input 里有 `compaction_trigger`），见 `codex_compaction`。
+    compaction_request: bool,
+}
+
+enum PendingToolPayload {
+    Function { tool: Value },
+    Custom { tool: Value },
+    ToolSearch,
+}
+
+struct PendingCodexTool {
+    namespace: Option<String>,
+    name: String,
+    spec_kind: CodexToolKind,
+    preferred_chat_name: String,
+    payload: PendingToolPayload,
+}
+
+fn normalize_tool_namespace(namespace: Option<&str>) -> Option<String> {
+    namespace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn canonical_tool_identity_bytes(namespace: Option<&str>, name: &str) -> Vec<u8> {
+    match namespace {
+        Some(ns) => format!("{}:{ns}:{name}", ns.len()).into_bytes(),
+        None => format!("none::{name}").into_bytes(),
+    }
+}
+
+fn is_valid_chat_tool_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
+}
+
+fn sanitize_chat_tool_prefix(raw: &str, max_len: usize) -> String {
+    let mut out = String::with_capacity(raw.len().min(max_len));
+    for ch in raw.chars() {
+        if out.len() >= max_len {
+            break;
+        }
+        if is_valid_chat_tool_char(ch) {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() && max_len > 0 {
+        out.push('t');
+    }
+    out
+}
+
+fn disambiguated_chat_tool_name(namespace: Option<&str>, name: &str, attempt: usize) -> String {
+    let raw_candidate = match namespace {
+        Some(ns) => format!("{ns}__{name}"),
+        None => name.to_string(),
+    };
+    let hash = short_sha256_hex(&canonical_tool_identity_bytes(namespace, name));
+    let suffix = if attempt == 0 {
+        format!("__{hash}")
+    } else {
+        format!("__{hash}_{attempt}")
+    };
+    let prefix_len = CHAT_TOOL_NAME_MAX_LEN.saturating_sub(suffix.len());
+    let prefix = sanitize_chat_tool_prefix(&raw_candidate, prefix_len);
+    format!("{prefix}{suffix}")
+}
+
+fn build_custom_chat_tool(tool: &Value, chat_name: &str) -> Value {
+    let description = json!(responses_custom_tool_description(tool));
+    json!({
+        "type": "function",
+        "function": {
+            "name": chat_name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    CUSTOM_TOOL_INPUT_FIELD: {
+                        "type": "string",
+                        "description": CUSTOM_TOOL_INPUT_DESCRIPTION
+                    }
+                },
+                "required": [CUSTOM_TOOL_INPUT_FIELD]
+            }
+        }
+    })
+}
+
+fn build_tool_search_chat_tool(chat_name: &str) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": chat_name,
+            "description": "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for tools or connectors to load."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of tool groups to return."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    })
+}
+
+fn collect_response_tool(
+    tool: &Value,
+    seen_identities: &mut HashSet<(Option<String>, String)>,
+    out: &mut Vec<PendingCodexTool>,
+) {
+    match tool {
+        Value::String(name) => {
+            collect_response_tool(
+                &json!({
+                    "type": "custom",
+                    "name": name
+                }),
+                seen_identities,
+                out,
+            );
+        }
+        Value::Object(_) => match tool.get("type").and_then(|v| v.as_str()) {
+            Some("function") => {
+                let Some(name) = responses_tool_name(tool) else {
+                    return;
+                };
+                if !seen_identities.insert((None, name.clone())) {
+                    return;
+                }
+                out.push(PendingCodexTool {
+                    namespace: None,
+                    preferred_chat_name: name.clone(),
+                    name,
+                    spec_kind: CodexToolKind::Function,
+                    payload: PendingToolPayload::Function { tool: tool.clone() },
+                });
+            }
+            Some("custom") => {
+                let Some(name) = responses_tool_name(tool) else {
+                    return;
+                };
+                if !seen_identities.insert((None, name.clone())) {
+                    return;
+                }
+                out.push(PendingCodexTool {
+                    namespace: None,
+                    preferred_chat_name: name.clone(),
+                    name,
+                    spec_kind: CodexToolKind::Custom,
+                    payload: PendingToolPayload::Custom { tool: tool.clone() },
+                });
+            }
+            Some("tool_search") => {
+                let name = TOOL_SEARCH_PROXY_NAME.to_string();
+                if !seen_identities.insert((None, name.clone())) {
+                    return;
+                }
+                out.push(PendingCodexTool {
+                    namespace: None,
+                    preferred_chat_name: name.clone(),
+                    name,
+                    spec_kind: CodexToolKind::ToolSearch,
+                    payload: PendingToolPayload::ToolSearch,
+                });
+            }
+            Some("namespace") => {
+                let Some(namespace) =
+                    normalize_tool_namespace(tool.get("name").and_then(|v| v.as_str()))
+                else {
+                    return;
+                };
+                let Some(children) = tool
+                    .get("tools")
+                    .or_else(|| tool.get("children"))
+                    .and_then(|v| v.as_array())
+                else {
+                    return;
+                };
+
+                for child in children {
+                    if child.get("type").and_then(|v| v.as_str()) != Some("function") {
+                        continue;
+                    }
+                    let Some(name) = responses_tool_name(child) else {
+                        continue;
+                    };
+                    let ns = Some(namespace.clone());
+                    if !seen_identities.insert((ns.clone(), name.clone())) {
+                        continue;
+                    }
+                    let preferred_chat_name = flatten_namespace_tool_name(&namespace, &name);
+                    out.push(PendingCodexTool {
+                        namespace: ns,
+                        name,
+                        spec_kind: CodexToolKind::Namespace,
+                        preferred_chat_name,
+                        payload: PendingToolPayload::Function {
+                            tool: child.clone(),
+                        },
+                    });
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
 }
 
 impl CodexToolContext {
     pub(crate) fn chat_tools(&self) -> &[Value] {
         &self.chat_tools
+    }
+
+    pub(crate) fn is_compaction_request(&self) -> bool {
+        self.compaction_request
     }
 
     pub(crate) fn lookup_chat_name(&self, chat_name: &str) -> Option<&CodexToolSpec> {
@@ -80,185 +309,147 @@ impl CodexToolContext {
             .is_some_and(|spec| matches!(&spec.kind, CodexToolKind::Custom))
     }
 
-    fn chat_name_for_response_function(&self, name: &str, namespace: Option<&str>) -> String {
-        if let Some(namespace) = namespace.filter(|value| !value.is_empty()) {
+    pub(crate) fn chat_name_for_response_function(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> String {
+        let normalized_ns = normalize_tool_namespace(namespace);
+        let trimmed_name = name.trim();
+        if !trimmed_name.is_empty() {
             if let Some(chat_name) = self
-                .namespace_name_to_chat_name
-                .get(&(namespace.to_string(), name.to_string()))
+                .identity_to_chat_name
+                .get(&(normalized_ns.clone(), trimmed_name.to_string()))
             {
                 return chat_name.clone();
             }
-            return flatten_namespace_tool_name(namespace, name);
+        }
+
+        if let Some(ns) = normalized_ns.as_deref() {
+            return flatten_namespace_tool_name(ns, trimmed_name);
+        }
+
+        if trimmed_name.len() > CHAT_TOOL_NAME_MAX_LEN {
+            return disambiguated_chat_tool_name(None, trimmed_name, 0);
         }
 
         name.to_string()
     }
 
-    fn add_chat_tool(&mut self, chat_name: String, spec: CodexToolSpec, chat_tool: Value) {
-        if chat_name.trim().is_empty() || self.seen_chat_names.contains(&chat_name) {
-            return;
+    fn register_pending_tools(&mut self, pending: Vec<PendingCodexTool>) {
+        let mut preferred_counts: HashMap<String, usize> = HashMap::new();
+        for item in &pending {
+            *preferred_counts
+                .entry(item.preferred_chat_name.clone())
+                .or_insert(0) += 1;
         }
-        self.seen_chat_names.insert(chat_name.clone());
-        if let Some(namespace) = spec.namespace.as_ref() {
-            self.namespace_name_to_chat_name
-                .insert((namespace.clone(), spec.name.clone()), chat_name.clone());
+
+        let mut assigned_names: Vec<Option<String>> = vec![None; pending.len()];
+
+        // First reserve preferred names that fit within the 64-char limit and
+        // are unambiguous (including legacy flattened long namespace names when
+        // non-colliding, and literal top-level names on top-vs-namespace clashes).
+        for (idx, item) in pending.iter().enumerate() {
+            let count = preferred_counts
+                .get(&item.preferred_chat_name)
+                .copied()
+                .unwrap_or(0);
+            let keeps_preferred = !item.preferred_chat_name.trim().is_empty()
+                && item.preferred_chat_name.len() <= CHAT_TOOL_NAME_MAX_LEN
+                && (count == 1 || item.namespace.is_none())
+                && !self.seen_chat_names.contains(&item.preferred_chat_name);
+            if keeps_preferred {
+                self.seen_chat_names
+                    .insert(item.preferred_chat_name.clone());
+                assigned_names[idx] = Some(item.preferred_chat_name.clone());
+            }
         }
-        self.chat_name_to_spec.insert(chat_name, spec);
-        self.chat_tools.push(chat_tool);
-    }
 
-    fn add_function_tool(&mut self, tool: &Value, namespace: Option<&str>) {
-        let Some(original_name) = responses_tool_name(tool) else {
-            return;
-        };
-        let chat_name = namespace
-            .map(|namespace| flatten_namespace_tool_name(namespace, &original_name))
-            .unwrap_or_else(|| original_name.clone());
-
-        let Some(chat_tool) = responses_function_tool_to_chat_tool(tool, &chat_name) else {
-            return;
-        };
-        let spec = CodexToolSpec {
-            kind: if namespace.is_some() {
-                CodexToolKind::Namespace
-            } else {
-                CodexToolKind::Function
-            },
-            name: original_name,
-            namespace: namespace.map(ToString::to_string),
-        };
-        self.add_chat_tool(chat_name, spec, chat_tool);
-    }
-
-    fn add_custom_tool(&mut self, tool: &Value) {
-        let Some(name) = responses_tool_name(tool) else {
-            return;
-        };
-        let description = json!(responses_custom_tool_description(tool));
-        let chat_tool = json!({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        CUSTOM_TOOL_INPUT_FIELD: {
-                            "type": "string",
-                            "description": CUSTOM_TOOL_INPUT_DESCRIPTION
-                        }
-                    },
-                    "required": [CUSTOM_TOOL_INPUT_FIELD]
+        // Deterministically disambiguate any colliding or >64-char tool names using
+        // a length-prefixed canonical `(namespace, name)` SHA-256 suffix.
+        for (idx, item) in pending.iter().enumerate() {
+            if assigned_names[idx].is_some() {
+                continue;
+            }
+            let mut attempt = 0usize;
+            let chat_name = loop {
+                let candidate =
+                    disambiguated_chat_tool_name(item.namespace.as_deref(), &item.name, attempt);
+                if self.seen_chat_names.insert(candidate.clone()) {
+                    break candidate;
                 }
-            }
-        });
-        let spec = CodexToolSpec {
-            kind: CodexToolKind::Custom,
-            name: name.clone(),
-            namespace: None,
-        };
-        self.add_chat_tool(name, spec, chat_tool);
-    }
-
-    fn add_tool_search_tool(&mut self) {
-        let chat_tool = json!({
-            "type": "function",
-            "function": {
-                "name": TOOL_SEARCH_PROXY_NAME,
-                "description": "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query for tools or connectors to load."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of tool groups to return."
-                        }
-                    },
-                    "required": ["query"]
-                }
-            }
-        });
-        let spec = CodexToolSpec {
-            kind: CodexToolKind::ToolSearch,
-            name: TOOL_SEARCH_PROXY_NAME.to_string(),
-            namespace: None,
-        };
-        self.add_chat_tool(TOOL_SEARCH_PROXY_NAME.to_string(), spec, chat_tool);
-    }
-
-    fn add_namespace_tool(&mut self, namespace_tool: &Value) {
-        let Some(namespace) = namespace_tool.get("name").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let Some(children) = namespace_tool
-            .get("tools")
-            .or_else(|| namespace_tool.get("children"))
-            .and_then(|v| v.as_array())
-        else {
-            return;
-        };
-
-        for child in children {
-            if child.get("type").and_then(|v| v.as_str()) == Some("function") {
-                self.add_function_tool(child, Some(namespace));
-            }
+                attempt += 1;
+            };
+            assigned_names[idx] = Some(chat_name);
         }
-    }
 
-    fn add_response_tool(&mut self, tool: &Value) {
-        match tool {
-            Value::String(name) => {
-                self.add_custom_tool(&json!({
-                    "type": "custom",
-                    "name": name
-                }));
-            }
-            Value::Object(_) => match tool.get("type").and_then(|v| v.as_str()) {
-                Some("function") => self.add_function_tool(tool, None),
-                Some("custom") => self.add_custom_tool(tool),
-                Some("tool_search") => self.add_tool_search_tool(),
-                Some("namespace") => self.add_namespace_tool(tool),
-                _ => {}
-            },
-            _ => {}
+        for (item, maybe_chat_name) in pending.into_iter().zip(assigned_names) {
+            let Some(chat_name) = maybe_chat_name else {
+                continue;
+            };
+            let chat_tool = match &item.payload {
+                PendingToolPayload::Function { tool } => {
+                    let Some(chat_tool) = responses_function_tool_to_chat_tool(tool, &chat_name)
+                    else {
+                        continue;
+                    };
+                    chat_tool
+                }
+                PendingToolPayload::Custom { tool } => build_custom_chat_tool(tool, &chat_name),
+                PendingToolPayload::ToolSearch => build_tool_search_chat_tool(&chat_name),
+            };
+            let identity = (item.namespace.clone(), item.name.clone());
+            let spec = CodexToolSpec {
+                kind: item.spec_kind,
+                name: item.name,
+                namespace: item.namespace,
+            };
+            self.identity_to_chat_name
+                .insert(identity, chat_name.clone());
+            self.chat_name_to_spec.insert(chat_name, spec);
+            self.chat_tools.push(chat_tool);
         }
     }
 }
 
 pub(crate) fn build_codex_tool_context_from_request(body: &Value) -> CodexToolContext {
     let mut context = CodexToolContext::default();
+    let mut seen_identities: HashSet<(Option<String>, String)> = HashSet::new();
+    let mut pending: Vec<PendingCodexTool> = Vec::new();
 
     if let Some(tools) = body.get("tools").and_then(|v| v.as_array()) {
         for tool in tools {
-            context.add_response_tool(tool);
+            collect_response_tool(tool, &mut seen_identities, &mut pending);
         }
     }
 
     if let Some(input) = body.get("input") {
-        collect_tool_search_output_tools(input, &mut context);
+        collect_input_declared_tools(input, &mut seen_identities, &mut pending);
     }
+
+    context.register_pending_tools(pending);
+    context.compaction_request = codex_compaction::is_compaction_request(body);
 
     context
 }
 
-/// Convert an OpenAI Responses request into an OpenAI Chat Completions request.
-#[allow(dead_code)]
-pub fn responses_to_chat_completions(body: Value) -> Result<Value, ProxyError> {
-    responses_to_chat_completions_with_reasoning(body, None)
-}
-
 /// Convert an OpenAI Responses request into an OpenAI Chat Completions request,
 /// using provider-declared Codex Chat reasoning capabilities when available.
+///
+/// `preserve_reasoning_content` mirrors the Claude → Chat path
+/// (`should_preserve_reasoning_content_for_openai_chat`): `reasoning_content`
+/// is a DeepSeek / Kimi compatibility field that third-party gateways expect on
+/// assistant history, and strict OpenAI-compatible upstreams such as Mistral
+/// reject it with HTTP 422 (`extra_forbidden`). Callers pass `false` for those
+/// upstreams so the field never reaches them.
 pub fn responses_to_chat_completions_with_reasoning(
     body: Value,
     reasoning_config: Option<&CodexChatReasoningConfig>,
+    preserve_reasoning_content: bool,
 ) -> Result<Value, ProxyError> {
     let mut result = json!({});
     let tool_context = build_codex_tool_context_from_request(&body);
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
 
     if let Some(model) = body.get("model") {
         result["model"] = model.clone();
@@ -278,10 +469,36 @@ pub fn responses_to_chat_completions_with_reasoning(
     if let Some(input) = body.get("input") {
         append_responses_input_as_chat_messages(input, &mut messages, &tool_context)?;
     }
-    let messages = collapse_system_messages_to_head(messages);
+    let recovered =
+        super::codex_chat_tool_history::preserve_invalid_tool_calls_as_text(&mut messages);
+    if recovered > 0 {
+        // Counts only: historical arguments and tool results may contain secrets.
+        log::warn!("[Codex Chat] Preserved {recovered} malformed historical tool call(s) as text");
+    }
+    // DeepSeek strictly validates tool-result adjacency. Limit this replay
+    // repair to explicit DeepSeek model IDs: other providers may interpret
+    // assistant turns differently, and rewriting their history changes caches.
+    if is_deepseek_chat_model(model) {
+        coalesce_replayed_tool_turn_messages(&mut messages);
+    }
+    backfill_tool_call_reasoning_placeholders(&mut messages);
+    if !preserve_reasoning_content {
+        let stripped = strip_assistant_reasoning_content(&mut messages);
+        if stripped > 0 {
+            log::debug!(
+                "[Codex Chat] Dropped reasoning_content from {stripped} assistant message(s)"
+            );
+        }
+    }
+    let mut messages = collapse_system_messages_to_head(messages);
+    // 放在折叠之后：折叠按「后面是否紧接 user」决定中途 developer 指令的位置，
+    // 提前删掉空 user 会改变非空指令的角色和位置。
+    let dropped = drop_empty_user_messages(&mut messages);
+    if dropped > 0 {
+        log::debug!("[Codex Chat] Dropped {dropped} empty user message(s)");
+    }
     result["messages"] = json!(messages);
 
-    let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("");
     if let Some(max_tokens) = body.get("max_output_tokens") {
         if super::transform::is_openai_o_series(model) {
             result["max_completion_tokens"] = max_tokens.clone();
@@ -304,8 +521,10 @@ pub fn responses_to_chat_completions_with_reasoning(
 
     apply_reasoning_options(&mut result, &body, model, reasoning_config);
 
+    // 压缩回合只要一段摘要：不带工具和结构化输出，与 Codex 本地压缩请求同形。
+    let compaction = tool_context.is_compaction_request();
     let tools = tool_context.chat_tools();
-    if !tools.is_empty() {
+    if !tools.is_empty() && !compaction {
         result["tools"] = json!(tools);
     }
 
@@ -314,10 +533,14 @@ pub fn responses_to_chat_completions_with_reasoning(
     }
 
     for key in EXTRA_CHAT_PASSTHROUGH_FIELDS {
+        if compaction && *key == "response_format" {
+            continue;
+        }
         if let Some(value) = body.get(*key) {
             result[*key] = value.clone();
         }
     }
+    drop_responses_only_stream_options(&mut result);
 
     // Strict OpenAI-compatible upstreams (vLLM, enterprise gateways) reject
     // requests that carry tool_choice or parallel_tool_calls without a non-empty
@@ -340,6 +563,26 @@ pub fn responses_to_chat_completions_with_reasoning(
     super::transform::inject_openai_stream_include_usage(&mut result);
 
     Ok(result)
+}
+
+/// `stream_options.reasoning_summary_delivery` 是 Responses 协议的字段（Codex 以为在跟
+/// 内置 openai 说话时才发，聚合模式就是这样），Chat Completions 没有它；严格校验的
+/// 上游（Mistral）收到会整条 422（#9507）。只删这一项，删完为空时整个键删掉，流式时
+/// 下面照常补 `include_usage`。
+fn drop_responses_only_stream_options(result: &mut Value) {
+    let Some(obj) = result.as_object_mut() else {
+        return;
+    };
+    let Some(stream_options) = obj.get_mut("stream_options").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if stream_options
+        .remove("reasoning_summary_delivery")
+        .is_some()
+        && stream_options.is_empty()
+    {
+        obj.remove("stream_options");
+    }
 }
 
 fn apply_reasoning_options(
@@ -416,7 +659,11 @@ fn apply_reasoning_options(
     let Some(effort) = body.pointer("/reasoning/effort").and_then(|v| v.as_str()) else {
         return;
     };
-    let Some(mapped) = map_reasoning_effort(effort, config.effort_value_mode.as_deref()) else {
+    let Some(mapped) = map_reasoning_effort(
+        effort,
+        config.effort_value_mode.as_deref(),
+        config.effort_levels.as_deref(),
+    ) else {
         return;
     };
 
@@ -447,15 +694,26 @@ fn reasoning_requested(body: &Value) -> Option<bool> {
     body.get("reasoning").map(|value| !value.is_null())
 }
 
-fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str> {
+pub(crate) fn map_reasoning_effort<'a>(
+    effort: &str,
+    mode: Option<&str>,
+    effort_levels: Option<&'a [String]>,
+) -> Option<&'a str> {
     let effort = effort.trim().to_ascii_lowercase();
     if matches!(effort.as_str(), "none" | "off" | "disabled") {
         return None;
     }
 
+    // ultra 是 Codex 扩展档位：已知枚举的专用模式（deepseek/openrouter/low_high）
+    // 钳到自身最高合法档而非丢弃——丢弃会让"选最深思考"静默退化成"不带 effort"；
+    // passthrough 面向枚举未知的通用上游，档位由用户/预设的 reasoningLevels 声明
+    // 背书，与 max/xhigh 一样原值透传。
     match mode.unwrap_or("passthrough") {
+        // DeepSeek 官方档位 low / high / max，其余档位照官方服务端的换算折
+        // （api-docs.deepseek.com/guides/thinking_mode：minimal→low、medium/xhigh→high、ultra→max）。
         "deepseek" => match effort.as_str() {
-            "max" | "xhigh" => Some("max"),
+            "minimal" | "low" => Some("low"),
+            "max" | "ultra" => Some("max"),
             _ => Some("high"),
         },
         "low_high" => match effort.as_str() {
@@ -467,13 +725,38 @@ fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str
         // `400 reasoning_effort: Invalid option`（见 openclaw#77350）；钳到最高合法档
         // xhigh，其余合法值透传，未知值丢弃以免被上游拒绝。
         "openrouter" => match effort.as_str() {
-            "max" | "xhigh" => Some("xhigh"),
+            "max" | "xhigh" | "ultra" => Some("xhigh"),
             "high" => Some("high"),
             "medium" => Some("medium"),
             "low" => Some("low"),
             "minimal" => Some("minimal"),
             _ => None,
         },
+        // OpenCode Zen：合法档位逐模型（表数据 = 供应商 modelCatalog 各条目的
+        // reasoningLevels，镜像 models.dev——glm-5.2 仅 high|max、deepseek-v4-flash
+        // 为 low|high|max、kimi-k3 仅 max），opencode 客户端也严格按模型声明发值，
+        // 故不能用统一并集映射。无表（模型未收录目录、或为 toggle/budget 型未声明
+        // effort）→ None，完全不发 reasoning_effort；有表 → 钳到「不小于请求的
+        // 最近合法档」，请求超出最高档则取最高合法档；请求值本身无法识别 → None
+        // （同其他模式的未知值丢弃策略）。
+        "zen" => {
+            let levels = effort_levels?;
+            let requested = zen_effort_rank(&effort)?;
+            levels
+                .iter()
+                .filter_map(|level| zen_effort_rank(level).map(|rank| (rank, level.as_str())))
+                .filter(|(rank, _)| *rank >= requested)
+                .min_by_key(|(rank, _)| *rank)
+                .or_else(|| {
+                    levels
+                        .iter()
+                        .filter_map(|level| {
+                            zen_effort_rank(level).map(|rank| (rank, level.as_str()))
+                        })
+                        .max_by_key(|(rank, _)| *rank)
+                })
+                .map(|(_, level)| level)
+        }
         _ => match effort.as_str() {
             "minimal" => Some("minimal"),
             "low" => Some("low"),
@@ -481,29 +764,67 @@ fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str
             "high" => Some("high"),
             "xhigh" => Some("xhigh"),
             "max" => Some("max"),
+            "ultra" => Some("ultra"),
             _ => None,
         },
     }
 }
 
+/// Codex 规范档位序（minimal < low < medium < high < xhigh < max < ultra），供 zen
+/// 逐模型钳制做大小比较；目录里的非法/扩展值（如 "none"）返回 None，查表时被滤掉。
+fn zen_effort_rank(effort: &str) -> Option<u8> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Some(0),
+        "low" => Some(1),
+        "medium" => Some(2),
+        "high" => Some(3),
+        "xhigh" => Some(4),
+        "max" => Some(5),
+        "ultra" => Some(6),
+        _ => None,
+    }
+}
+
 /// MiniMax 严格要求 messages 中只能首条出现 `role=system`，
 /// 否则返回 `invalid params, chat content has invalid message role: system (2013)`。
-/// 把所有 system 消息合并到首位，避免中间 system（如 Codex 的 `developer` 指令）触发该约束；
-/// 该重排对 OpenAI / DeepSeek 等宽松兼容层也是无损的。
+/// 所以 messages 里最多只留首条 system：
+/// - 开头连续的 system（instructions 与首批 developer 指令）合并成首条。
+/// - 会话中途、后面（只隔 system）紧接 user 的 system——Codex 在新回合开头插的
+///   developer 指令（权限、协作模式、模型切换等）——原位改成 user 消息。拼进首条会
+///   改动已经发过的前缀，上游前缀缓存从第一条消息断开，整段对话重算。
+/// - 其余中途 system（夹在工具调用循环里，如图片缩放提示）仍拼进首条：原位插 user
+///   会把一次工具循环拆成两个回合，影响 DeepSeek / Kimi 等的推理连续性。
 fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
+    // 每条消息之后第一条非 system 消息是否为 user。
+    let mut followed_by_user = vec![false; messages.len()];
+    let mut next_is_user = false;
+    for (idx, msg) in messages.iter().enumerate().rev() {
+        followed_by_user[idx] = next_is_user;
+        if !is_hoistable_system_message(msg) {
+            next_is_user = msg.get("role").and_then(Value::as_str) == Some("user");
+        }
+    }
+
     let mut system_chunks: Vec<String> = Vec::new();
     let mut rest: Vec<Value> = Vec::with_capacity(messages.len());
+    let mut seen_non_system = false;
 
-    for msg in messages {
-        if msg.get("role").and_then(|v| v.as_str()) == Some("system") {
-            if let Some(text) = msg.get("content").and_then(|v| v.as_str()) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
+    for (msg, followed_by_user) in messages.into_iter().zip(followed_by_user) {
+        if is_hoistable_system_message(&msg) {
+            let text = msg
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !text.trim().is_empty() {
+                if seen_non_system && followed_by_user {
+                    rest.push(json!({"role": "user", "content": text}));
+                } else {
                     system_chunks.push(text.to_string());
                 }
-                continue;
             }
+            continue;
         }
+        seen_non_system = true;
         rest.push(msg);
     }
 
@@ -516,6 +837,27 @@ fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
     }
     out.extend(rest);
     out
+}
+
+/// 去掉内容为空的 user 消息，返回去掉的条数。
+///
+/// Codex 压缩后重建历史时，只有图片、没有文字的用户消息会被换成一段空文本
+/// （codex-rs `compact.rs` 的 media-only fallback），转成 Chat 就是 `content: ""`。
+/// 严格的 OpenAI 兼容上游直接 400「message content cannot be empty」（#9660）。
+/// 空消息不带任何信息，去掉后其余消息逐字节不变；不含空 user 消息的请求不受影响。
+fn drop_empty_user_messages(messages: &mut Vec<Value>) -> usize {
+    let before = messages.len();
+    messages.retain(|message| {
+        if message.get("role").and_then(Value::as_str) != Some("user") {
+            return true;
+        }
+        match message.get("content") {
+            Some(Value::String(text)) => !text.is_empty(),
+            Some(Value::Array(parts)) => !parts.is_empty(),
+            _ => true,
+        }
+    });
+    before - messages.len()
 }
 
 fn instruction_text(value: &Value) -> String {
@@ -541,8 +883,19 @@ fn append_responses_input_as_chat_messages(
     tool_context: &CodexToolContext,
 ) -> Result<(), ProxyError> {
     let mut pending_tool_calls = Vec::new();
+    let mut pending_media = Vec::new();
     let mut pending_reasoning: Option<String> = None;
     let mut last_assistant_index: Option<usize> = None;
+    // 已登记的 tool_call id：用于识别「孤儿工具结果」。Codex 历史（例如新建
+    // 桌面端会话时注入的 create_thread 回执）可能携带一个没有配对
+    // function_call、call_id 为空的 function_call_output。若把它原样序列化成
+    // Chat 的 role=tool 消息，严格上游（DeepSeek/OpenCode 等）会判定
+    // 「tool message must be a response to a preceding message with tool_calls」
+    // 而直接 400。
+    let mut known_tool_call_ids: HashSet<String> = HashSet::new();
+    // 落在并行工具结果中间的孤儿结果先暂存，等回合边界再降级输出，
+    // 避免出现 `tool, user, tool` 这种仍会被严格上游拒绝的序列。
+    let mut pending_orphan_results: Vec<Value> = Vec::new();
 
     match input {
         Value::String(text) => {
@@ -553,12 +906,21 @@ fn append_responses_input_as_chat_messages(
         }
         Value::Array(items) => {
             for item in items {
+                // 非工具结果条目即回合边界：先输出暂存的孤儿结果，让 Chat 序列
+                // 里 role=tool 消息保持连续；夹在并行工具结果中间直接输出会形成
+                // `tool, user, tool`。
+                if !is_tool_result_item(item) && hoisted_system_message(item).is_none() {
+                    flush_pending_orphan_results(messages, &mut pending_orphan_results);
+                }
                 append_responses_item_as_chat_message(
                     item,
                     messages,
                     &mut pending_tool_calls,
+                    &mut pending_media,
                     &mut pending_reasoning,
                     &mut last_assistant_index,
+                    &mut known_tool_call_ids,
+                    &mut pending_orphan_results,
                     tool_context,
                 )?;
             }
@@ -568,61 +930,211 @@ fn append_responses_input_as_chat_messages(
                 input,
                 messages,
                 &mut pending_tool_calls,
+                &mut pending_media,
                 &mut pending_reasoning,
                 &mut last_assistant_index,
+                &mut known_tool_call_ids,
+                &mut pending_orphan_results,
                 tool_context,
             )?;
         }
         _ => {}
     }
 
+    // 尾部孤儿结果（输入结束时还没等到回合边界）在这里统一降级输出。
+    flush_pending_orphan_results(messages, &mut pending_orphan_results);
+    // If a later assistant tool-call batch was accumulated after an earlier
+    // media-bearing result, the synthetic user media belongs before that next
+    // assistant turn.
+    flush_pending_chat_tool_media(messages, &mut pending_media);
     flush_pending_tool_calls(
         messages,
         &mut pending_tool_calls,
+        &mut pending_media,
         &mut pending_reasoning,
         &mut last_assistant_index,
     );
-    backfill_tool_call_reasoning_placeholders(messages);
+    // 整个 input 处理完毕后仍剩余的 pending reasoning 属于「真正的尾部」思考
+    // （其后已没有任何可前向附挂的 message / function_call），回溯附挂到最后一条
+    // assistant；目标已有 reasoning_content 时追加，以保留同一 turn 的 embedded
+    // reasoning 与 trailing reasoning。
+    attach_pending_reasoning_to_previous_assistant(
+        messages,
+        last_assistant_index,
+        &mut pending_reasoning,
+    );
     Ok(())
 }
 
+fn is_deepseek_chat_model(model: &str) -> bool {
+    let name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name == "deepseek" || name.starts_with("deepseek-")
+}
+
+/// Responses can replay assistant text (including an empty tool-only turn's
+/// trailing message) before all tool results have arrived. Chat requires those
+/// results to follow one assistant tool-call message without another assistant
+/// in between. Keep the replayed content on that message until its calls are
+/// answered, without crossing user/system boundaries or fabricating results.
+fn coalesce_replayed_tool_turn_messages(messages: &mut Vec<Value>) {
+    let mut normalized: Vec<Value> = Vec::with_capacity(messages.len());
+    let mut open_tool_turn: Option<usize> = None;
+    let mut pending_call_ids = HashSet::new();
+
+    for mut message in std::mem::take(messages) {
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        register_known_tool_call_id(&mut pending_call_ids, call);
+                    }
+                }
+                if let Some(index) = open_tool_turn {
+                    let target = &mut normalized[index];
+                    merge_chat_assistant_content(target, message["content"].take());
+                    let mut reasoning = message
+                        .get("reasoning_content")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    attach_pending_reasoning_to_assistant_unique(target, &mut reasoning);
+                    if let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut)
+                    {
+                        target["tool_calls"].as_array_mut().unwrap().append(calls);
+                    }
+                    continue;
+                }
+                if !pending_call_ids.is_empty() {
+                    open_tool_turn = Some(normalized.len());
+                }
+            }
+            Some("tool") => {
+                if let Some(call_id) = message.get("tool_call_id").and_then(Value::as_str) {
+                    pending_call_ids.remove(call_id);
+                }
+                if pending_call_ids.is_empty() {
+                    open_tool_turn = None;
+                }
+            }
+            _ => {
+                open_tool_turn = None;
+                pending_call_ids.clear();
+            }
+        }
+        normalized.push(message);
+    }
+    *messages = normalized;
+}
+
+fn merge_chat_assistant_content(target: &mut Value, content: Value) {
+    fn is_empty(content: &Value) -> bool {
+        content.is_null()
+            || content.as_str().is_some_and(str::is_empty)
+            || content.as_array().is_some_and(Vec::is_empty)
+    }
+
+    fn into_parts(content: Value) -> Vec<Value> {
+        match content {
+            Value::Array(parts) => parts,
+            Value::String(text) => vec![json!({"type": "text", "text": text})],
+            other => vec![other],
+        }
+    }
+
+    if is_empty(&content) {
+        return;
+    }
+    if is_empty(&target["content"]) {
+        target["content"] = content;
+        return;
+    }
+    let previous = target["content"].take();
+    target["content"] = match (previous, content) {
+        (Value::String(mut previous), Value::String(text)) => {
+            previous.push('\n');
+            previous.push_str(&text);
+            Value::String(previous)
+        }
+        (previous, content) => {
+            let mut parts = into_parts(previous);
+            parts.extend(into_parts(content));
+            Value::Array(parts)
+        }
+    };
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_responses_item_as_chat_message(
     item: &Value,
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
+    pending_media: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
+    known_tool_call_ids: &mut HashSet<String>,
+    pending_orphan_results: &mut Vec<Value>,
     tool_context: &CodexToolContext,
 ) -> Result<(), ProxyError> {
     let item_type = item.get("type").and_then(|v| v.as_str());
     match item_type {
         Some("function_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_function_call_to_chat_tool_call(
-                item,
-                tool_context,
-            ));
+            let mut tool_call = responses_function_call_to_chat_tool_call(item, tool_context);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            register_known_tool_call_id(known_tool_call_ids, &tool_call);
+            pending_tool_calls.push(tool_call);
         }
         Some("custom_tool_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_custom_tool_call_to_chat_tool_call(item));
+            let mut tool_call = responses_custom_tool_call_to_chat_tool_call(item, tool_context);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            register_known_tool_call_id(known_tool_call_ids, &tool_call);
+            pending_tool_calls.push(tool_call);
         }
         Some("tool_search_call") => {
             append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
-            pending_tool_calls.push(responses_tool_search_call_to_chat_tool_call(item));
+            let mut tool_call = responses_tool_search_call_to_chat_tool_call(item);
+            copy_tool_call_extra_content(&mut tool_call, item);
+            register_known_tool_call_id(known_tool_call_ids, &tool_call);
+            pending_tool_calls.push(tool_call);
         }
         Some("function_call_output") => {
+            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+            if call_id.is_empty() || !known_tool_call_ids.contains(call_id) {
+                // 没有配对 tool_calls 的孤儿结果：先暂存，等回合边界
+                // （下一个非工具结果条目 / 输入结束）再降级成 user 消息。
+                // 立刻输出会夹在并行工具结果中间形成 `tool, user, tool`，
+                // 后一条 tool 前面隔着 user，严格上游会以「tool message
+                // must be a response to a preceding message with tool_calls」
+                // 直接 400。
+                pending_orphan_results.push(item.clone());
+                return Ok(());
+            }
             flush_pending_tool_calls(
                 messages,
                 pending_tool_calls,
+                pending_media,
                 pending_reasoning,
                 last_assistant_index,
             );
-            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-            let output = match item.get("output") {
-                Some(Value::String(s)) => canonicalize_json_string_if_parseable(s),
-                Some(v) => canonical_json_string(v),
-                None => String::new(),
+            let media_plan = item
+                .get("output")
+                .cloned()
+                .and_then(plan_chat_tool_output_media);
+            let output = if let Some(media_plan) = media_plan {
+                queue_chat_tool_output_media(pending_media, call_id, media_plan.media_parts);
+                media_plan.tool_content
+            } else {
+                // Cache-sensitive no-media fallback: keep these expressions
+                // byte-for-byte equivalent to the pre-fix conversion.
+                match item.get("output") {
+                    Some(Value::String(s)) => canonicalize_json_string_if_parseable(s),
+                    Some(v) => canonical_json_string(v),
+                    None => String::new(),
+                }
             };
             messages.push(json!({
                 "role": "tool",
@@ -631,14 +1143,49 @@ fn append_responses_item_as_chat_message(
             }));
         }
         Some("custom_tool_call_output") | Some("tool_search_output") => {
+            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+            if call_id.is_empty() || !known_tool_call_ids.contains(call_id) {
+                // 没有配对 tool_calls 的孤儿结果：先暂存，等回合边界
+                // （下一个非工具结果条目 / 输入结束）再降级成 user 消息。
+                // 立刻输出会夹在并行工具结果中间形成 `tool, user, tool`，
+                // 后一条 tool 前面隔着 user，严格上游会以「tool message
+                // must be a response to a preceding message with tool_calls」
+                // 直接 400。
+                pending_orphan_results.push(item.clone());
+                return Ok(());
+            }
             flush_pending_tool_calls(
                 messages,
                 pending_tool_calls,
+                pending_media,
                 pending_reasoning,
                 last_assistant_index,
             );
-            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-            let output = canonical_json_string(item);
+            let mut transformed_item = item.clone();
+            let replacement_block = json!({
+                "type": "text",
+                "text": TOOL_RESULT_MEDIA_MOVED_MARKER
+            });
+            let mut media_parts = Vec::new();
+            let replaced = transformed_item
+                .get_mut("output")
+                .map(|output| {
+                    strip_and_clamp_media_from_tool_value(
+                        output,
+                        &mut media_parts,
+                        ToolMediaScope::AllSupported,
+                        &replacement_block,
+                        TOOL_RESULT_MEDIA_MOVED_MARKER,
+                    )
+                })
+                .unwrap_or(0);
+            let output = if replaced > 0 {
+                queue_chat_tool_output_media(pending_media, call_id, media_parts);
+                canonical_json_string(&transformed_item)
+            } else {
+                // Preserve the legacy whole-item representation exactly.
+                canonical_json_string(item)
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -646,20 +1193,77 @@ fn append_responses_item_as_chat_message(
             }));
         }
         Some("reasoning") => {
-            let reasoning = responses_reasoning_item_text(item);
-            let attached_to_previous = pending_tool_calls.is_empty()
-                && attach_reasoning_to_last_assistant(messages, *last_assistant_index, &reasoning);
-            if !attached_to_previous {
-                append_pending_reasoning(pending_reasoning, reasoning);
+            // reasoning 一律先进入 pending_reasoning，前向附挂到其后的
+            // message / function_call（后者经 flush_pending_tool_calls 消费）。
+            // 此前这里在 pending_tool_calls 为空时直接回溯附挂到上一条 assistant，
+            // 会把新一轮的思考错拼进旧消息，导致紧跟的纯文本 assistant 丢失
+            // reasoning_content，思考型模型（kimi 等）多轮对话因此中途"断片"。
+            // 真正的尾部剩余由 input 结束时的收尾逻辑、或回合边界消息（user 等）
+            // 到达时回溯附挂，见 attach_pending_reasoning_to_previous_assistant。
+            append_pending_reasoning(pending_reasoning, responses_reasoning_item_text(item));
+        }
+        // Codex 远程压缩：触发条目换成压缩提示词，历史里的压缩条目换成摘要正文，
+        // 都按一条普通用户消息处理（回合边界、pending reasoning 的附挂规则照旧）。
+        Some("compaction_trigger") => {
+            append_responses_item_as_chat_message(
+                &codex_compaction::compaction_prompt_item(),
+                messages,
+                pending_tool_calls,
+                pending_media,
+                pending_reasoning,
+                last_assistant_index,
+                known_tool_call_ids,
+                pending_orphan_results,
+                tool_context,
+            )?;
+        }
+        Some("compaction" | "compaction_summary" | "context_compaction") => {
+            if let Some(text) = codex_compaction::compaction_item_replay_text(item) {
+                append_responses_item_as_chat_message(
+                    &codex_compaction::user_message_item(&text),
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                    known_tool_call_ids,
+                    pending_orphan_results,
+                    tool_context,
+                )?;
             }
         }
+        // An `additional_tools` carrier declares tools for this request; its
+        // nested tools are lifted via `build_codex_tool_context_from_request`
+        // and the carrier itself is not a message. It carries a `role` but no
+        // `content`, so letting it fall through the generic message arm used
+        // to fabricate a `content: null` system message that strict chat
+        // gateways reject with `messages[N]: missing field "content"`.
+        Some("additional_tools") => {}
         Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+            if let Some(system_message) = hoisted_system_message(item) {
+                // Hoisted to messages[0] by collapse_system_messages_to_head; do not
+                // flush pending tool media at its mid-stream position.
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
+                messages.push(system_message);
+                return Ok(());
+            }
             flush_pending_tool_calls(
                 messages,
                 pending_tool_calls,
+                pending_media,
                 pending_reasoning,
                 last_assistant_index,
             );
+            // `flush_pending_tool_calls` intentionally returns early when
+            // there is no new assistant batch. A previous tool result may
+            // still have media waiting, so flush it before this new message.
+            flush_pending_chat_tool_media(messages, pending_media);
             let role = item
                 .get("role")
                 .and_then(|v| v.as_str())
@@ -675,36 +1279,98 @@ fn append_responses_item_as_chat_message(
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
                 return Ok(());
-            } else if pending_reasoning.is_some() {
-                pending_reasoning.take();
+            } else {
+                // 非 assistant 的回合边界消息（user 等）：pending reasoning 不再直接
+                // 丢弃，优先回溯附挂到上一条 assistant；其已有 reasoning_content 时
+                // 追加尾部 reasoning。reasoning 不允许跨 user 回合泄漏到之后的
+                // assistant 消息；无上一条 assistant 可附挂时自然丢弃（等同原行为）。
+                attach_pending_reasoning_to_previous_assistant(
+                    messages,
+                    *last_assistant_index,
+                    pending_reasoning,
+                );
             }
             update_last_assistant_index(messages, &message, last_assistant_index);
             messages.push(message);
         }
         Some("message") | None => {
-            flush_pending_tool_calls(
-                messages,
-                pending_tool_calls,
-                pending_reasoning,
-                last_assistant_index,
-            );
-            if item.get("role").is_some() || item.get("content").is_some() {
-                let message = responses_message_item_to_chat_message(item, pending_reasoning);
+            if let Some(system_message) = hoisted_system_message(item) {
+                // Hoisted to messages[0] by collapse_system_messages_to_head;
+                // keep surrounding parallel tool outputs and media contiguous.
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
+                messages.push(system_message);
+            } else if item.get("role").is_some() || item.get("content").is_some() {
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
+                flush_pending_chat_tool_media(messages, pending_media);
+                let message = responses_message_item_to_chat_message(
+                    item,
+                    pending_reasoning,
+                    messages,
+                    *last_assistant_index,
+                );
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
+            } else if pending_media.is_empty() {
+                // Preserve legacy no-media ordering: inert message-like items
+                // used to close a pending tool-call batch.
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
             }
         }
         _ => {
-            flush_pending_tool_calls(
-                messages,
-                pending_tool_calls,
-                pending_reasoning,
-                last_assistant_index,
-            );
-            if item.get("role").is_some() || item.get("content").is_some() {
-                let message = responses_message_item_to_chat_message(item, pending_reasoning);
+            if let Some(system_message) = hoisted_system_message(item) {
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
+                messages.push(system_message);
+            } else if item.get("role").is_some() || item.get("content").is_some() {
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
+                flush_pending_chat_tool_media(messages, pending_media);
+                let message = responses_message_item_to_chat_message(
+                    item,
+                    pending_reasoning,
+                    messages,
+                    *last_assistant_index,
+                );
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
+            } else if pending_media.is_empty() {
+                // Preserve legacy no-media ordering without letting an inert
+                // unknown item flush a media-bearing result batch.
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_media,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
             }
         }
     }
@@ -712,9 +1378,145 @@ fn append_responses_item_as_chat_message(
     Ok(())
 }
 
+/// 登记一个即将进入 Chat 历史的 tool_call id。统一的取值顺序与
+/// `responses_*_to_chat_tool_call` 保持一致（call_id 优先，回退 id）。
+fn register_known_tool_call_id(known_tool_call_ids: &mut HashSet<String>, tool_call: &Value) {
+    if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
+        if !id.is_empty() {
+            known_tool_call_ids.insert(id.to_string());
+        }
+    }
+}
+
+/// 判断条目是否为工具结果（function_call_output / custom_tool_call_output /
+/// tool_search_output）。孤儿暂存逻辑用它识别回合边界：只有连续的工具结果
+/// 能保持 role=tool 相邻，其他条目出现即意味着结果段结束。
+fn is_tool_result_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call_output" | "custom_tool_call_output" | "tool_search_output")
+    )
+}
+
+fn is_hoistable_system_message(msg: &Value) -> bool {
+    msg.get("role").and_then(Value::as_str) == Some("system")
+        && msg.get("content").is_some_and(Value::is_string)
+}
+
+fn hoisted_system_message(item: &Value) -> Option<Value> {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if matches!(
+        item_type,
+        Some(
+            "function_call"
+                | "custom_tool_call"
+                | "tool_search_call"
+                | "function_call_output"
+                | "custom_tool_call_output"
+                | "tool_search_output"
+                | "reasoning"
+                | "compaction_trigger"
+                | "compaction"
+                | "compaction_summary"
+                | "context_compaction"
+                | "additional_tools"
+        )
+    ) {
+        return None;
+    }
+    let role = item.get("role").and_then(Value::as_str)?;
+    if responses_role_to_chat_role(role) != "system" {
+        return None;
+    }
+    let content = match item_type {
+        Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+            responses_content_to_chat_content("system", &Value::Array(vec![item.clone()]))
+        }
+        _ => responses_content_to_chat_content("system", item.get("content")?),
+    };
+    content.is_string().then(|| {
+        json!({
+            "role": "system",
+            "content": content
+        })
+    })
+}
+
+/// 输出暂存的孤儿工具结果。孤儿可能夹在并行工具结果中间
+/// （`tool, 孤儿, tool`）；立即降级成 user 消息会打断 tool 序列，后一条
+/// tool 前面隔着 user，仍会被严格上游 400，因此统一等到回合边界
+/// （下一个非工具结果条目 / 输入结束）再在这里输出。
+///
+/// 这里刻意不消费 pending reasoning、也不改写 `last_assistant_index`：
+/// 合成 user 消息只是降级输出，不是真实用户回合，不应改变 reasoning 的
+/// 归属。紧随其后的边界条目会像没有孤儿一样正常附挂 pending reasoning，
+/// 输入结束时也有尾部兜底；若在此处回溯附挂并清空索引，会把本应前向
+/// 附挂给后继 function_call 批次的 reasoning 提前消费掉。
+fn flush_pending_orphan_results(
+    messages: &mut Vec<Value>,
+    pending_orphan_results: &mut Vec<Value>,
+) {
+    for item in std::mem::take(pending_orphan_results) {
+        append_orphan_tool_output_as_user_message(messages, &item);
+    }
+}
+
+/// 孤儿工具结果降级为 user 消息。这类条目没有可配对的 `tool_calls`
+/// （典型来源：call_id 为空的 function_call_output），保留内容以避免丢失
+/// 上下文，但不能以 role=tool 的形式发给严格上游。
+///
+/// 输出里的图片/文件媒体块复用配对路径的提取逻辑：文本 body 内联
+/// `TOOL_RESULT_MEDIA_ATTACHED_MARKER` 占位，媒体本体作为同一条 user
+/// 消息的 content parts 跟随，避免图片被 base64 序列化成纯文本——模型既
+/// 看不到图，token 还会被瞬间撑爆。配对路径的 "moved to the following
+/// user message" 占位在本路径会指向一条不存在的消息，不能沿用。
+fn append_orphan_tool_output_as_user_message(messages: &mut Vec<Value>, item: &Value) {
+    let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+    let (body, media_parts) = plan_orphan_tool_output_body(item.get("output"));
+    let marker = if call_id.is_empty() {
+        ORPHAN_TOOL_OUTPUT_MARKER.to_string()
+    } else {
+        format!("{ORPHAN_TOOL_OUTPUT_MARKER} (call_id: {call_id})")
+    };
+    let text = format!("{marker}\n{body}");
+    let content = if media_parts.is_empty() {
+        json!(text)
+    } else {
+        let mut parts = vec![json!({ "type": "text", "text": text })];
+        parts.extend(media_parts);
+        Value::Array(parts)
+    };
+    messages.push(json!({
+        "role": "user",
+        "content": content
+    }));
+}
+
+/// 计算孤儿工具结果的文本 body 与媒体 parts。媒体识别复用配对路径的
+/// `plan_chat_tool_output_media_with_marker`；没有媒体时保持旧版逐字段的
+/// 纯文本序列化，不给无媒体输出多加一层 JSON 包装。
+///
+/// 孤儿路径的媒体就挂在这条 user 消息自己的后续 parts 里，占位符用
+/// `TOOL_RESULT_MEDIA_ATTACHED_MARKER`（与 Anthropic/Gemini/Responses
+/// bridge 的"媒体已作为原生媒体挂载"用词一致）。
+fn plan_orphan_tool_output_body(output: Option<&Value>) -> (String, Vec<Value>) {
+    if let Some(plan) = output.cloned().and_then(|output| {
+        plan_chat_tool_output_media_with_marker(output, TOOL_RESULT_MEDIA_ATTACHED_MARKER)
+    }) {
+        return (plan.tool_content, plan.media_parts);
+    }
+    let body = match output {
+        Some(Value::String(s)) => canonicalize_json_string_if_parseable(s),
+        Some(v) => canonical_json_string(v),
+        None => String::new(),
+    };
+    (body, Vec::new())
+}
+
 fn flush_pending_tool_calls(
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
+    pending_media: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
 ) {
@@ -722,6 +1524,24 @@ fn flush_pending_tool_calls(
         return;
     }
 
+    // One Responses model turn can contain an assistant commentary message
+    // directly followed by function-call items. Keep them on the same Chat
+    // assistant message: a standalone text-only assistant turn teaches Chat
+    // models to stop after a progress update instead of emitting the expected
+    // tool call.
+    if let Some(merged_index) = merge_pending_tool_calls_into_adjacent_assistant(
+        messages,
+        pending_tool_calls,
+        pending_reasoning,
+    ) {
+        *last_assistant_index = Some(merged_index);
+        return;
+    }
+
+    // Media from the preceding tool-result batch must be presented before a
+    // new assistant tool-call turn. Consecutive outputs do not enter here
+    // because `pending_tool_calls` is empty after the first output.
+    flush_pending_chat_tool_media(messages, pending_media);
     let mut message = json!({
         "role": "assistant",
         "content": null,
@@ -732,9 +1552,87 @@ fn flush_pending_tool_calls(
     messages.push(message);
 }
 
+/// Merge pending Chat tool calls into a directly adjacent assistant message
+/// that does not carry tool calls yet. The Responses input preserves both the
+/// commentary text and the calls as separate items of the same model turn;
+/// serializing them as two consecutive assistant messages lets Chat models
+/// imitate the first text-only message as a complete turn.
+fn merge_pending_tool_calls_into_adjacent_assistant(
+    messages: &mut [Value],
+    pending_tool_calls: &mut Vec<Value>,
+    pending_reasoning: &mut Option<String>,
+) -> Option<usize> {
+    let index = messages
+        .iter()
+        .rposition(|msg| !is_hoistable_system_message(msg))?;
+    let message = messages.get_mut(index)?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let has_tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    if has_tool_calls {
+        return None;
+    }
+
+    let obj = message.as_object_mut()?;
+    obj.insert(
+        "tool_calls".to_string(),
+        Value::Array(std::mem::take(pending_tool_calls)),
+    );
+    attach_pending_reasoning_to_assistant_unique(message, pending_reasoning);
+    Some(index)
+}
+
+fn attach_pending_reasoning_to_assistant_unique(
+    message: &mut Value,
+    pending_reasoning: &mut Option<String>,
+) {
+    let Some(reasoning) = pending_reasoning.take() else {
+        return;
+    };
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return;
+    }
+
+    let existing_text = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let existing_segments: Vec<&str> = existing_text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let missing_segments: Vec<&str> = reasoning
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty() && !existing_segments.contains(segment))
+        .collect();
+    if missing_segments.is_empty() {
+        return;
+    }
+
+    let merged = if existing_segments.is_empty() {
+        missing_segments.join("\n\n")
+    } else {
+        let existing = existing_segments.join("\n\n");
+        let missing = missing_segments.join("\n\n");
+        format!("{existing}\n\n{missing}")
+    };
+    if let Some(obj) = message.as_object_mut() {
+        obj.insert("reasoning_content".to_string(), Value::String(merged));
+    }
+}
+
 fn responses_message_item_to_chat_message(
     item: &Value,
     pending_reasoning: &mut Option<String>,
+    messages: &mut [Value],
+    last_assistant_index: Option<usize>,
 ) -> Value {
     let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
     let chat_role = responses_role_to_chat_role(role);
@@ -751,8 +1649,15 @@ fn responses_message_item_to_chat_message(
     if chat_role == "assistant" {
         append_pending_reasoning(pending_reasoning, responses_message_reasoning_text(item));
         attach_pending_reasoning_to_assistant(&mut message, pending_reasoning);
-    } else if pending_reasoning.is_some() {
-        pending_reasoning.take();
+    } else {
+        // 非 assistant 的回合边界消息（user 等）：pending reasoning 不再直接丢弃，
+        // 回溯附挂到上一条 assistant；其已有 reasoning_content 时追加尾部
+        // reasoning，同时防止 reasoning 跨 user 回合泄漏到之后的 assistant 消息。
+        attach_pending_reasoning_to_previous_assistant(
+            messages,
+            last_assistant_index,
+            pending_reasoning,
+        );
     }
 
     message
@@ -846,8 +1751,8 @@ fn attach_pending_reasoning_to_assistant(
 
 /// 在所有 input 处理完毕后，对仍缺 `reasoning_content` 的 assistant tool-call 消息补占位。
 /// 必须作为管线末端的最终兜底执行：真实 reasoning 可能以尾随 `reasoning` item 的形式经
-/// `attach_reasoning_to_last_assistant` 回填，过早注入占位会被 `append_reasoning_content`
-/// 追加而污染真实思考。
+/// `attach_pending_reasoning_to_previous_assistant` 回填，过早注入占位会被
+/// `append_reasoning_content` 追加而污染真实思考。
 fn backfill_tool_call_reasoning_placeholders(messages: &mut [Value]) {
     for message in messages.iter_mut() {
         let is_assistant_tool_call = message.get("role").and_then(|value| value.as_str())
@@ -883,34 +1788,62 @@ fn ensure_tool_call_reasoning_content(message: &mut Value) {
     }
 }
 
-fn attach_reasoning_to_last_assistant(
+/// 移除 assistant 历史里的 `reasoning_content`，返回被移除的消息条数。
+///
+/// 该字段是 DeepSeek / Kimi 经第三方网关时的兼容约定，严格校验的
+/// OpenAI 兼容上游（Mistral）会以 `extra_forbidden` 整条 422 拒收。所有注入点
+/// （真实思考回填、`"tool call"` 占位）都在本模块内，出口统一剥离比逐个给注入点
+/// 加门控更不容易漏。与 `claude.rs` 的
+/// `should_preserve_reasoning_content_for_openai_chat` 同口径。
+fn strip_assistant_reasoning_content(messages: &mut [Value]) -> usize {
+    let mut stripped = 0;
+    for message in messages.iter_mut() {
+        let is_assistant = message.get("role").and_then(Value::as_str) == Some("assistant");
+        if !is_assistant {
+            continue;
+        }
+        if let Some(obj) = message.as_object_mut() {
+            if obj.remove("reasoning_content").is_some() {
+                stripped += 1;
+            }
+        }
+    }
+    stripped
+}
+
+/// 将仍未消费的 pending reasoning 回溯附挂到上一条 assistant 消息。
+///
+/// 只允许两种「真正的尾部」场景调用：
+/// 1. 整个 input 处理完毕后 pending_reasoning 仍有剩余——其后已没有任何可
+///    前向附挂的 message / function_call；
+/// 2. user 等回合边界消息到达时 pending_reasoning 非空——reasoning 不允许
+///    跨 user 回合泄漏到之后的 assistant 消息，也不能直接丢弃可归属的思考。
+///
+/// 这里已经处于尾部/边界收尾点，不是普通 reasoning 的前向归属路径；
+/// 若目标已有 reasoning_content，追加尾部 reasoning 以保留同一 assistant turn
+/// 中同时出现的 embedded reasoning 与尾随 reasoning。无论是否附挂成功，
+/// pending 都会被消费（拿走），绝不留到下一条 assistant。
+fn attach_pending_reasoning_to_previous_assistant(
     messages: &mut [Value],
     last_assistant_index: Option<usize>,
-    reasoning: &Option<String>,
-) -> bool {
-    let Some(reasoning) = reasoning
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return true;
+    pending_reasoning: &mut Option<String>,
+) {
+    let Some(reasoning) = pending_reasoning.take() else {
+        return;
     };
-    let Some(index) = last_assistant_index else {
-        return false;
-    };
-    let Some(message) = messages.get_mut(index) else {
-        return false;
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return;
+    }
+    let Some(message) = last_assistant_index.and_then(|index| messages.get_mut(index)) else {
+        return;
     };
     if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-        return false;
+        return;
     }
-
     if let Some(obj) = message.as_object_mut() {
         append_reasoning_content(obj, reasoning);
-        return true;
     }
-
-    false
 }
 
 fn responses_message_reasoning_text(item: &Value) -> Option<String> {
@@ -1010,44 +1943,47 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
 }
 
 fn responses_input_file_to_chat_file(part: &Value) -> Option<Value> {
-    let mut file = serde_json::Map::new();
-    let has_supported_file_ref = part.get("file_id").is_some() || part.get("file_data").is_some();
-    if !has_supported_file_ref {
-        return None;
-    }
-
-    for key in ["file_id", "file_data", "filename"] {
-        if let Some(value) = part.get(key) {
-            file.insert(key.to_string(), value.clone());
-        }
-    }
-    Some(Value::Object(file))
+    chat_file_from_input_file(part)
 }
 
-fn collect_tool_search_output_tools(value: &Value, context: &mut CodexToolContext) {
+/// Collect tools declared inline in the request `input` instead of top-level
+/// `tools`: `tool_search_output` items (dynamically loaded tool groups) and
+/// `additional_tools` carriers (Codex 0.154+ ships extra tools — the
+/// `functions`/`collaboration` exec sandbox, plugins — in this Responses
+/// private-extension carrier). The xAI Responses passthrough already promotes
+/// the same carriers (`promote_additional_tools`); the Chat and Anthropic
+/// converters go through this registry so they keep the carried tools too.
+fn collect_input_declared_tools(
+    value: &Value,
+    seen_identities: &mut HashSet<(Option<String>, String)>,
+    out: &mut Vec<PendingCodexTool>,
+) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_tool_search_output_tools(item, context);
+                collect_input_declared_tools(item, seen_identities, out);
             }
         }
         Value::Object(obj) => {
-            if obj.get("type").and_then(|v| v.as_str()) == Some("tool_search_output") {
+            if matches!(
+                obj.get("type").and_then(|v| v.as_str()),
+                Some("tool_search_output" | "additional_tools")
+            ) {
                 if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
                     for tool in tools {
-                        context.add_response_tool(tool);
+                        collect_response_tool(tool, seen_identities, out);
                     }
                 }
             }
             for value in obj.values() {
-                collect_tool_search_output_tools(value, context);
+                collect_input_declared_tools(value, seen_identities, out);
             }
         }
         _ => {}
     }
 }
 
-fn flatten_namespace_tool_name(namespace: &str, name: &str) -> String {
+pub(crate) fn flatten_namespace_tool_name(namespace: &str, name: &str) -> String {
     let full_name = format!("{namespace}__{name}");
     if full_name.len() <= CHAT_TOOL_NAME_MAX_LEN {
         return full_name;
@@ -1092,6 +2028,96 @@ fn serialize_tool_definition_for_description(tool: &Value) -> String {
     canonical_json_string(tool)
 }
 
+/// Normalize a function's `parameters` JSON Schema for strict Chat Completions
+/// providers while preserving the schema's validation semantics.
+///
+/// Some Responses tools carry `parameters: null`, `parameters: {"type": null}`
+/// or `required: null`. A few strict OpenAI-compatible gateways also require
+/// `required` to be an array whenever `additionalProperties` is `false`.
+fn normalize_function_parameters(params: Option<&Value>) -> Value {
+    let mut params = match params {
+        Some(Value::Object(obj)) => Value::Object(obj.clone()),
+        _ => json!({"type": "object", "properties": {}}),
+    };
+    sanitize_parameter_schema(&mut params, true);
+    params
+}
+
+fn sanitize_parameter_schema(schema: &mut Value, is_root: bool) {
+    let Value::Object(obj) = schema else {
+        return;
+    };
+
+    if is_root && obj.get("type").and_then(Value::as_str) != Some("object") {
+        obj.insert("type".to_string(), json!("object"));
+    }
+
+    let invalid_required = obj
+        .get("required")
+        .is_some_and(|required| !required.is_array());
+    let strict_object_without_required = obj.get("required").is_none()
+        && obj.get("additionalProperties") == Some(&Value::Bool(false));
+    if invalid_required || strict_object_without_required {
+        obj.insert("required".to_string(), json!([]));
+    }
+
+    // Recurse only through keywords whose values are themselves schemas. This
+    // avoids rewriting arbitrary JSON objects in `default` or `examples`.
+    for key in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(children) = obj.get_mut(key).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                sanitize_parameter_schema_value(child, false);
+            }
+        }
+    }
+
+    for key in [
+        "items",
+        "additionalItems",
+        "contains",
+        "propertyNames",
+        "additionalProperties",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contentSchema",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(child) = obj.get_mut(key) {
+            sanitize_parameter_schema_value(child, false);
+        }
+    }
+
+    for key in ["prefixItems", "allOf", "anyOf", "oneOf"] {
+        if let Some(children) = obj.get_mut(key).and_then(Value::as_array_mut) {
+            for child in children {
+                sanitize_parameter_schema_value(child, false);
+            }
+        }
+    }
+}
+
+fn sanitize_parameter_schema_value(value: &mut Value, is_root: bool) {
+    match value {
+        Value::Object(_) => sanitize_parameter_schema(value, is_root),
+        Value::Array(children) => {
+            for child in children {
+                sanitize_parameter_schema_value(child, false);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option<Value> {
     if tool.get("type").and_then(|v| v.as_str()) != Some("function") {
         return None;
@@ -1106,6 +2132,10 @@ fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option
             .get_mut("function")
             .and_then(|value| value.as_object_mut())
         {
+            // Normalize parameters for strict OpenAI-compatible providers.
+            let parameters = normalize_function_parameters(obj.get("parameters"));
+            obj.insert("parameters".to_string(), parameters);
+
             obj.insert("name".to_string(), json!(chat_name));
             if let Some(strict) = tool.get("strict").cloned() {
                 obj.entry("strict".to_string()).or_insert(strict);
@@ -1116,9 +2146,18 @@ fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option
 
     let mut function = json!({
         "name": chat_name,
-        "description": tool.get("description").cloned().unwrap_or(Value::Null),
-        "parameters": tool.get("parameters").cloned().unwrap_or_else(|| json!({}))
     });
+    // Omit a missing description instead of serializing null — hosted tools
+    // and undescribed custom tools reach this branch without the field, and
+    // strict OpenAI-compatible upstreams reject the whole request on a null
+    // value (400 "expected string, received null"). Same treatment as the
+    // anthropic→chat/responses converters; insertion keeps the original
+    // name→description→parameters key order for byte-identical output when
+    // the description is present.
+    if let Some(description) = tool.get("description").filter(|d| !d.is_null()) {
+        function["description"] = description.clone();
+    }
+    function["parameters"] = normalize_function_parameters(tool.get("parameters"));
     if let Some(strict) = tool.get("strict") {
         function["strict"] = strict.clone();
     }
@@ -1153,20 +2192,24 @@ fn responses_function_call_to_chat_tool_call(
     })
 }
 
-fn responses_custom_tool_call_to_chat_tool_call(item: &Value) -> Value {
+fn responses_custom_tool_call_to_chat_tool_call(
+    item: &Value,
+    tool_context: &CodexToolContext,
+) -> Value {
     let call_id = item
         .get("call_id")
         .or_else(|| item.get("id"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let chat_name = tool_context.chat_name_for_response_function(name, None);
     let input = item.get("input").cloned().unwrap_or_else(|| json!(""));
 
     json!({
         "id": call_id,
         "type": "function",
         "function": {
-            "name": name,
+            "name": chat_name,
             "arguments": canonical_json_string(&json!({ CUSTOM_TOOL_INPUT_FIELD: input }))
         }
     })
@@ -1216,21 +2259,16 @@ fn responses_tool_choice_to_chat(tool_choice: &Value, tool_context: &CodexToolCo
         }
         Value::Object(obj) if obj.get("type").and_then(|v| v.as_str()) == Some("custom") => {
             let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let chat_name = tool_context.chat_name_for_response_function(name, None);
             json!({
                 "type": "function",
                 "function": {
-                    "name": name
+                    "name": chat_name
                 }
             })
         }
         _ => tool_choice.clone(),
     }
-}
-
-/// Convert a non-streaming Chat Completions response into a Responses response.
-#[allow(dead_code)]
-pub fn chat_completion_to_response(body: Value) -> Result<Value, ProxyError> {
-    chat_completion_to_response_with_context(body, &CodexToolContext::default())
 }
 
 /// Convert a non-streaming Chat Completions response into a Responses response,
@@ -1239,6 +2277,7 @@ pub(crate) fn chat_completion_to_response_with_context(
     body: Value,
     tool_context: &CodexToolContext,
 ) -> Result<Value, ProxyError> {
+    let body = unwrap_chat_completion_envelope(body);
     let choices = body
         .get("choices")
         .and_then(|v| v.as_array())
@@ -1265,11 +2304,28 @@ pub(crate) fn chat_completion_to_response_with_context(
     if let Some(message_item) = chat_message_to_response_output_item(message, &response_id) {
         output.push(message_item);
     }
-    output.extend(chat_tool_calls_to_response_output_items(
-        message,
-        reasoning.as_deref(),
-        tool_context,
-    ));
+    let tool_calls =
+        chat_tool_calls_to_response_output_items(message, reasoning.as_deref(), tool_context);
+
+    // 丢弃过工具调用、且最终一个工具调用都没剩下时，Codex 会收到一个
+    // "status=completed 但 output 里没有任何工具调用" 的回合，agent loop 必然静默
+    // 收尾（#4341）。此时如实报错，而不是谎报成功。只要还剩下任何一个合法工具
+    // 调用，Codex 本来就会继续，判据不成立，行为保持不变。
+    //
+    // 🔴 与流式分支一致，只对本应 `completed` 的回合生效：`finish_reason=length`
+    // 是截断，工具调用缺 name 是截断的后果而非上游发了畸形数据，报成
+    // tool_call_dropped 会给出错误的归因。
+    if response_status_from_finish_reason(finish_reason) == "completed"
+        && tool_calls.dropped > 0
+        && tool_calls.items.is_empty()
+    {
+        return Err(ProxyError::TransformError(format!(
+            "Upstream returned {} tool call(s) without a function name, \
+             leaving no usable tool call in this turn",
+            tool_calls.dropped
+        )));
+    }
+    output.extend(tool_calls.items);
 
     let mut response = json!({
         "id": response_id,
@@ -1310,6 +2366,18 @@ fn chat_reasoning_to_response_output_item(
 fn chat_reasoning_text(message: &Value) -> Option<String> {
     if let Some(reasoning) = extract_reasoning_field_text(message) {
         return Some(reasoning);
+    }
+
+    // Mistral 开思考后把思考放在分段 content 的 thinking 段里（#9902）
+    if let Some(parts) = message.get("content").and_then(|v| v.as_array()) {
+        let reasoning = parts
+            .iter()
+            .filter(|part| part.get("type").and_then(|v| v.as_str()) == Some("thinking"))
+            .filter_map(chat_thinking_part_text)
+            .collect::<String>();
+        if !reasoning.is_empty() {
+            return Some(reasoning);
+        }
     }
 
     if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
@@ -1381,7 +2449,7 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }
 
     Some(json!({
-        "id": format!("{response_id}_msg"),
+        "id": response_message_item_id(response_id),
         "type": "message",
         "status": "completed",
         "role": "assistant",
@@ -1389,12 +2457,20 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }))
 }
 
+/// 非流式工具调用转换结果。`dropped` 记录因缺少合法函数名而被丢弃的条数，
+/// 供调用方判断本回合是否已经不可能让 Codex 继续（见 #4341）。
+struct ChatToolCallItems {
+    items: Vec<Value>,
+    dropped: usize,
+}
+
 fn chat_tool_calls_to_response_output_items(
     message: &Value,
     reasoning: Option<&str>,
     tool_context: &CodexToolContext,
-) -> Vec<Value> {
+) -> ChatToolCallItems {
     let mut output = Vec::new();
+    let mut dropped = 0usize;
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
         for (index, tool_call) in tool_calls.iter().enumerate() {
@@ -1402,8 +2478,24 @@ fn chat_tool_calls_to_response_output_items(
             // may generate tool calls without providing a valid name)
             let function = tool_call.get("function").unwrap_or(&Value::Null);
             let name = function.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if name.is_empty() {
-                log::warn!("[Codex] Skipping tool call with missing name");
+            // 纯空白名同样对应不到任何已发布工具，与空名同等对待。
+            if name.trim().is_empty() {
+                dropped += 1;
+                // 只记结构信息，不记 arguments 内容（可能包含用户代码）。
+                let call_id_empty = tool_call
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(str::is_empty);
+                let args_bytes = function
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .map(str::len)
+                    .unwrap_or(0);
+                log::warn!(
+                    "[Codex] dropped tool call: index={index} call_id_empty={call_id_empty} \
+                     args_bytes={args_bytes} tools_total={}",
+                    tool_calls.len()
+                );
                 continue;
             }
             output.push(chat_tool_call_to_response_item(
@@ -1414,14 +2506,16 @@ fn chat_tool_calls_to_response_output_items(
             ));
         }
     } else if let Some(function_call) = message.get("function_call") {
-        if let Some(item) =
-            chat_legacy_function_call_to_response_item(function_call, reasoning, tool_context)
-        {
-            output.push(item);
+        match chat_legacy_function_call_to_response_item(function_call, reasoning, tool_context) {
+            Some(item) => output.push(item),
+            None => dropped += 1,
         }
     }
 
-    output
+    ChatToolCallItems {
+        items: output,
+        dropped,
+    }
 }
 
 fn chat_tool_call_to_response_item(
@@ -1441,7 +2535,7 @@ fn chat_tool_call_to_response_item(
     let arguments = canonicalize_tool_arguments(function.get("arguments"));
 
     let item_id = response_tool_call_item_id_from_chat_name(&call_id, name, tool_context);
-    response_tool_call_item_from_chat_name(
+    let mut item = response_tool_call_item_from_chat_name(
         &item_id,
         "completed",
         &call_id,
@@ -1449,7 +2543,9 @@ fn chat_tool_call_to_response_item(
         &arguments,
         reasoning,
         tool_context,
-    )
+    );
+    copy_tool_call_extra_content(&mut item, tool_call);
+    item
 }
 
 fn chat_legacy_function_call_to_response_item(
@@ -1468,9 +2564,18 @@ fn chat_legacy_function_call_to_response_item(
         .unwrap_or("");
 
     // Skip legacy function calls with missing names (defensive: some models
-    // may generate function_call without providing a valid name)
-    if name.is_empty() {
-        log::warn!("[Codex] Skipping legacy function_call with missing name");
+    // may generate function_call without providing a valid name)。
+    // 纯空白名同样对应不到任何已发布工具，与空名同等对待。
+    if name.trim().is_empty() {
+        // 只记结构信息，不记 arguments 内容（可能包含用户代码）。
+        let args_bytes = function_call
+            .get("arguments")
+            .and_then(|v| v.as_str())
+            .map(str::len)
+            .unwrap_or(0);
+        log::warn!(
+            "[Codex] dropped legacy function_call: call_id={call_id} args_bytes={args_bytes}"
+        );
         return None;
     }
 
@@ -1598,6 +2703,7 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
     let Some(usage) = usage.filter(|value| value.is_object() && !value.is_null()) else {
         return json!({
             "input_tokens": 0,
+            "input_tokens_details": { "cached_tokens": 0 },
             "output_tokens": 0,
             "total_tokens": 0,
             "output_tokens_details": { "reasoning_tokens": 0 }
@@ -1625,12 +2731,39 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         "total_tokens": total_tokens
     });
 
-    if let Some(cached) = usage
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
+    // 每环要求「存在且非 0」：显式 0 按未上报处理继续向后找（#8041：部分中转把
+    // 靠前字段硬编码为桩 0，真值只在低顺位字段）。官方端点同值非 0 不受影响；
+    // 真 0 命中时各候选同为 0/缺失，结果不变。
+    fn provided_nonzero(value: Option<&Value>) -> Option<u64> {
+        value.and_then(Value::as_u64).filter(|tokens| *tokens > 0)
+    }
+    let direct_cache_read = provided_nonzero(usage.get("cache_read_input_tokens"));
+    let cached = direct_cache_read
+        .or_else(|| provided_nonzero(usage.pointer("/prompt_tokens_details/cached_tokens")))
+        .or_else(|| provided_nonzero(usage.pointer("/input_tokens_details/cached_tokens")))
+        // DeepSeek Chat 的文档化缓存命中字段（与 usage/parser.rs 的处理对应），末位兜底。
+        // 官方端点目前把同值镜像进未文档化的 prompt_tokens_details.cached_tokens（上面的
+        // 标准字段已命中），故仅当上游只发文档字段、不发镜像时此兜底生效（如部分中转），
+        // 并防御未文档化镜像将来消失；上游发任一标准字段时行为零变化。
+        .or_else(|| provided_nonzero(usage.get("prompt_cache_hit_tokens")))
+        .unwrap_or(0);
+    let cache_write = usage
+        .pointer("/prompt_tokens_details/cache_write_tokens")
+        .or_else(|| usage.pointer("/input_tokens_details/cache_write_tokens"))
         .and_then(|v| v.as_u64())
-    {
-        result["input_tokens_details"] = json!({ "cached_tokens": cached });
+        .or_else(|| {
+            usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(0);
+    if cached > 0 || cache_write > 0 {
+        result["input_tokens_details"] = json!({
+            "cached_tokens": cached,
+            "cache_write_tokens": cache_write
+        });
+    } else {
+        result["input_tokens_details"] = json!({ "cached_tokens": 0 });
     }
 
     if let Some(details) = usage
@@ -1646,11 +2779,11 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         result["output_tokens_details"] = json!({ "reasoning_tokens": 0 });
     }
 
-    if let Some(cache_read) = usage.get("cache_read_input_tokens") {
-        result["cache_read_input_tokens"] = cache_read.clone();
+    if let Some(cache_read) = direct_cache_read {
+        result["cache_read_input_tokens"] = json!(cache_read);
     }
-    if let Some(cache_creation) = usage.get("cache_creation_input_tokens") {
-        result["cache_creation_input_tokens"] = cache_creation.clone();
+    if cache_write > 0 {
+        result["cache_creation_input_tokens"] = json!(cache_write);
     }
 
     result
@@ -1663,6 +2796,30 @@ pub(crate) fn response_id_from_chat_id(id: Option<&str>) -> String {
     } else {
         format!("resp_{id}")
     }
+}
+
+/// Derive the ID of a Responses `message` output item from its response ID.
+///
+/// A `message` item ID must begin with `msg_`: Codex persists converted
+/// output items in the thread history and replays them as input, and strict
+/// Responses upstreams reject any message item whose ID does not carry that
+/// prefix (`invalid_id_prefix`). Building the item ID as `{response_id}_msg`
+/// produces `resp_..._msg`, which poisons the stored thread once the user
+/// switches to an official/native Responses provider (see #9054). Rewriting
+/// the response ID's own `resp_` prefix to `msg_` keeps the item traceable to
+/// its response while satisfying the prefix rule.
+pub(crate) fn response_message_item_id(response_id: &str) -> String {
+    let suffix = response_id.strip_prefix("resp_").unwrap_or(response_id);
+    format!("msg_{suffix}")
+}
+
+/// [`response_message_item_id`] for one of several message items belonging to
+/// the same response, disambiguated by output index.
+pub(crate) fn response_message_item_id_indexed(
+    response_id: &str,
+    output_index: impl std::fmt::Display,
+) -> String {
+    format!("{}_{output_index}", response_message_item_id(response_id))
 }
 
 pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) -> &'static str {
@@ -1693,17 +2850,6 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
         });
     };
 
-    if let Some(text) = value.as_str() {
-        return json!({
-            "error": {
-                "message": text,
-                "type": "upstream_error",
-                "code": serde_json::Value::Null,
-                "param": serde_json::Value::Null,
-            }
-        });
-    }
-
     let source = value.get("error").unwrap_or(value);
 
     let message = source
@@ -1725,11 +2871,21 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
         .map(ToString::to_string)
         .unwrap_or_else(|| "upstream_error".to_string());
 
-    let code = source
+    let mut code = source
         .get("code")
         .cloned()
         .or_else(|| source.pointer("/base_resp/status_code").cloned())
         .unwrap_or(serde_json::Value::Null);
+
+    // Gemini uses numeric HTTP codes (or no code at all) for this error. Codex
+    // only recognizes context_length_exceeded as a context-budget failure;
+    // INVALID_ARGUMENT/upstream_error cannot trigger its compaction recovery.
+    if message
+        .to_ascii_lowercase()
+        .contains("input token count exceeds the maximum number of tokens allowed")
+    {
+        code = json!("context_length_exceeded");
+    }
 
     let param = source
         .get("param")
@@ -1747,1552 +2903,4 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn responses_request_with_stream_injects_include_usage() {
-        let input = json!({
-            "model": "kimi-k2.6",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
-            "stream": true
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert_eq!(result["stream"], true);
-        assert_eq!(result["stream_options"]["include_usage"], true);
-    }
-
-    #[test]
-    fn responses_request_without_stream_omits_stream_options() {
-        let input = json!({
-            "model": "kimi-k2.6",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(result.get("stream_options").is_none());
-    }
-
-    #[test]
-    fn responses_request_merges_include_usage_into_existing_stream_options() {
-        let input = json!({
-            "model": "kimi-k2.6",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
-            "stream": true,
-            "stream_options": {"continuous_usage_stats": true}
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        // 既补上 include_usage，又保留客户端原有的 stream_options 字段。
-        assert_eq!(result["stream_options"]["include_usage"], true);
-        assert_eq!(result["stream_options"]["continuous_usage_stats"], true);
-    }
-
-    #[test]
-    fn responses_request_maps_input_file_content_parts() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Summarize this."},
-                    {
-                        "type": "input_file",
-                        "file_id": "file_123",
-                        "file_url": "https://example.com/spec.pdf",
-                        "filename": "spec.pdf"
-                    },
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": "UklGRg==",
-                            "format": "wav"
-                        }
-                    }
-                ]
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let content = result["messages"][0]["content"].as_array().unwrap();
-
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[1]["type"], "file");
-        assert_eq!(content[1]["file"]["file_id"], "file_123");
-        assert!(content[1]["file"].get("file_url").is_none());
-        assert_eq!(content[1]["file"]["filename"], "spec.pdf");
-        assert_eq!(content[2]["type"], "input_audio");
-        assert_eq!(content[2]["input_audio"]["format"], "wav");
-    }
-
-    #[test]
-    fn responses_request_does_not_emit_chat_file_for_url_only_input_file() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Summarize this URL file."},
-                    {
-                        "type": "input_file",
-                        "file_url": "https://example.com/spec.pdf"
-                    }
-                ]
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert_eq!(result["messages"][0]["content"], "Summarize this URL file.");
-    }
-
-    #[test]
-    fn responses_request_maps_top_level_input_file_item() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "input_file",
-                    "file_id": "file_top",
-                    "filename": "top.pdf"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let content = result["messages"][0]["content"].as_array().unwrap();
-
-        assert_eq!(result["messages"][0]["role"], "user");
-        assert_eq!(content[0]["type"], "file");
-        assert_eq!(content[0]["file"]["file_id"], "file_top");
-        assert_eq!(content[0]["file"]["filename"], "top.pdf");
-    }
-
-    #[test]
-    fn top_level_user_content_part_clears_pending_reasoning() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "summary": [{"text": "stale reasoning"}]
-                },
-                {
-                    "type": "input_text",
-                    "text": "Please run the tool."
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "lookup",
-                    "arguments": "{}"
-                }
-            ],
-            "tools": [{
-                "type": "function",
-                "name": "lookup",
-                "parameters": {"type": "object"}
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[0]["content"], "Please run the tool.");
-        assert_eq!(messages[1]["role"], "assistant");
-        assert_eq!(messages[1]["reasoning_content"], "tool call");
-    }
-
-    #[test]
-    fn responses_request_to_chat_maps_messages_tools_and_limits() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "instructions": "You are concise.",
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": "Weather?"},
-                        {"type": "input_image", "image_url": "data:image/png;base64,abc"},
-                        {"type": "input_text", "text": "Use Celsius."}
-                    ]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "get_weather",
-                    "arguments": "{\"city\":\"Tokyo\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Sunny"
-                }
-            ],
-            "tools": [{
-                "type": "function",
-                "name": "get_weather",
-                "description": "Get weather",
-                "parameters": {"type": "object"},
-                "strict": true
-            }],
-            "tool_choice": {"type": "function", "name": "get_weather"},
-            "max_output_tokens": 100,
-            "reasoning": {"effort": "high"},
-            "stream": true
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert_eq!(result["model"], "gpt-5.4");
-        assert_eq!(result["messages"][0]["role"], "system");
-        assert_eq!(result["messages"][1]["role"], "user");
-        assert_eq!(result["messages"][1]["content"][0]["type"], "text");
-        assert_eq!(result["messages"][1]["content"][1]["type"], "image_url");
-        assert_eq!(result["messages"][1]["content"][2]["type"], "text");
-        assert_eq!(result["messages"][1]["content"][2]["text"], "Use Celsius.");
-        assert_eq!(result["messages"][2]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(result["messages"][3]["role"], "tool");
-        assert_eq!(result["tools"][0]["function"]["name"], "get_weather");
-        assert_eq!(result["tools"][0]["function"]["strict"], true);
-        assert_eq!(result["tool_choice"]["function"]["name"], "get_weather");
-        assert_eq!(result["max_tokens"], 100);
-        assert_eq!(result["reasoning_effort"], "high");
-    }
-
-    #[test]
-    fn responses_request_to_chat_exposes_tool_search_and_loaded_namespace_tools() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [{"type": "tool_search"}],
-            "input": [
-                {
-                    "type": "tool_search_call",
-                    "call_id": "call_tool_search_1",
-                    "status": "completed",
-                    "execution": "client",
-                    "arguments": {"query": "Gmail search emails", "limit": 5}
-                },
-                {
-                    "type": "tool_search_output",
-                    "call_id": "call_tool_search_1",
-                    "status": "completed",
-                    "execution": "client",
-                    "tools": [{
-                        "type": "namespace",
-                        "name": "mcp__codex_apps__gmail",
-                        "description": "Find and reference emails from your inbox.",
-                        "tools": [{
-                            "type": "function",
-                            "name": "_search_emails",
-                            "description": "Search Gmail for emails matching a query.",
-                            "strict": false,
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {"type": "string"},
-                                    "max_results": {"type": "integer"}
-                                },
-                                "required": ["query"]
-                            }
-                        }]
-                    }]
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": "Search unread inbox mail."
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let tools = result["tools"].as_array().unwrap();
-        let tool_names = tools
-            .iter()
-            .filter_map(|tool| tool.pointer("/function/name").and_then(|v| v.as_str()))
-            .collect::<Vec<_>>();
-
-        assert!(tool_names.contains(&"tool_search"));
-        assert!(tool_names.contains(&"mcp__codex_apps__gmail___search_emails"));
-        assert_eq!(
-            result["messages"][0]["tool_calls"][0]["function"]["name"],
-            "tool_search"
-        );
-        assert_eq!(result["messages"][1]["role"], "tool");
-        assert_eq!(result["messages"][1]["tool_call_id"], "call_tool_search_1");
-        assert!(result["messages"][1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("mcp__codex_apps__gmail"));
-    }
-
-    #[test]
-    fn responses_request_to_chat_maps_custom_tool_and_choice() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [{
-                "type": "custom",
-                "name": "apply_patch",
-                "description": "Apply a patch to files."
-            }],
-            "tool_choice": {"type": "custom", "name": "apply_patch"},
-            "input": [{
-                "type": "custom_tool_call",
-                "id": "ctc_1",
-                "call_id": "call_patch",
-                "name": "apply_patch",
-                "input": "*** Begin Patch\n*** End Patch"
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert_eq!(result["tools"][0]["function"]["name"], "apply_patch");
-        assert_eq!(
-            result["tools"][0]["function"]["parameters"]["required"][0],
-            "input"
-        );
-        assert_eq!(result["tool_choice"]["function"]["name"], "apply_patch");
-        assert_eq!(
-            result["messages"][0]["tool_calls"][0]["function"]["arguments"],
-            r#"{"input":"*** Begin Patch\n*** End Patch"}"#
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_preserves_custom_tool_metadata_in_description() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [{
-                "type": "custom",
-                "name": "apply_patch",
-                "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
-                "format": {
-                    "type": "grammar",
-                    "syntax": "lark",
-                    "definition": "start: begin_patch hunk+ end_patch"
-                }
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let description = result["tools"][0]["function"]["description"]
-            .as_str()
-            .unwrap();
-
-        assert!(description.starts_with("Original tool definition:"));
-        assert!(!description.contains("Original Codex tool definition"));
-        assert!(description.contains("\"type\":\"custom\""));
-        assert!(description.contains("\"format\":"));
-        assert!(description.contains("\"syntax\":\"lark\""));
-    }
-
-    #[test]
-    fn responses_request_to_chat_uses_provider_reasoning_effort_for_deepseek_model() {
-        let input = json!({
-            "model": "deepseek-v4-pro",
-            "input": "hello",
-            "reasoning": {"effort": "xhigh"}
-        });
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(true),
-            supports_effort: Some(true),
-            thinking_param: Some("thinking".to_string()),
-            effort_param: Some("reasoning_effort".to_string()),
-            effort_value_mode: Some("deepseek".to_string()),
-            output_format: Some("reasoning_content".to_string()),
-        };
-
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        assert_eq!(result["thinking"]["type"], "enabled");
-        assert_eq!(result["reasoning_effort"], "max");
-    }
-
-    #[test]
-    fn responses_request_to_chat_maps_openrouter_to_native_reasoning_object() {
-        // OpenRouter 平台形态：原生 reasoning:{effort} 对象 + "openrouter" 值映射
-        // （与 infer_aggregator_platform_config 推断出的配置保持一致）。
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(false),
-            supports_effort: Some(true),
-            thinking_param: Some("none".to_string()),
-            effort_param: Some("reasoning.effort".to_string()),
-            effort_value_mode: Some("openrouter".to_string()),
-            output_format: Some("auto".to_string()),
-        };
-
-        // max 不在 OpenRouter 枚举内（见 openclaw#77350），必须钳成 xhigh，
-        // 且写进原生 reasoning 对象，而非顶层 reasoning_effort 别名。
-        let input = json!({
-            "model": "deepseek/deepseek-chat-v3.1",
-            "input": "hello",
-            "reasoning": {"effort": "max"}
-        });
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        assert_eq!(result["reasoning"]["effort"], "xhigh");
-        assert!(result.get("reasoning_effort").is_none());
-        // thinking_param=none：即使 supports_effort 把 supports_thinking 带成 true，
-        // 也不写任何 thinking 字段（OpenRouter 不认 thinking:{type}）。
-        assert!(result.get("thinking").is_none());
-
-        // 合法档位原样透传。
-        let input_high = json!({
-            "model": "deepseek/deepseek-chat-v3.1",
-            "input": "hello",
-            "reasoning": {"effort": "high"}
-        });
-        let result_high =
-            responses_to_chat_completions_with_reasoning(input_high, Some(&config)).unwrap();
-        assert_eq!(result_high["reasoning"]["effort"], "high");
-        assert!(result_high.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_passes_explicit_none_through_for_openrouter() {
-        // OpenRouter 原生 reasoning 对象支持显式关闭：effort=none 应忠实转发为
-        // {"reasoning":{"effort":"none"}}，而非被吞掉——否则默认开思考的模型无法关闭，
-        // 带来行为与成本偏差。
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(false),
-            supports_effort: Some(true),
-            thinking_param: Some("none".to_string()),
-            effort_param: Some("reasoning.effort".to_string()),
-            effort_value_mode: Some("openrouter".to_string()),
-            output_format: Some("auto".to_string()),
-        };
-
-        let input = json!({
-            "model": "openai/gpt-5",
-            "input": "hello",
-            "reasoning": {"effort": "none"}
-        });
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        assert_eq!(result["reasoning"]["effort"], "none");
-        // none 不是 OpenAI 顶层 reasoning_effort 的合法枚举，不写顶层别名；也不写 thinking。
-        assert!(result.get("reasoning_effort").is_none());
-        assert!(result.get("thinking").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_drops_explicit_none_for_top_level_effort_provider() {
-        // 对照：顶层 reasoning_effort 平台（DeepSeek/OpenAI 风格）的 effort 枚举不含 none，
-        // 显式 none 不应透传成 reasoning_effort:"none"（会被上游拒），仅走 thinking 关闭路径。
-        // 锁定「none 透传仅限 reasoning.effort 形态」的边界，防止回归。
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(true),
-            supports_effort: Some(true),
-            thinking_param: Some("thinking".to_string()),
-            effort_param: Some("reasoning_effort".to_string()),
-            effort_value_mode: Some("deepseek".to_string()),
-            output_format: Some("reasoning_content".to_string()),
-        };
-
-        let input = json!({
-            "model": "deepseek-v4-pro",
-            "input": "hello",
-            "reasoning": {"effort": "none"}
-        });
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        // thinking 关闭信号照发；但不写 reasoning_effort，也不写原生 reasoning 对象。
-        assert_eq!(result["thinking"]["type"], "disabled");
-        assert!(result.get("reasoning_effort").is_none());
-        assert!(result.get("reasoning").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_maps_thinking_only_provider_without_effort() {
-        let input = json!({
-            "model": "kimi-k2.6",
-            "input": "hello",
-            "reasoning": {"effort": "high"}
-        });
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(true),
-            supports_effort: Some(false),
-            thinking_param: Some("thinking".to_string()),
-            effort_param: Some("none".to_string()),
-            effort_value_mode: None,
-            output_format: Some("reasoning_content".to_string()),
-        };
-
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        assert_eq!(result["thinking"]["type"], "enabled");
-        assert!(result.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_maps_enable_thinking_provider() {
-        let input = json!({
-            "model": "qwen3-max",
-            "input": "hello",
-            "reasoning": {"effort": "medium"}
-        });
-        let config = CodexChatReasoningConfig {
-            supports_thinking: Some(true),
-            supports_effort: Some(false),
-            thinking_param: Some("enable_thinking".to_string()),
-            effort_param: Some("none".to_string()),
-            effort_value_mode: None,
-            output_format: Some("reasoning_content".to_string()),
-        };
-
-        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
-
-        assert_eq!(result["enable_thinking"], true);
-        assert!(result.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn chat_response_to_responses_extracts_reasoning_details() {
-        let input = json!({
-            "id": "chatcmpl_minimax",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "MiniMax-M2.7",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_details": [
-                        {"type": "reasoning_text", "text": "Need to inspect the code."}
-                    ],
-                    "content": "Done"
-                },
-                "finish_reason": "stop"
-            }]
-        });
-
-        let result = chat_completion_to_response(input).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "reasoning");
-        assert_eq!(
-            result["output"][0]["summary"][0]["text"],
-            "Need to inspect the code."
-        );
-        assert_eq!(result["output"][1]["content"][0]["text"], "Done");
-    }
-
-    #[test]
-    fn responses_request_to_chat_normalizes_codex_internal_roles() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "message",
-                    "role": "developer",
-                    "content": [
-                        {"type": "input_text", "text": "Follow project instructions."}
-                    ]
-                },
-                {
-                    "type": "message",
-                    "role": "latest_reminder",
-                    "content": "Keep the reply brief."
-                },
-                {
-                    "type": "message",
-                    "role": "unknown_codex_role",
-                    "content": "Fallback content."
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "Follow project instructions.");
-        assert_eq!(messages[1]["role"], "user");
-        assert_eq!(messages[1]["content"], "Keep the reply brief.");
-        assert_eq!(messages[2]["role"], "user");
-        assert_eq!(messages[2]["content"], "Fallback content.");
-    }
-
-    #[test]
-    fn responses_request_to_chat_merges_mid_stream_system_into_head() {
-        let input = json!({
-            "model": "MiniMax-M2.7",
-            "instructions": "You are Codex.",
-            "input": [
-                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Permissions block"}]},
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "AGENTS.md"}]},
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你好"}]},
-                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Collaboration Mode: Default"}]},
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你好"}]},
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你好"}]}
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        for (idx, msg) in messages.iter().enumerate() {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap();
-            if idx == 0 {
-                assert_eq!(role, "system", "first message must be system");
-            } else {
-                assert_ne!(
-                    role, "system",
-                    "no system role allowed past index 0 (got at {idx})"
-                );
-            }
-        }
-
-        let head_content = messages[0]["content"].as_str().unwrap();
-        assert!(head_content.contains("You are Codex."));
-        assert!(head_content.contains("Permissions block"));
-        assert!(head_content.contains("Collaboration Mode: Default"));
-    }
-
-    #[test]
-    fn collapse_system_messages_preserves_non_system_order() {
-        let input = vec![
-            json!({"role": "system", "content": "S1"}),
-            json!({"role": "user", "content": "U1"}),
-            json!({"role": "assistant", "content": "A1"}),
-            json!({"role": "system", "content": "S2"}),
-            json!({"role": "user", "content": "U2"}),
-        ];
-        let out = collapse_system_messages_to_head(input);
-
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0]["role"], "system");
-        assert_eq!(out[0]["content"], "S1\n\nS2");
-        assert_eq!(out[1]["content"], "U1");
-        assert_eq!(out[2]["content"], "A1");
-        assert_eq!(out[3]["content"], "U2");
-    }
-
-    #[test]
-    fn responses_request_to_chat_passes_reasoning_content_back_to_assistant_message() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "summary": [
-                        {"type": "summary_text", "text": "Need to inspect the repo."}
-                    ]
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [
-                        {"type": "output_text", "text": "I will check the files."}
-                    ]
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": "Continue"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["content"], "I will check the files.");
-        assert_eq!(
-            messages[0]["reasoning_content"],
-            "Need to inspect the repo."
-        );
-        assert_eq!(messages[1]["role"], "user");
-        assert!(messages[1].get("reasoning_content").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_attaches_trailing_reasoning_to_previous_assistant() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": "I checked the files."
-                },
-                {
-                    "type": "reasoning",
-                    "summary": [
-                        {"type": "summary_text", "text": "The answer came from README."}
-                    ]
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": "Continue"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["content"], "I checked the files.");
-        assert_eq!(
-            messages[0]["reasoning_content"],
-            "The answer came from README."
-        );
-        assert_eq!(messages[1]["role"], "user");
-        assert!(messages[1].get("reasoning_content").is_none());
-    }
-
-    #[test]
-    fn responses_request_to_chat_keeps_embedded_assistant_reasoning() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "reasoning_content": "I need to preserve thinking history.",
-                    "content": "Done."
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["content"], "Done.");
-        assert_eq!(
-            messages[0]["reasoning_content"],
-            "I need to preserve thinking history."
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_attaches_reasoning_to_tool_call_message() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "summary": "Need to read a file."
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Readme content"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["reasoning_content"], "Need to read a file.");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[1]["role"], "tool");
-    }
-
-    #[test]
-    fn responses_request_to_chat_recovers_reasoning_from_function_call_item() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}",
-                    "reasoning_content": "Need to read a file."
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Readme content"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["reasoning_content"], "Need to read a file.");
-        assert_eq!(messages[1]["role"], "tool");
-    }
-
-    #[test]
-    fn responses_request_to_chat_injects_placeholder_reasoning_for_bare_tool_call() {
-        // 历史恢复 miss 时，带 tool_calls 的 assistant 消息没有任何可用 reasoning，
-        // 必须补占位，否则 kimi/Moonshot thinking 模型会拒绝整个请求。
-        let input = json!({
-            "model": "kimi-k2-thinking",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Readme content"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["reasoning_content"], "tool call");
-        assert_eq!(messages[1]["role"], "tool");
-    }
-
-    #[test]
-    fn responses_request_to_chat_attaches_trailing_reasoning_to_tool_call_message() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Readme content"
-                },
-                {
-                    "type": "reasoning",
-                    "summary": "Need to read a file."
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["reasoning_content"], "Need to read a file.");
-        assert_eq!(messages[1]["role"], "tool");
-    }
-
-    #[test]
-    fn responses_request_to_chat_keeps_multiple_tool_calls_adjacent_to_outputs() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "list_files",
-                    "arguments": "{\"path\":\"src\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "Readme content"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_2",
-                    "output": ["main.rs", "lib.rs"]
-                },
-                {
-                    "role": "user",
-                    "content": "Continue"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["tool_calls"][1]["id"], "call_2");
-        assert_eq!(messages[1]["role"], "tool");
-        assert_eq!(messages[1]["tool_call_id"], "call_1");
-        assert_eq!(messages[2]["role"], "tool");
-        assert_eq!(messages[2]["tool_call_id"], "call_2");
-        assert_eq!(messages[2]["content"], "[\"main.rs\",\"lib.rs\"]");
-        assert_eq!(messages[3]["role"], "user");
-    }
-
-    #[test]
-    fn responses_request_to_chat_canonicalizes_json_string_tool_payloads() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "lookup",
-                    "arguments": "{ \"b\": 2, \"a\": 1 }"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "{ \"z\": true, \"a\": [2, 1] }"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(
-            messages[0]["tool_calls"][0]["function"]["arguments"],
-            r#"{"a":1,"b":2}"#
-        );
-        assert_eq!(messages[1]["content"], r#"{"a":[2,1],"z":true}"#);
-    }
-
-    #[test]
-    fn responses_request_to_chat_preserves_plain_text_tool_output() {
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "not json"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "plain text result"
-                }
-            ]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-        let messages = result["messages"].as_array().unwrap();
-
-        assert_eq!(
-            messages[0]["tool_calls"][0]["function"]["arguments"],
-            "not json"
-        );
-        assert_eq!(messages[1]["content"], "plain text result");
-    }
-
-    #[test]
-    fn chat_response_to_responses_maps_text_tool_calls_and_usage() {
-        let input = json!({
-            "id": "chatcmpl_1",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_content": "I should check the weather before answering.",
-                    "content": "Let me check.",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": "{\"city\":\"Tokyo\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15,
-                "prompt_tokens_details": {"cached_tokens": 3}
-            }
-        });
-
-        let result = chat_completion_to_response(input).unwrap();
-
-        assert_eq!(result["id"], "resp_chatcmpl_1");
-        assert_eq!(result["status"], "completed");
-        assert_eq!(result["output"][0]["type"], "reasoning");
-        assert_eq!(
-            result["output"][0]["summary"][0]["text"],
-            "I should check the weather before answering."
-        );
-        assert_eq!(result["output"][1]["type"], "message");
-        assert_eq!(result["output"][1]["content"][0]["text"], "Let me check.");
-        assert_eq!(result["output"][2]["type"], "function_call");
-        assert_eq!(result["output"][2]["call_id"], "call_1");
-        assert_eq!(
-            result["output"][2]["reasoning_content"],
-            "I should check the weather before answering."
-        );
-        assert_eq!(result["usage"]["input_tokens"], 10);
-        assert_eq!(result["usage"]["output_tokens"], 5);
-        assert_eq!(result["usage"]["input_tokens_details"]["cached_tokens"], 3);
-    }
-
-    #[test]
-    fn chat_response_to_responses_restores_loaded_namespace_tool_call() {
-        let request = json!({
-            "model": "gpt-5.4",
-            "tools": [{"type": "tool_search"}],
-            "input": [{
-                "type": "tool_search_output",
-                "call_id": "call_tool_search_1",
-                "status": "completed",
-                "execution": "client",
-                "tools": [{
-                    "type": "namespace",
-                    "name": "mcp__codex_apps__gmail",
-                    "description": "Find and reference emails from your inbox.",
-                    "tools": [{
-                        "type": "function",
-                        "name": "_search_emails",
-                        "description": "Search Gmail for emails matching a query.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string"},
-                                "label_ids": {"type": "array", "items": {"type": "string"}},
-                                "max_results": {"type": "integer"}
-                            }
-                        }
-                    }]
-                }]
-            }]
-        });
-        let context = build_codex_tool_context_from_request(&request);
-        let chat = json!({
-            "id": "chatcmpl_gmail",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_gmail",
-                        "type": "function",
-                        "function": {
-                            "name": "mcp__codex_apps__gmail___search_emails",
-                            "arguments": "{\"query\":\"-in:spam -in:trash\",\"label_ids\":[\"UNREAD\"],\"max_results\":5}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        });
-
-        let result = chat_completion_to_response_with_context(chat, &context).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "function_call");
-        assert_eq!(result["output"][0]["call_id"], "call_gmail");
-        assert_eq!(result["output"][0]["namespace"], "mcp__codex_apps__gmail");
-        assert_eq!(result["output"][0]["name"], "_search_emails");
-        assert_eq!(
-            result["output"][0]["arguments"],
-            r#"{"label_ids":["UNREAD"],"max_results":5,"query":"-in:spam -in:trash"}"#
-        );
-    }
-
-    #[test]
-    fn chat_response_to_responses_restores_tool_search_call() {
-        let request = json!({
-            "model": "gpt-5.4",
-            "tools": [{"type": "tool_search"}],
-            "input": "Find tools."
-        });
-        let context = build_codex_tool_context_from_request(&request);
-        let chat = json!({
-            "id": "chatcmpl_tool_search",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_tool_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "tool_search",
-                            "arguments": "{\"query\":\"Gmail search emails\",\"limit\":10}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        });
-
-        let result = chat_completion_to_response_with_context(chat, &context).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "tool_search_call");
-        assert_eq!(result["output"][0]["call_id"], "call_tool_search_1");
-        assert_eq!(result["output"][0]["execution"], "client");
-        assert_eq!(
-            result["output"][0]["arguments"]["query"],
-            "Gmail search emails"
-        );
-        assert_eq!(result["output"][0]["arguments"]["limit"], 10);
-    }
-
-    #[test]
-    fn chat_response_to_responses_restores_custom_tool_call() {
-        let request = json!({
-            "model": "gpt-5.4",
-            "tools": [{"type": "custom", "name": "apply_patch"}],
-            "input": "Patch it."
-        });
-        let context = build_codex_tool_context_from_request(&request);
-        let chat = json!({
-            "id": "chatcmpl_custom",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_patch",
-                        "type": "function",
-                        "function": {
-                            "name": "apply_patch",
-                            "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        });
-
-        let result = chat_completion_to_response_with_context(chat, &context).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "custom_tool_call");
-        assert_eq!(result["output"][0]["id"], "ctc_call_patch");
-        assert_eq!(result["output"][0]["call_id"], "call_patch");
-        assert_eq!(result["output"][0]["name"], "apply_patch");
-        assert_eq!(
-            result["output"][0]["input"],
-            "*** Begin Patch\n*** End Patch"
-        );
-    }
-
-    #[test]
-    fn chat_response_to_responses_canonicalizes_json_string_tool_arguments() {
-        let input = json!({
-            "id": "chatcmpl_args",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "arguments": "{ \"b\": 2, \"a\": 1 }"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        });
-
-        let result = chat_completion_to_response(input).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "function_call");
-        assert_eq!(result["output"][0]["arguments"], r#"{"a":1,"b":2}"#);
-    }
-
-    #[test]
-    fn chat_response_to_responses_splits_inline_think_content() {
-        let input = json!({
-            "id": "chatcmpl_think",
-            "object": "chat.completion",
-            "created": 123,
-            "model": "MiniMax-M2.7",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "<think>\nI should answer with pong.\n</think>\n\npong"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30,
-                "completion_tokens_details": {"reasoning_tokens": 18}
-            }
-        });
-
-        let result = chat_completion_to_response(input).unwrap();
-
-        assert_eq!(result["output"][0]["type"], "reasoning");
-        assert_eq!(
-            result["output"][0]["summary"][0]["text"],
-            "I should answer with pong."
-        );
-        assert_eq!(result["output"][1]["type"], "message");
-        assert_eq!(result["output"][1]["content"][0]["text"], "pong");
-        assert_eq!(
-            result["usage"]["output_tokens_details"]["reasoning_tokens"],
-            18
-        );
-    }
-
-    #[test]
-    fn chat_response_length_maps_to_incomplete_response() {
-        let input = json!({
-            "id": "chatcmpl_2",
-            "model": "gpt-5.4",
-            "choices": [{
-                "message": {"role": "assistant", "content": "partial"},
-                "finish_reason": "length"
-            }]
-        });
-
-        let result = chat_completion_to_response(input).unwrap();
-
-        assert_eq!(result["status"], "incomplete");
-        assert_eq!(result["incomplete_details"]["reason"], "max_output_tokens");
-    }
-
-    #[test]
-    fn chat_error_to_response_error_normalizes_standard_openai_shape() {
-        let input = json!({
-            "error": {
-                "message": "Invalid API key",
-                "type": "invalid_request_error",
-                "code": "invalid_api_key",
-                "param": "api_key"
-            }
-        });
-
-        let result = chat_error_to_response_error(Some(&input));
-
-        assert_eq!(result["error"]["message"], "Invalid API key");
-        assert_eq!(result["error"]["type"], "invalid_request_error");
-        assert_eq!(result["error"]["code"], "invalid_api_key");
-        assert_eq!(result["error"]["param"], "api_key");
-    }
-
-    #[test]
-    fn chat_error_to_response_error_normalizes_minimax_base_resp() {
-        // MiniMax 把错误塞在 base_resp 里，code 是数字而不是字符串
-        let input = json!({
-            "base_resp": {
-                "status_code": 2013,
-                "status_msg": "invalid params, chat content has invalid message role: system"
-            }
-        });
-
-        let result = chat_error_to_response_error(Some(&input));
-
-        assert_eq!(
-            result["error"]["message"],
-            "invalid params, chat content has invalid message role: system"
-        );
-        assert_eq!(result["error"]["code"], 2013);
-        // type 没有显式给出，应该回落到 upstream_error
-        assert_eq!(result["error"]["type"], "upstream_error");
-    }
-
-    #[test]
-    fn chat_error_to_response_error_handles_plain_text_body() {
-        let input = json!("Upstream timeout");
-
-        let result = chat_error_to_response_error(Some(&input));
-
-        assert_eq!(result["error"]["message"], "Upstream timeout");
-        assert_eq!(result["error"]["type"], "upstream_error");
-        assert!(result["error"]["code"].is_null());
-        assert!(result["error"]["param"].is_null());
-    }
-
-    #[test]
-    fn chat_error_to_response_error_handles_missing_body() {
-        let result = chat_error_to_response_error(None);
-
-        assert_eq!(
-            result["error"]["message"],
-            "Upstream returned an empty error response"
-        );
-        assert_eq!(result["error"]["type"], "upstream_error");
-    }
-
-    #[test]
-    fn chat_error_to_response_error_falls_back_to_detail_field() {
-        // 部分中转把错误塞在顶层 detail 字段（OpenAI 兼容层常见）
-        let input = json!({
-            "detail": "rate limit exceeded"
-        });
-
-        let result = chat_error_to_response_error(Some(&input));
-
-        assert_eq!(result["error"]["message"], "rate limit exceeded");
-        assert_eq!(result["error"]["type"], "upstream_error");
-    }
-    // Regression tests for tool_choice without tools guard
-    // https://github.com/farion1231/puppyrouter-app/issues/3557
-
-    #[test]
-    fn responses_request_to_chat_drops_tool_choice_when_no_tools() {
-        // When tools is absent from the request, tool_choice must be dropped
-        // to avoid 503/400 from strict OpenAI-compatible upstreams.
-        let input = json!({
-            "model": "qwen3-7-max",
-            "tool_choice": "auto",
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice should be dropped when tools is absent"
-        );
-        assert!(result.get("tools").is_none(), "tools should be absent");
-        assert_eq!(result["model"], "qwen3-7-max");
-    }
-
-    #[test]
-    fn responses_request_to_chat_drops_tool_choice_when_tools_empty_array() {
-        // When tools is an empty array, tool_choice must be dropped.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [],
-            "tool_choice": "auto",
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice should be dropped when tools is empty"
-        );
-        assert!(
-            result.get("tools").is_none(),
-            "tools should be absent when input tools was empty"
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_drops_parallel_tool_calls_when_no_tools() {
-        // parallel_tool_calls must also be dropped when tools is absent,
-        // as it is part of EXTRA_CHAT_PASSTHROUGH_FIELDS.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tool_choice": "auto",
-            "parallel_tool_calls": true,
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice should be dropped"
-        );
-        assert!(
-            result.get("parallel_tool_calls").is_none(),
-            "parallel_tool_calls should be dropped"
-        );
-        assert!(result.get("tools").is_none(), "tools should be absent");
-    }
-
-    #[test]
-    fn responses_request_to_chat_drops_tool_choice_when_all_tools_filtered() {
-        // When all tools are filtered out (e.g., missing name), tool_choice must be dropped.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [
-                {"type": "function"}
-            ],
-            "tool_choice": "auto",
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice should be dropped when all tools filtered"
-        );
-        assert!(
-            result.get("tools").is_none(),
-            "tools should be absent when all filtered"
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_keeps_tool_choice_when_tools_present() {
-        // When tools is present and non-empty, tool_choice must be preserved.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [{
-                "type": "function",
-                "name": "get_weather",
-                "description": "Get weather",
-                "parameters": {"type": "object"}
-            }],
-            "tool_choice": "auto",
-            "parallel_tool_calls": true,
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_some(),
-            "tool_choice should be kept when tools present"
-        );
-        assert_eq!(result["tool_choice"], "auto");
-        assert!(
-            result.get("parallel_tool_calls").is_some(),
-            "parallel_tool_calls should be kept"
-        );
-        assert_eq!(result["parallel_tool_calls"], true);
-        assert!(
-            result
-                .get("tools")
-                .is_some_and(|v| v.as_array().is_some_and(|a| !a.is_empty())),
-            "tools should be present"
-        );
-        assert_eq!(result["tools"][0]["function"]["name"], "get_weather");
-    }
-
-    #[test]
-    fn responses_request_to_chat_keeps_tool_choice_function_when_tools_present() {
-        // When tools is present, function-type tool_choice must be preserved and mapped.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tools": [{
-                "type": "function",
-                "name": "get_weather",
-                "description": "Get weather",
-                "parameters": {"type": "object"}
-            }],
-            "tool_choice": {"type": "function", "name": "get_weather"},
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_some(),
-            "tool_choice should be kept"
-        );
-        assert_eq!(result["tool_choice"]["type"], "function");
-        assert_eq!(result["tool_choice"]["function"]["name"], "get_weather");
-    }
-
-    #[test]
-    fn responses_request_to_chat_no_tool_choice_no_tools_stays_clean() {
-        // When neither tool_choice nor tools are present, the output should be clean.
-        let input = json!({
-            "model": "gpt-5.4",
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice should be absent"
-        );
-        assert!(result.get("tools").is_none(), "tools should be absent");
-        assert!(
-            result.get("parallel_tool_calls").is_none(),
-            "parallel_tool_calls should be absent"
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_tool_choice_none_dropped_when_no_tools() {
-        // Even tool_choice: "none" should be dropped when tools is absent,
-        // because strict upstreams reject the combination regardless of value.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tool_choice": "none",
-            "input": "hi"
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_none(),
-            "tool_choice 'none' should be dropped when no tools"
-        );
-    }
-
-    #[test]
-    fn responses_request_to_chat_tool_search_output_provides_tools_keeps_tool_choice() {
-        // When tool_search_output in input provides tools, tool_choice should be kept.
-        let input = json!({
-            "model": "gpt-5.4",
-            "tool_choice": "auto",
-            "input": [{
-                "type": "tool_search_output",
-                "call_id": "call_ts_1",
-                "status": "completed",
-                "execution": "client",
-                "tools": [{
-                    "type": "function",
-                    "name": "search_docs",
-                    "description": "Search documentation.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"}
-                        }
-                    }
-                }]
-            }]
-        });
-
-        let result = responses_to_chat_completions(input).unwrap();
-
-        assert!(
-            result.get("tool_choice").is_some(),
-            "tool_choice should be kept when tool_search_output provides tools"
-        );
-        assert_eq!(result["tool_choice"], "auto");
-        assert!(
-            result
-                .get("tools")
-                .is_some_and(|v| v.as_array().is_some_and(|a| !a.is_empty())),
-            "tools should be present from tool_search_output"
-        );
-        assert_eq!(result["tools"][0]["function"]["name"], "search_docs");
-    }
-}
+mod tests;

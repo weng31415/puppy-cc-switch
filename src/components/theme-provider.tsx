@@ -1,4 +1,10 @@
-import React, { createContext, useContext, useEffect, useMemo } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type Theme = "light" | "dark" | "system";
@@ -18,23 +24,92 @@ const ThemeProviderContext = createContext<ThemeContextValue | undefined>(
   undefined,
 );
 
+/**
+ * 切换 html 上的 light / dark。切换期间暂停所有过渡（`.theme-switching`），
+ * 否则各处的 transition-colors 会让颜色一块块慢慢变过去。
+ */
+function applyColorScheme(isDark: boolean) {
+  const root = window.document.documentElement;
+  if (
+    root.classList.contains("dark") === isDark &&
+    root.classList.contains("light") === !isDark
+  ) {
+    return;
+  }
+  root.classList.add("theme-switching");
+  root.classList.toggle("dark", isDark);
+  root.classList.toggle("light", !isDark);
+  // 强制重排一次，让不带过渡的新颜色先落定，再在第二帧恢复过渡。
+  void window.document.body?.offsetHeight;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      root.classList.remove("theme-switching");
+    });
+  });
+}
+
 export function ThemeProvider({
   children,
-  defaultTheme: _defaultTheme = "light",
+  defaultTheme = "light",
   storageKey = "puppyrouter-app-theme",
 }: ThemeProviderProps) {
-  const theme: Theme = "light";
+  const getInitialTheme = () => {
+    if (typeof window === "undefined") {
+      return defaultTheme;
+    }
+
+    const stored = window.localStorage.getItem(storageKey) as Theme | null;
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      return stored;
+    }
+
+    return defaultTheme;
+  };
+
+  const [theme, setThemeState] = useState<Theme>(getInitialTheme);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
 
-    const root = window.document.documentElement;
-    root.classList.remove("light", "dark");
-    root.classList.add("light");
-    window.localStorage.setItem(storageKey, "light");
-  }, [storageKey]);
+    window.localStorage.setItem(storageKey, theme);
+  }, [theme, storageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const isDark =
+      theme === "system"
+        ? window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches
+        : theme === "dark";
+    applyColorScheme(isDark);
+  }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = () => {
+      if (theme !== "system") {
+        return;
+      }
+
+      applyColorScheme(mediaQuery.matches);
+    };
+
+    if (theme === "system") {
+      handleChange();
+    }
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [theme]);
 
   // Sync native window theme (Windows/macOS title bar)
   useEffect(() => {
@@ -54,19 +129,29 @@ export function ThemeProvider({
       }
     };
 
-    updateNativeTheme("light");
+    // When "system", pass "system" so Tauri uses None (follows OS theme natively).
+    // This keeps the WebView's prefers-color-scheme in sync with the real OS theme,
+    // allowing effect #3's media query listener to fire on system theme changes.
+    if (theme === "system") {
+      updateNativeTheme("system");
+    } else {
+      updateNativeTheme(theme);
+    }
 
     return () => {
       isCancelled = true;
     };
-  }, []);
+  }, [theme]);
 
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme,
-      setTheme: (_nextTheme: Theme) => {},
+      setTheme: (nextTheme: Theme) => {
+        if (nextTheme === theme) return;
+        setThemeState(nextTheme);
+      },
     }),
-    [],
+    [theme],
   );
 
   return (

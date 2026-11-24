@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { puppyRouterKeyPage } from "@/lib/puppyrouterLinks";
 import ApiKeyInput from "../ApiKeyInput";
 import type { ProviderCategory } from "@/types";
 
@@ -15,8 +17,12 @@ interface ApiKeySectionProps {
     thirdParty: string;
   };
   disabled?: boolean;
+  /** 保存时会校验 Key 非空的表单才传；官方 / 云厂商 / 禁用时不标星 */
+  required?: boolean;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  /** Displayed below the input. */
+  hint?: ReactNode;
 }
 
 export function ApiKeySection({
@@ -29,7 +35,8 @@ export function ApiKeySection({
   websiteUrl,
   placeholder,
   disabled,
-  partnerPromotionKey,
+  required = false,
+  hint,
 }: ApiKeySectionProps) {
   const { t } = useTranslation();
 
@@ -43,48 +50,41 @@ export function ApiKeySection({
   };
 
   const finalPlaceholder = placeholder || defaultPlaceholder;
+  const isDisabled = disabled ?? category === "official";
+  const isRequired =
+    required &&
+    !isDisabled &&
+    category !== "official" &&
+    category !== "cloud_provider";
+
+  const keyPage = shouldShowLink ? puppyRouterKeyPage(websiteUrl) : undefined;
 
   return (
-    <div className="space-y-1">
-      <ApiKeyInput
-        id={id}
-        label={label}
-        value={value}
-        onChange={onChange}
-        placeholder={
-          category === "official"
-            ? finalPlaceholder.official
-            : finalPlaceholder.thirdParty
-        }
-        disabled={disabled ?? category === "official"}
-      />
-      {/* API Key 获取链接 */}
-      {shouldShowLink && websiteUrl && (
-        <div className="space-y-2 -mt-1 pl-1">
+    <ApiKeyInput
+      id={id}
+      label={label}
+      value={value}
+      onChange={onChange}
+      placeholder={
+        category === "official"
+          ? finalPlaceholder.official
+          : finalPlaceholder.thirdParty
+      }
+      disabled={isDisabled}
+      required={isRequired}
+      labelAside={
+        keyPage ? (
           <a
-            href={websiteUrl}
+            href={keyPage}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-blue-400 dark:text-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+            className="text-caption text-blue-400 dark:text-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
           >
-            {t("providerForm.getApiKey", {
-              defaultValue: "获取 API Key",
-            })}
+            {t("providerForm.getApiKey", { defaultValue: "获取 API Key" })} ↗
           </a>
-
-          {/* 促销信息（与 isPartner 解耦：仅凭 partnerPromotionKey 即可展示，星标仍由 isPartner 控制） */}
-          {partnerPromotionKey && (
-            <div className="rounded-md bg-blue-50 dark:bg-blue-950/30 p-2.5 border border-blue-200 dark:border-blue-800">
-              <p className="text-xs leading-relaxed text-blue-700 dark:text-blue-300">
-                💡{" "}
-                {t(`providerForm.partnerPromotion.${partnerPromotionKey}`, {
-                  defaultValue: "",
-                })}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+        ) : null
+      }
+      hint={hint || undefined}
+    />
   );
 }

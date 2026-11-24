@@ -1,118 +1,290 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  extractCodexPromptPreview,
-  formatSessionMessagePreview,
-  shouldHideCodexMessageFromToc,
+  buildCdResumeCommand,
+  canDeleteSession,
+  getSessionLastText,
+  getSessionTimeBucket,
+  groupSessionsByProject,
+  groupSessionsByTime,
+  isArchivedSession,
+  formatMessageTime,
+  nativeDeleteHintKey,
 } from "@/components/sessions/utils";
+import type { SessionMeta } from "@/types";
+
+// 直接替换 @/lib/platform 的 mock 在 utils.ts 的模块图里不生效（vite-node 对
+// 该文件的导入走了带版本号的实例），改而桩掉 navigator：platform.ts 的
+// isWindows() 在调用时读取 userAgent，任何宿主机上结果都确定。
+const stubUserAgent = (userAgent: string) =>
+  vi.stubGlobal("navigator", { userAgent });
 
 describe("session utils", () => {
-  it("extracts Codex VS Code prompts after the request marker", () => {
-    const content = [
-      "# Context from my IDE setup:",
-      "",
-      "## Active file: src/main.ts",
-      "",
-      "## My request for Codex:",
-      "Fix the session title preview",
-    ].join("\n");
-
-    expect(extractCodexPromptPreview(content)).toBe(
-      "Fix the session title preview",
+  it("lets Antigravity CLI sessions be deleted but keeps IDE, ACP, and index-only ones native", () => {
+    const agy = (sourcePath?: string): SessionMeta => ({
+      providerId: "agy",
+      sessionId: "aaa-1",
+      sourcePath,
+    });
+    const log = ".system_generated/logs/transcript_full.jsonl";
+    const cli = agy(`/home/u/.gemini/antigravity-cli/brain/aaa-1/${log}`);
+    const keyCard = agy(
+      `C:\\Users\\u\\.puppyrouter-app\\agy\\p\\antigravity-cli\\brain\\aaa-1\\${log}`,
     );
-  });
-
-  it("extracts inline Codex VS Code prompts", () => {
-    const content = [
-      "# Context from my IDE setup:",
-      "",
-      "## My request for Codex: Fix the TOC preview",
-    ].join("\n");
-
-    expect(extractCodexPromptPreview(content)).toBe("Fix the TOC preview");
-  });
-
-  it("ignores marker mentions before the Codex request heading", () => {
-    const content = [
-      "# Context from my IDE setup:",
-      "",
-      "## Active selection:",
-      "My request for Codex: not the prompt",
-      "",
-      "## My request for Codex:",
-      "Use the real request heading",
-    ].join("\n");
-
-    expect(extractCodexPromptPreview(content)).toBe(
-      "Use the real request heading",
+    const ide = agy(`/home/u/.gemini/antigravity/brain/aaa-1/${log}`);
+    const acp = agy(`/home/u/.gemini/antigravity-acp/brain/aaa-1/${log}`);
+    const t3Acp = agy(
+      `/home/u/.t3/userdata/providers/antigravity/abc123/antigravity-acp/brain/aaa-1/${log}`,
     );
-  });
-
-  it("uses the last request heading when the selection contains one", () => {
-    const content = [
-      "# Context from my IDE setup:",
-      "",
-      "## Active selection: docs/codex-format.md:10-14",
-      "## My request for Codex:",
-      "selected document content, not the real request",
-      "",
-      "## My request for Codex:",
-      "the real injected request",
-    ].join("\n");
-
-    expect(extractCodexPromptPreview(content)).toBe(
-      "the real injected request",
+    const t3AcpWin = agy(
+      `C:\\Users\\u\\.t3\\userdata\\providers\\antigravity\\abc123\\antigravity-acp\\brain\\aaa-1\\${log}`,
     );
-  });
+    const indexOnly = agy();
 
-  // Known limitation: the IDE marker is matched purely by text, so a
-  // "## My request for Codex:" line inside the real request body is treated as
-  // a new boundary and only the trailing part is kept. Pinning this documents
-  // the best-effort behavior; fully fixing it needs structured IDE section data
-  // that the Codex VS Code context does not provide.
-  it("keeps only the trailing part when the request body repeats the heading", () => {
-    const content = [
-      "# Context from my IDE setup:",
-      "",
-      "## Active file: foo.ts",
-      "",
-      "## My request for Codex:",
-      "Document the format, for example:",
-      "## My request for Codex:",
-      "and the rest follows.",
-    ].join("\n");
-
-    expect(extractCodexPromptPreview(content)).toBe("and the rest follows.");
-  });
-
-  it("does not extract from ordinary messages that mention the marker", () => {
-    const content = "Please explain the phrase My request for Codex.";
-
-    expect(extractCodexPromptPreview(content)).toBe(content);
-  });
-
-  it("hides Codex context messages without user prompts from the TOC", () => {
+    expect(canDeleteSession(cli)).toBe(true);
+    expect(canDeleteSession(keyCard)).toBe(true);
+    expect(nativeDeleteHintKey(cli)).toBeUndefined();
+    for (const session of [ide, acp, t3Acp, t3AcpWin, indexOnly]) {
+      expect(canDeleteSession(session)).toBe(false);
+      expect(nativeDeleteHintKey(session)).toBe("sessionManager.agyDeleteHint");
+    }
     expect(
-      shouldHideCodexMessageFromToc("# AGENTS.md instructions for F:/project"),
-    ).toBe(true);
-    expect(
-      shouldHideCodexMessageFromToc(
-        "<environment_context>\n<cwd>F:/project</cwd>",
-      ),
-    ).toBe(true);
-    expect(shouldHideCodexMessageFromToc("# Context from my IDE setup:")).toBe(
-      true,
-    );
-    expect(
-      shouldHideCodexMessageFromToc(
-        "# Context from my IDE setup:\n\n## My request for Codex:\nFix it",
-      ),
+      canDeleteSession({
+        providerId: "copilot",
+        sessionId: "s",
+        sourcePath: "/x",
+      }),
     ).toBe(false);
   });
 
-  it("formats message previews with truncation", () => {
-    expect(formatSessionMessagePreview("short message")).toBe("short message");
-    expect(formatSessionMessagePreview("a".repeat(51))).toBe(
-      `${"a".repeat(50)}...`,
+  it("groups sessions by project directory, newest group first and unknown last", () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "unknown",
+        projectDir: "  ",
+        lastActiveAt: 50,
+      },
+      {
+        providerId: "codex",
+        sessionId: "app-new",
+        projectDir: "/workspace/app",
+        lastActiveAt: 30,
+      },
+      {
+        providerId: "claude",
+        sessionId: "docs",
+        projectDir: "/workspace/docs",
+        lastActiveAt: 40,
+      },
+      {
+        providerId: "claude",
+        sessionId: "app-old",
+        projectDir: "/workspace/app",
+        lastActiveAt: 10,
+      },
+    ];
+
+    const groups = groupSessionsByProject(sessions, "未知目录", "Codex 聊天");
+
+    expect(groups.map((group) => group.label)).toEqual([
+      "docs",
+      "app",
+      "未知目录",
+    ]);
+    expect(groups[1].sessions.map((session) => session.sessionId)).toEqual([
+      "app-new",
+      "app-old",
+    ]);
+    expect(groups[2].projectDir).toBeNull();
+  });
+
+  it("merges Windows project dirs that differ only in case or separators", () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "claude",
+        sessionId: "upper",
+        projectDir: "D:\\projects\\demo",
+        lastActiveAt: 30,
+      },
+      {
+        providerId: "claude",
+        sessionId: "lower",
+        projectDir: "d:\\Projects\\demo\\",
+        lastActiveAt: 20,
+      },
+      {
+        providerId: "codex",
+        sessionId: "slash",
+        projectDir: "d:/projects/demo",
+        lastActiveAt: 10,
+      },
+      {
+        providerId: "claude",
+        sessionId: "posix-a",
+        projectDir: "/work/App",
+        lastActiveAt: 5,
+      },
+      {
+        providerId: "claude",
+        sessionId: "posix-b",
+        projectDir: "/work/app/",
+        lastActiveAt: 4,
+      },
+      {
+        providerId: "claude",
+        sessionId: "posix-c",
+        projectDir: "/work/app",
+        lastActiveAt: 3,
+      },
+    ];
+
+    const groups = groupSessionsByProject(sessions, "未知目录", "Codex 聊天");
+
+    expect(
+      groups.map((group) => [
+        group.projectDir,
+        group.sessions.map((session) => session.sessionId),
+      ]),
+    ).toEqual([
+      ["D:\\projects\\demo", ["upper", "lower", "slash"]],
+      ["/work/App", ["posix-a"]],
+      ["/work/app/", ["posix-b", "posix-c"]],
+    ]);
+  });
+
+  it("folds Codex desktop project-less chats into one group", () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "win-a",
+        projectDir: "C:\\Users\\me\\Documents\\Codex\\2026-11-10\\x20",
+        lastActiveAt: 40,
+      },
+      {
+        providerId: "codex",
+        sessionId: "project",
+        projectDir: "C:\\work\\app",
+        lastActiveAt: 30,
+      },
+      {
+        providerId: "codex",
+        sessionId: "win-b",
+        projectDir: "c:/users/me/documents/Codex/2026-10-30/wo-d/",
+        lastActiveAt: 20,
+      },
+      {
+        providerId: "codex",
+        sessionId: "mac",
+        projectDir: "/Users/me/Documents/Codex/2026-09-20/s",
+        lastActiveAt: 10,
+      },
+      {
+        providerId: "codex",
+        sessionId: "nested",
+        projectDir: "/Users/me/Documents/Codex/2026-09-20/s/work",
+        lastActiveAt: 5,
+      },
+    ];
+
+    const groups = groupSessionsByProject(sessions, "未知目录", "Codex 聊天");
+
+    expect(
+      groups.map((group) => [
+        group.label,
+        group.projectDir,
+        group.sessions.map((session) => session.sessionId),
+      ]),
+    ).toEqual([
+      ["Codex 聊天", "C:\\Users\\me\\Documents\\Codex", ["win-a", "win-b"]],
+      ["app", "C:\\work\\app", ["project"]],
+      ["Codex 聊天", "/Users/me/Documents/Codex", ["mac"]],
+      ["work", "/Users/me/Documents/Codex/2026-09-20/s/work", ["nested"]],
+    ]);
+  });
+
+  it("buckets sessions into today / yesterday / this week / earlier", () => {
+    // 2026-10-01 is a Thursday; the week starts on Monday 2026-09-28
+    const now = new Date(2026, 9, 1, 8, 15).getTime();
+    const at = (day: number, hour = 12) =>
+      new Date(2026, 8, day, hour).getTime();
+    const sessions: SessionMeta[] = [
+      { providerId: "claude", sessionId: "a", lastActiveAt: now - 60000 },
+      { providerId: "claude", sessionId: "b", lastActiveAt: at(30) },
+      { providerId: "claude", sessionId: "c", lastActiveAt: at(28, 9) },
+      { providerId: "claude", sessionId: "d", lastActiveAt: at(27) },
+    ];
+
+    expect(getSessionTimeBucket(at(28, 0), now)).toBe("thisWeek");
+    expect(
+      groupSessionsByTime(sessions, now).map((group) => [
+        group.bucket,
+        group.sessions.map((session) => session.sessionId),
+      ]),
+    ).toEqual([
+      ["today", ["a"]],
+      ["yesterday", ["b"]],
+      ["thisWeek", ["c"]],
+      ["earlier", ["d"]],
+    ]);
+  });
+
+  it("hides the summary when it repeats the title and marks archived sessions", () => {
+    expect(
+      getSessionLastText({
+        providerId: "gemini",
+        sessionId: "g",
+        title: "fix: flaky test",
+        summary: "fix: flaky test",
+      }),
+    ).toBe("");
+    expect(
+      isArchivedSession({
+        providerId: "codex",
+        sessionId: "x",
+        sourcePath: "/Users/me/.codex/archived_sessions/rollout.jsonl",
+      }),
+    ).toBe(true);
+    expect(
+      isArchivedSession({
+        providerId: "claude",
+        sessionId: "c",
+        sourcePath: "/Users/me/archived_sessions/a.jsonl",
+      }),
+    ).toBe(false);
+  });
+
+  it("quotes the project directory in the cd-and-resume command", () => {
+    stubUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
+    expect(buildCdResumeCommand("/tmp/it's", "claude --resume x")).toBe(
+      "cd '/tmp/it'\\''s' && claude --resume x",
     );
+    vi.unstubAllGlobals();
+  });
+
+  it("wraps the resume command with Set-Location for PowerShell on Windows", () => {
+    stubUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    expect(
+      buildCdResumeCommand(
+        "C:\\work\\it's",
+        "$env:OMP_PROFILE='default'; omp --resume 's'",
+      ),
+    ).toBe(
+      "Set-Location 'C:\\work\\it''s'; $env:OMP_PROFILE='default'; omp --resume 's'",
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("formats message times with the date, adding the year only for past years", () => {
+    const thisYear = new Date().getFullYear();
+    const recent = new Date(thisYear, 0, 15, 9, 5).getTime();
+    const older = new Date(thisYear - 1, 11, 30, 23, 10).getTime();
+
+    expect(formatMessageTime(undefined)).toBe("");
+    // 今年：带月日和时分，不带年份
+    expect(formatMessageTime(recent)).toMatch(/15/);
+    expect(formatMessageTime(recent)).not.toContain(String(thisYear));
+    // 往年：带上年份
+    expect(formatMessageTime(older)).toContain(String(thisYear - 1));
+    expect(formatMessageTime(older)).toMatch(/30/);
   });
 });

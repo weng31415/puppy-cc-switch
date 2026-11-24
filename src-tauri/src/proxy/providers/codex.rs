@@ -6,18 +6,14 @@
 //! 支持检测官方 Codex 客户端 (codex_vscode, codex_cli_rs)
 
 use super::{AuthInfo, AuthStrategy, ProviderAdapter};
+use crate::codex_config::{
+    active_provider_str, extract_codex_base_url, is_anthropic_wire_api, is_chat_wire_api,
+};
 use crate::provider::{CodexChatReasoningConfig, Provider};
 use crate::proxy::error::ProxyError;
-use regex::Regex;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
-use std::sync::LazyLock;
 use toml::Value as TomlValue;
-
-/// 官方 Codex 客户端 User-Agent 正则
-#[allow(dead_code)]
-static CODEX_CLIENT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(codex_vscode|codex_cli_rs)/[\d.]+").unwrap());
 
 /// Codex 适配器
 pub struct CodexAdapter;
@@ -68,12 +64,12 @@ pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
         .settings_config
         .get("config")
         .and_then(|v| v.as_str())
-        .and_then(extract_codex_base_url_from_toml)
+        .and_then(extract_codex_base_url)
         .map(|url| is_chat_completions_url(&url))
         .unwrap_or(false)
 }
 
-pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str) -> bool {
+pub fn is_codex_responses_endpoint(endpoint: &str) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
@@ -81,7 +77,396 @@ pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &st
     matches!(
         path,
         "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
-    ) && codex_provider_uses_chat_completions(provider)
+    )
+}
+
+pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str) -> bool {
+    is_codex_responses_endpoint(endpoint) && codex_provider_uses_chat_completions(provider)
+}
+
+/// Whether a converted Codex Responses request may send `prompt_cache_key` to
+/// its Chat Completions upstream. Unknown OpenAI-compatible gateways default to
+/// false because many reject unsupported request fields with HTTP 400.
+pub fn should_send_codex_chat_prompt_cache_key(provider: &Provider) -> bool {
+    match provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.prompt_cache_routing.as_deref())
+        .unwrap_or("auto")
+    {
+        "enabled" => return true,
+        "disabled" => return false,
+        _ => {}
+    }
+
+    let base_url = provider
+        .settings_config
+        .get("base_url")
+        .or_else(|| provider.settings_config.get("baseURL"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("config")
+                .and_then(|value| value.as_str())
+                .and_then(extract_codex_base_url)
+        });
+
+    let Some(base_url) = base_url else {
+        return false;
+    };
+    let Ok(url) = url::Url::parse(&base_url) else {
+        return false;
+    };
+
+    match url.host_str() {
+        Some("api.openai.com") => true,
+        Some("api.kimi.com") => {
+            let path = url.path().trim_end_matches('/');
+            path == "/coding" || path.starts_with("/coding/")
+        }
+        _ => false,
+    }
+}
+
+/// Add a stable cache-routing key after Responses -> Chat conversion. An
+/// explicit client key wins; otherwise only a real client-provided session ID
+/// is eligible. Generated per-request UUIDs must never be used here.
+pub fn inject_codex_chat_prompt_cache_key(
+    provider: &Provider,
+    chat_body: &mut JsonValue,
+    explicit_key: Option<&str>,
+    client_session_id: Option<&str>,
+) -> bool {
+    if !should_send_codex_chat_prompt_cache_key(provider) {
+        return false;
+    }
+
+    let key = explicit_key
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .or_else(|| {
+            client_session_id
+                .map(str::trim)
+                .filter(|session_id| !session_id.is_empty())
+        });
+    let Some(key) = key else {
+        return false;
+    };
+
+    chat_body["prompt_cache_key"] = JsonValue::String(key.to_string());
+    true
+}
+
+/// Whether this Codex provider's real upstream speaks the native Anthropic
+/// Messages protocol (`/v1/messages`). The local Codex client always talks to CC
+/// Switch through the Responses API, so puppyrouter app bridges Responses ⇄ Anthropic.
+///
+/// Determined solely from explicit config (apiFormat / wire_api); no base_url
+/// guessing — Anthropic gateway addresses vary widely and guessing easily misfires.
+pub fn codex_provider_uses_anthropic(provider: &Provider) -> bool {
+    if let Some(api_format) = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(|v| v.as_str())
+        })
+    {
+        return is_anthropic_wire_api(api_format);
+    }
+
+    provider
+        .settings_config
+        .get("config")
+        .and_then(|v| v.as_str())
+        .and_then(extract_codex_wire_api_from_toml)
+        .map(|wire_api| is_anthropic_wire_api(&wire_api))
+        .unwrap_or(false)
+}
+
+pub fn should_convert_codex_responses_to_anthropic(provider: &Provider, endpoint: &str) -> bool {
+    let path = endpoint
+        .split_once('?')
+        .map_or(endpoint, |(path, _query)| path);
+
+    matches!(
+        path,
+        "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
+    ) && codex_provider_uses_anthropic(provider)
+}
+
+/// Whether a native-Responses Codex upstream needs Codex `namespace`/plugin
+/// tool declarations flattened before forwarding, plus xAI schema sanitization.
+///
+/// Codex 0.142+ emits ChatGPT-backend-private `{"type":"namespace",…}` tool
+/// shapes that strict third-party Responses gateways reject with
+/// `422 unknown variant "namespace"`. xAI also rejects root `oneOf`/`anyOf`
+/// function schemas (notably `mcp__codex_app__automation_update`). The
+/// Chat/Anthropic transform paths already unwrap namespaces, so this only
+/// fires on native Responses passthrough.
+///
+/// Covers managed xAI OAuth *and* API-key providers whose live upstream is
+/// `api.x.ai` with `wire_api = "responses"`, plus Grok models served by managed
+/// Copilot. Call only on native Responses paths, with the resolved outbound
+/// model: a Copilot card can serve both Grok and non-Grok models.
+/// See farion1231/cc-switch#6815.
+pub fn provider_needs_responses_namespace_flatten(
+    provider: &Provider,
+    outbound_model: Option<&str>,
+) -> bool {
+    provider.is_xai_oauth()
+        || provider_is_xai_native_responses(provider)
+        || (provider.is_github_copilot()
+            && outbound_model.is_some_and(|model| {
+                model
+                    .trim()
+                    .as_bytes()
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"grok-"))
+            }))
+}
+
+/// True when this Codex provider talks native Responses to first-party xAI
+/// (`api.x.ai`), including API-key Grok cards that are not `xai_oauth`.
+fn provider_is_xai_native_responses(provider: &Provider) -> bool {
+    let config_text = provider
+        .settings_config
+        .get("config")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let Some(wire_api) = extract_codex_wire_api_from_toml(config_text) else {
+        return false;
+    };
+    if !wire_api.eq_ignore_ascii_case("responses") {
+        return false;
+    }
+
+    extract_codex_base_url(config_text)
+        .is_some_and(|url| crate::codex_config::codex_url_host_matches_any(&url, &["api.x.ai"]))
+}
+
+/// 原生 Responses 透传的响应要不要补迟到的函数调用参数（见 `responses_late_arguments`）：
+/// 官方以外的上游都补。触发条件是协议违规本身（结束事件参数为空、增量排在后面，实测
+/// MiniMax），不按厂商名：转发 MiniMax 原生流的中转站同样会带过来。顺序正常的流原样放行。
+///
+/// 只在转 Chat / 转 Anthropic / xAI 改写之外的原生透传分支里调用。
+pub fn provider_needs_responses_late_arguments_repair(provider: &Provider) -> bool {
+    !is_codex_official_provider(provider)
+}
+
+fn has_explicit_codex_third_party_upstream(provider: &Provider) -> bool {
+    let non_empty_setting = |key: &str| {
+        provider
+            .settings_config
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let config = provider
+        .settings_config
+        .get("config")
+        .and_then(JsonValue::as_str)
+        .map(|text| {
+            crate::codex_config::strip_codex_unified_session_bucket(text)
+                .unwrap_or_else(|_| text.to_string())
+        });
+    let config = config.as_deref();
+
+    ["baseUrl", "baseURL", "base_url"]
+        .into_iter()
+        .any(non_empty_setting)
+        || config
+            .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+            .is_some()
+        || config
+            .and_then(crate::codex_config::extract_codex_base_url)
+            .is_some()
+        || config
+            .and_then(|text| text.parse::<TomlValue>().ok())
+            .and_then(|doc| {
+                doc.get("model_provider")
+                    .and_then(TomlValue::as_str)
+                    .map(str::trim)
+                    .filter(|provider_id| !provider_id.is_empty())
+                    .map(str::to_string)
+            })
+            // Exact match, mirroring upstream: the built-in lookup is
+            // case-sensitive, so `OpenAI` routes to a custom table — a
+            // third-party upstream, not the official provider.
+            .is_some_and(|provider_id| provider_id != "openai")
+}
+
+/// Codex Official ChatGPT cards receive authentication from the calling Codex
+/// client (`requires_openai_auth = true`). Unbound cards with a stored API key
+/// stay on the direct OpenAI API path instead of being sent to the ChatGPT
+/// backend. The fixed legacy card keeps its existing behavior.
+pub fn is_codex_official_provider(provider: &Provider) -> bool {
+    let is_fixed_official_id = provider.id == crate::database::CODEX_OFFICIAL_PROVIDER_ID;
+    if is_fixed_official_id && provider.has_official_category() {
+        return true;
+    }
+
+    let has_auth_object = provider
+        .settings_config
+        .get("auth")
+        .is_some_and(JsonValue::is_object);
+    let has_valid_config_shape = provider
+        .settings_config
+        .get("config")
+        .is_none_or(|config| config.is_null() || config.is_string());
+    if !has_auth_object || !has_valid_config_shape {
+        return false;
+    }
+
+    if has_explicit_codex_third_party_upstream(provider) {
+        return false;
+    }
+
+    let has_managed_account = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+        .is_some_and(|account_id| !account_id.trim().is_empty());
+    if has_managed_account {
+        return true;
+    }
+
+    let has_stored_api_key = provider
+        .settings_config
+        .get("auth")
+        .and_then(|auth| auth.get("OPENAI_API_KEY"))
+        .and_then(JsonValue::as_str)
+        .is_some_and(|key| !key.trim().is_empty());
+    if has_stored_api_key {
+        return false;
+    }
+
+    is_fixed_official_id || provider.has_official_category()
+}
+
+/// Vendors whose OFFICIAL Codex integration is a native `/responses` gateway that
+/// rejects Codex's freeform custom tools (`apply_patch` with `type: "custom"`,
+/// #6944). This is intentionally separate from `CODEX_WEB_SEARCH_REJECT_HOSTS`:
+/// web-search compatibility alone must not change a stored Chat provider's
+/// protocol or catalog. Matched on
+/// host labels via `codex_url_host_matches_any`, never by substring.
+const CODEX_NATIVE_RESPONSES_HOSTS: &[&str] = &[
+    "bigmodel.cn",
+    "z.ai",
+    "xiaomimimo.com",
+    "minimaxi.com",
+    "minimax.cn",
+    "minimax.io",
+    "longcat.chat",
+];
+
+/// Path markers of a listed vendor's OpenAI *Chat Completions* endpoint, which is
+/// NOT its Responses endpoint. Zhipu documents three separate base URLs per site
+/// (Anthropic `/api/anthropic`, Chat `/api/coding/paas/v4` + pay-as-you-go
+/// `/api/paas/v4`, Responses `/api/v1`) and warns that the wrong one cannot use
+/// Coding Plan quota. A stored provider still pointing at a Chat path is a
+/// pre-2026-09 Chat-route record: it keeps its `ProxyChat` catalog (the proxy
+/// route converts it correctly; direct connect fails loudly with the #6944 400
+/// until the preset is re-imported) instead of being silently steered onto the
+/// wrong endpoint with a native catalog.
+const CODEX_NATIVE_RESPONSES_CHAT_PATH_MARKERS: &[&str] = &["/paas/v4"];
+
+/// Whether `base_url` points at a listed vendor's native Responses gateway, so a
+/// provider whose stored `apiFormat` predates the preset's switch to
+/// `openai_responses` still gets the `NativeResponses` catalog without a re-save.
+pub fn is_codex_native_responses_url(base_url: &str) -> bool {
+    if !crate::codex_config::codex_url_host_matches_any(base_url, CODEX_NATIVE_RESPONSES_HOSTS) {
+        return false;
+    }
+    if is_chat_completions_url(base_url) {
+        return false;
+    }
+    let lower = base_url.to_ascii_lowercase();
+    !CODEX_NATIVE_RESPONSES_CHAT_PATH_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// Resolve the model-catalog tool profile for a Codex provider using the SAME
+/// Anthropic detection as the proxy router ([`codex_provider_uses_anthropic`]), so the
+/// generated catalog never disagrees with the routed transform. A provider whose
+/// Anthropic upstream is declared only via settings `apiFormat` or TOML `wire_api`
+/// (not `meta.api_format`) would otherwise get a `ProxyChat` catalog and emit the
+/// freeform `apply_patch` tool that the Anthropic transform then silently drops.
+/// Non-Anthropic providers keep the existing `meta.api_format` classification.
+pub fn resolve_codex_catalog_tool_profile(
+    provider: &Provider,
+) -> crate::codex_config::CodexCatalogToolProfile {
+    use crate::codex_config::CodexCatalogToolProfile;
+    if is_codex_official_provider(provider) {
+        return CodexCatalogToolProfile::NativeResponses;
+    }
+    // xAI OAuth pins the native Responses profile regardless of editable
+    // api_format, mirroring the Claude-side managed-provider invariant.
+    if provider.is_xai_oauth() {
+        return CodexCatalogToolProfile::NativeResponses;
+    }
+    if provider.is_github_copilot() {
+        return CodexCatalogToolProfile::Copilot;
+    }
+    if codex_provider_uses_anthropic(provider) {
+        return CodexCatalogToolProfile::Anthropic;
+    }
+
+    // Defensive fallback for providers saved in SQLite before their preset
+    // switched to `openai_responses` (the #6944 reporter reinstalled to no
+    // effect precisely because the stale `apiFormat` lives in the DB row): a
+    // base_url on a listed vendor's native Responses gateway forces the
+    // NativeResponses catalog. Chat-endpoint paths are deliberately excluded —
+    // see `CODEX_NATIVE_RESPONSES_CHAT_PATH_MARKERS`.
+    if let Some(base_url) = provider
+        .settings_config
+        .get("config")
+        .and_then(|v| v.as_str())
+        .and_then(extract_codex_base_url)
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("base_url")
+                .or_else(|| provider.settings_config.get("baseURL"))
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+        })
+    {
+        if is_codex_native_responses_url(&base_url) {
+            return CodexCatalogToolProfile::NativeResponses;
+        }
+    }
+
+    let api_format = provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(|v| v.as_str())
+        });
+    CodexCatalogToolProfile::from_api_format(api_format)
 }
 
 /// Extract the real upstream model configured for a Codex provider.
@@ -98,7 +483,11 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
                 .settings_config
                 .get("config")
                 .and_then(|v| v.as_str())
-                .and_then(extract_codex_model_from_toml)
+                .and_then(|config| {
+                    crate::grok_config::extract_model_config(config)
+                        .map(|model| model.model)
+                        .or_else(|| extract_codex_model_from_toml(config))
+                })
         })
 }
 
@@ -129,7 +518,13 @@ pub fn apply_codex_chat_upstream_model(
     if !codex_provider_uses_chat_completions(provider) {
         return None;
     }
+    apply_codex_upstream_model(provider, body)
+}
 
+/// Same model-substitution logic as `apply_codex_chat_upstream_model`, but without
+/// the chat gating check. Reused by the anthropic conversion path (the forwarder has
+/// already confirmed this provider uses anthropic).
+pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> Option<String> {
     let catalog_model_ids = codex_provider_catalog_model_ids(provider);
     if let Some(request_model) = body
         .get("model")
@@ -147,26 +542,251 @@ pub fn apply_codex_chat_upstream_model(
     Some(upstream_model)
 }
 
+/// Stack 请求的上游拒收 Codex 的托管 `web_search`：按这家的地址和模型品牌判断，和它做
+/// 路由时写 `web_search = "disabled"` 的依据相同（归一化后的配置，旧形态的行也认得出
+/// 地址）；另看这次请求的模型：行里配了多个模型时，选中的不一定是行的 `model`。
+pub fn codex_stack_upstream_rejects_web_search(
+    provider: &Provider,
+    request_model: Option<&str>,
+) -> bool {
+    if provider.is_github_copilot() {
+        return true;
+    }
+
+    let projected =
+        crate::live::project::codex::CodexProjection::of(&crate::live::project::codex::RowInput {
+            settings: &provider.settings_config,
+            official: false,
+            proxy_injected_oauth: provider.uses_proxy_injected_oauth(),
+        })
+        .map(|projection| projection.catalog_input_text());
+    let config_text = match &projected {
+        Ok(text) => text.as_str(),
+        Err(_) => provider
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+    };
+    crate::codex_config::codex_native_gateway_rejects_web_search(config_text)
+        || request_model.is_some_and(crate::codex_config::codex_model_rejects_web_search)
+}
+
+/// 去掉 Responses 请求里托管的 `web_search` 工具：`tools` 去完为空时整个键删掉；指向它
+/// 的 `tool_choice` 一并删掉，`tools` 整个没了时 `tool_choice` 也删（上游对没有工具的
+/// `tool_choice` 报 400）。其余字段不动。返回是否改了请求。
+pub fn strip_codex_hosted_web_search(body: &mut JsonValue) -> bool {
+    let Some(obj) = body.as_object_mut() else {
+        return false;
+    };
+    let is_web_search =
+        |tool: &JsonValue| tool.get("type").and_then(|value| value.as_str()) == Some("web_search");
+    let mut changed = false;
+    let mut tools_gone = false;
+    if let Some(JsonValue::Array(tools)) = obj.get_mut("tools") {
+        let before = tools.len();
+        tools.retain(|tool| !is_web_search(tool));
+        changed = tools.len() != before;
+        tools_gone = changed && tools.is_empty();
+    }
+    if tools_gone {
+        obj.remove("tools");
+    }
+    let choice_is_web_search = obj.get("tool_choice").is_some_and(is_web_search);
+    if choice_is_web_search || (tools_gone && obj.contains_key("tool_choice")) {
+        obj.remove("tool_choice");
+        changed = true;
+    }
+    changed
+}
+
+/// Codex 客户端私有、第三方原生 Responses 网关普遍不认识的 `include` 标记。Codex 0.163+
+/// 起随请求下发（#8996 / #9042），ChatGPT 后端之外的网关会拿它整条 400。只删这一项，
+/// 其余标记原样保留。
+const CODEX_PRIVATE_INCLUDE_MARKERS: &[&str] = &["output.encrypted_content"];
+
+/// 去掉 `include` 里的 Codex 私有标记：去完为空时整个键删掉；缺键、非数组、非对象
+/// 请求一律不动；数组里的非字符串项原样留着。返回是否改了请求。和 xAI 侧的白名单各管
+/// 一段，重复删无副作用。
+pub fn strip_codex_private_include_markers(body: &mut JsonValue) -> bool {
+    let Some(obj) = body.as_object_mut() else {
+        return false;
+    };
+    let mut include_gone = false;
+    let changed = match obj.get_mut("include").and_then(JsonValue::as_array_mut) {
+        Some(include) => {
+            let before = include.len();
+            include.retain(|marker| {
+                !marker
+                    .as_str()
+                    .is_some_and(|marker| CODEX_PRIVATE_INCLUDE_MARKERS.contains(&marker))
+            });
+            let changed = include.len() != before;
+            include_gone = changed && include.is_empty();
+            changed
+        }
+        None => false,
+    };
+    if include_gone {
+        obj.remove("include");
+    }
+    changed
+}
+
+/// Codex 对非 OpenAI provider 会清掉 `encrypted_content` 的条目类型：codex-rs
+/// `ResponseItem::clear_encrypted_content` 覆盖的类型，去掉它另外放行的推理与压缩条目。
+/// 按正向名单照抄，Codex 以后新加的条目类型不会被误删。
+const CODEX_OPENAI_ONLY_ENCRYPTED_CONTENT_ITEM_TYPES: &[&str] = &[
+    "message",
+    "local_shell_call",
+    "function_call",
+    "tool_search_call",
+    "custom_tool_call",
+    "web_search_call",
+    "image_generation_call",
+];
+
+/// 去掉 Codex 只在 provider 是内置 openai 时才发的请求内容，让第三方上游收到的请求和
+/// Codex 自己对非 OpenAI provider 发的一样。照 codex-rs `core/src/client.rs`
+/// `build_responses_request` 里 `is_openai()`（`name == "OpenAI"`）的分支：
+///
+/// - `include` 里的 `output.encrypted_content`（`output_token_replay` 只对 OpenAI 开）；
+/// - `stream_options.reasoning_summary_delivery`（同上，`stream_options` 只有这一个字段）；
+/// - `input` 里的 `configuration_update` 条目（推理档位更新只对 OpenAI 开，否则整条滤掉）；
+/// - 每个条目的 `internal_chat_message_metadata_passthrough`；
+/// - 推理、压缩以外条目的 `encrypted_content`，以及 `function_call` 的 `encrypted_function_args`。
+///
+/// 另加顶层 `access_programs`：Codex 按登录方式而非 provider 决定发不发，但只有带着
+/// ChatGPT 登录才会出现，自定义表（第三方 Key）永远不发。
+///
+/// 第三方路由写成内置 openai（有 ChatGPT 登录时）、聚合模式经内置 openai 走第三方成员，
+/// Codex 都以为自己在跟 OpenAI 说话，这些字段就会到达第三方，严格网关会整条 400
+/// （#9042）。每次删得一样，不影响缓存前缀；请求里没有这些字段时逐字节不变。返回是否
+/// 改了请求。
+pub fn strip_codex_openai_only_request_fields(body: &mut JsonValue) -> bool {
+    let mut changed = strip_codex_private_include_markers(body);
+    let Some(obj) = body.as_object_mut() else {
+        return changed;
+    };
+
+    let mut stream_options_gone = false;
+    if let Some(stream_options) = obj
+        .get_mut("stream_options")
+        .and_then(JsonValue::as_object_mut)
+    {
+        if stream_options
+            .remove("reasoning_summary_delivery")
+            .is_some()
+        {
+            changed = true;
+            stream_options_gone = stream_options.is_empty();
+        }
+    }
+    if stream_options_gone {
+        obj.remove("stream_options");
+    }
+
+    changed |= obj.remove("access_programs").is_some();
+
+    if let Some(input) = obj.get_mut("input").and_then(JsonValue::as_array_mut) {
+        let before = input.len();
+        input.retain(|item| {
+            item.get("type").and_then(JsonValue::as_str) != Some("configuration_update")
+        });
+        changed |= input.len() != before;
+
+        for item in input.iter_mut() {
+            let Some(item) = item.as_object_mut() else {
+                continue;
+            };
+            changed |= item
+                .remove("internal_chat_message_metadata_passthrough")
+                .is_some();
+            let item_type = item.get("type").and_then(JsonValue::as_str);
+            let drops_encrypted_content = item_type
+                .is_some_and(|t| CODEX_OPENAI_ONLY_ENCRYPTED_CONTENT_ITEM_TYPES.contains(&t));
+            let is_function_call = item_type == Some("function_call");
+            if drops_encrypted_content {
+                changed |= item.remove("encrypted_content").is_some();
+            }
+            if is_function_call {
+                changed |= item.remove("encrypted_function_args").is_some();
+            }
+        }
+    }
+
+    changed
+}
+
 pub fn resolve_codex_chat_reasoning_config(
     provider: &Provider,
     body: &JsonValue,
 ) -> Option<CodexChatReasoningConfig> {
-    if let Some(config) = provider
+    let mut config = if let Some(config) = provider
         .meta
         .as_ref()
         .and_then(|meta| meta.codex_chat_reasoning.clone())
     {
-        return Some(normalize_codex_chat_reasoning_config(config));
+        normalize_codex_chat_reasoning_config(config)
+    } else {
+        infer_codex_chat_reasoning_config(provider, body)?
+    };
+
+    // zen 的合法 effort 档位是逐模型的（models.dev：glm-5.2 仅 high|max、
+    // kimi-k3 仅 max、qwen/glm-5.1 等为 toggle 型无 effort），opencode 客户端
+    // 也严格按模型声明发值。按请求模型从 modelCatalog 的 reasoningLevels
+    // （#6228 引入的逐模型声明）查表附上；查不到（模型未收录 / 条目未声明
+    // effort）→ None，转换层将完全不发 reasoning_effort。
+    if config.effort_value_mode.as_deref() == Some("zen") {
+        config.effort_levels = zen_catalog_effort_levels(provider, body);
     }
 
-    infer_codex_chat_reasoning_config(provider, body)
+    Some(config)
+}
+
+/// 按请求模型从供应商 modelCatalog 查 Zen 合法 effort 档位（逐模型数据镜像
+/// models.dev 的 reasoning_options effort values）。仅做档位查表，不参与平台
+/// 判定——平台身份仍只由 name/base_url 决定（见 infer_aggregator_platform_config）。
+/// DB SSOT 为 camelCase，手写/旧数据可能为 snake_case，双格式兼容（与表单加载侧一致）。
+fn zen_catalog_effort_levels(provider: &Provider, body: &JsonValue) -> Option<Vec<String>> {
+    let model = body.get("model")?.as_str()?.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let entries = provider
+        .settings_config
+        .get("modelCatalog")?
+        .get("models")?
+        .as_array()?;
+    let entry = entries.iter().find(|entry| {
+        entry
+            .get("model")
+            .and_then(|value| value.as_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(model))
+    })?;
+    let levels_value = entry
+        .get("reasoningLevels")
+        .or_else(|| entry.get("reasoning_levels"))?;
+    let levels: Vec<String> = levels_value
+        .as_array()?
+        .iter()
+        .filter_map(|level| level.as_str().map(str::to_string))
+        .collect();
+    (!levels.is_empty()).then_some(levels)
 }
 
 fn normalize_codex_chat_reasoning_config(
     mut config: CodexChatReasoningConfig,
 ) -> CodexChatReasoningConfig {
-    if config.supports_effort.unwrap_or(false) && config.supports_thinking.is_none() {
-        config.supports_thinking = Some(true);
+    if config.supports_effort.unwrap_or(false) {
+        if config.supports_thinking.is_none() {
+            config.supports_thinking = Some(true);
+        }
+        if config.effort_param.as_deref().is_none_or(|value| {
+            value.trim().is_empty() || value.trim().eq_ignore_ascii_case("none")
+        }) {
+            config.effort_param = Some("reasoning_effort".to_string());
+        }
     }
     config
 }
@@ -180,8 +800,7 @@ fn infer_codex_chat_reasoning_config(
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
         .or_else(|| codex_provider_upstream_model(provider))
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+        .unwrap_or_default();
     let base_url = provider
         .settings_config
         .get("base_url")
@@ -193,11 +812,22 @@ fn infer_codex_chat_reasoning_config(
                 .settings_config
                 .get("config")
                 .and_then(|v| v.as_str())
-                .and_then(extract_codex_base_url_from_toml)
+                .and_then(extract_codex_base_url)
         })
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let name = provider.name.to_ascii_lowercase();
+        .unwrap_or_default();
+    infer_chat_reasoning_config(&provider.name, &base_url, &model)
+}
+
+/// 按供应商名、上游地址、上游模型名推断 Chat 兼容上游的 reasoning 接口。
+/// Codex Responses → Chat 与 Claude 路由（经 Chat / Responses 转发）共用这份判定。
+pub(crate) fn infer_chat_reasoning_config(
+    name: &str,
+    base_url: &str,
+    model: &str,
+) -> Option<CodexChatReasoningConfig> {
+    let name = name.to_ascii_lowercase();
+    let base_url = base_url.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
 
     // 平台优先：聚合 / 托管平台的 reasoning 接口由平台的推理框架决定，而非模型官方实现，
     // 因此先按平台标识（仅 name + base_url，不含 model 名）判定并覆盖模型规则。
@@ -215,20 +845,33 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("reasoning_effort".to_string()),
             effort_value_mode: Some("deepseek".to_string()),
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
         });
     }
 
-    // StepFun：仅 step-3.5-flash-2603 这一版支持 reasoning effort（low/high 两档），
-    // 其余 step 模型不暴露 effort，故 supports_effort 仅对含 "2603" 的模型置真。
+    // StepFun：官方 reasoning 指南与两站模型页（2026-08-15 盘点）——
+    // step-3.5-flash-2603 支持 low/high 两档；step-3.7-flash 支持
+    // low/medium/high 三档（官方默认 medium）；其余 step 模型（含无后缀
+    // step-3.5-flash）不暴露 effort。2603 沿用 low_high 收敛映射；
+    // 3.7-flash 必须 passthrough——套 low_high 会把 medium 塌成 high，
+    // 造出 wire 上无差异的假档位。全系无思考开关（thinking_param 恒 none）。
     // 第二个 OR 分支覆盖「经中转/聚合跑该模型、但平台 name/base_url 不含 stepfun」的情况。
     if haystack.contains("stepfun") || haystack.contains("step-3.5-flash-2603") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
-            supports_effort: Some(model.contains("2603")),
+            supports_effort: Some(model.contains("2603") || model.contains("step-3.7-flash")),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
-            effort_value_mode: Some("low_high".to_string()),
+            effort_value_mode: Some(
+                if model.contains("2603") {
+                    "low_high"
+                } else {
+                    "passthrough"
+                }
+                .to_string(),
+            ),
             output_format: Some("reasoning".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -240,6 +883,7 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -251,6 +895,7 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -262,6 +907,7 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -273,6 +919,7 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_details".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -284,6 +931,7 @@ fn infer_codex_chat_reasoning_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -313,6 +961,7 @@ fn infer_aggregator_platform_config(
             effort_param: Some("reasoning.effort".to_string()),
             effort_value_mode: Some("openrouter".to_string()),
             output_format: Some("auto".to_string()),
+            effort_levels: None,
         });
     }
 
@@ -327,22 +976,63 @@ fn infer_aggregator_platform_config(
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
+        });
+    }
+
+    // ModelScope 魔搭 API-Inference：与 SiliconFlow 同构——平台级统一
+    // `enable_thinking` 布尔（官方模型页范例 extra_body {"enable_thinking": bool}，
+    // OpenAI SDK 的 extra_body 合并进请求体顶层），思维回传 reasoning_content。
+    // 智谱风格 thinking:{type} 是模型厂商自家方言，平台文档零出现——没有这条
+    // 分支时挂 GLM 的 ModelScope 供应商会被下方 glm 模型规则错误注入该形态。
+    if platform.contains("modelscope") {
+        return Some(CodexChatReasoningConfig {
+            supports_thinking: Some(true),
+            supports_effort: Some(false),
+            thinking_param: Some("enable_thinking".to_string()),
+            effort_param: Some("none".to_string()),
+            effort_value_mode: None,
+            output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
+        });
+    }
+
+    // OpenCode Zen（opencode.ai 网关，issue #6112）：其自家客户端对该传输发顶层
+    // `reasoning_effort`（provider/transform.ts），平台归一参数；不发厂商原生
+    // thinking 形状（glm 模型走 zen 时套智谱 thinking:{type} 网关不认）。
+    // 合法档位逐模型（models.dev 的 reasoning_options，opencode 客户端同样严格
+    // 按模型声明发值）：具体档位表见供应商 modelCatalog 各条目的 reasoningLevels，
+    // 代理由此按请求模型查表钳制（resolve 处附上 effort_levels），无表不发字段。
+    // 匹配域名而非裸 "opencode"，避免误伤名字含 opencode 的无关供应商。
+    if platform.contains("opencode.ai") {
+        return Some(CodexChatReasoningConfig {
+            supports_thinking: Some(true),
+            supports_effort: Some(true),
+            thinking_param: Some("none".to_string()),
+            effort_param: Some("reasoning_effort".to_string()),
+            effort_value_mode: Some("zen".to_string()),
+            output_format: Some("reasoning_content".to_string()),
+            effort_levels: None,
+        });
+    }
+
+    // Mistral 官方 API（#9507）：Chat 请求体不收额外字段，它托管的 deepseek / glm 名模型
+    // 会被下方模型规则注入 `thinking:{type}`，整条 422。与 Codex 的 Mistral 预设、Claude
+    // 侧（`claude_reasoning`）共用 `is_mistral_api`，不下发推理参数。
+    // 要发档位的用户在卡上显式配置 codexChatReasoning。
+    if super::is_mistral_api(base_url) {
+        return Some(CodexChatReasoningConfig {
+            supports_thinking: Some(false),
+            supports_effort: Some(false),
+            thinking_param: Some("none".to_string()),
+            effort_param: Some("none".to_string()),
+            effort_value_mode: None,
+            output_format: Some("auto".to_string()),
+            effort_levels: None,
         });
     }
 
     None
-}
-
-fn is_chat_wire_api(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "chat"
-            | "chat_completions"
-            | "chat-completions"
-            | "openai_chat"
-            | "openai-chat"
-            | "openai_chat_completions"
-    )
 }
 
 fn is_chat_completions_url(value: &str) -> bool {
@@ -364,21 +1054,7 @@ pub fn is_origin_only_url(value: &str) -> bool {
 
 fn extract_codex_wire_api_from_toml(config_text: &str) -> Option<String> {
     let doc = config_text.parse::<TomlValue>().ok()?;
-
-    if let Some(active_provider) = doc.get("model_provider").and_then(|v| v.as_str()) {
-        if let Some(wire_api) = doc
-            .get("model_providers")
-            .and_then(|providers| providers.get(active_provider))
-            .and_then(|provider| provider.get("wire_api"))
-            .and_then(|v| v.as_str())
-        {
-            return Some(wire_api.to_string());
-        }
-    }
-
-    doc.get("wire_api")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
+    active_provider_str(&doc, "wire_api").map(str::to_string)
 }
 
 fn extract_codex_model_from_toml(config_text: &str) -> Option<String> {
@@ -391,23 +1067,9 @@ fn extract_codex_model_from_toml(config_text: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn extract_codex_base_url_from_toml(config_text: &str) -> Option<String> {
-    // Canonical parser lives in codex_config; keep this thin alias so the
-    // proxy hot path and the usage-credential resolver share one implementation.
-    crate::codex_config::extract_codex_base_url(config_text)
-}
-
 impl CodexAdapter {
     pub fn new() -> Self {
         Self
-    }
-
-    /// 检测是否为官方 Codex 客户端
-    ///
-    /// 匹配 User-Agent 模式: `^(codex_vscode|codex_cli_rs)/[\d.]+`
-    #[allow(dead_code)]
-    pub fn is_official_client(user_agent: &str) -> bool {
-        CODEX_CLIENT_REGEX.is_match(user_agent)
     }
 
     /// 从 Provider 配置中提取 API Key
@@ -456,6 +1118,9 @@ impl CodexAdapter {
             }
 
             if let Some(config_str) = config.as_str() {
+                if let Some((_, key)) = crate::grok_config::extract_credentials(config_str) {
+                    return Some(key);
+                }
                 if let Some(key) =
                     crate::codex_config::extract_codex_experimental_bearer_token(config_str)
                 {
@@ -480,6 +1145,20 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        if is_codex_official_provider(provider) {
+            return Ok(super::CHATGPT_CODEX_BASE_URL.to_string());
+        }
+
+        if provider.is_github_copilot() {
+            return Ok("https://api.githubcopilot.com".to_string());
+        }
+
+        // xAI OAuth: ignore editable provider base URLs and always use the xAI
+        // API origin associated with the managed token.
+        if provider.is_xai_oauth() {
+            return Ok(super::XAI_API_BASE_URL.to_string());
+        }
+
         // 1. 尝试直接获取 base_url 字段
         if let Some(url) = provider
             .settings_config
@@ -506,6 +1185,15 @@ impl ProviderAdapter for CodexAdapter {
 
             // 尝试解析 TOML 字符串格式
             if let Some(config_str) = config.as_str() {
+                if let Some(url) = crate::grok_config::extract_base_url(config_str) {
+                    return Ok(url.trim_end_matches('/').to_string());
+                }
+                // The table `model_provider` selects, read the way Codex reads it. The text
+                // scans below remain for a top-level `openai_base_url` and for TOML that
+                // does not parse.
+                if let Some(url) = extract_codex_base_url(config_str) {
+                    return Ok(url.trim_end_matches('/').to_string());
+                }
                 if let Some(start) = config_str.find("base_url = \"") {
                     let rest = &config_str[start + 12..];
                     if let Some(end) = rest.find('"') {
@@ -527,8 +1215,44 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        if provider.is_github_copilot() {
+            return Some(AuthInfo::new(
+                "copilot_placeholder".to_string(),
+                AuthStrategy::GitHubCopilot,
+            ));
+        }
+
+        // xAI OAuth (Grok subscription): placeholder credentials only; the real
+        // access_token is resolved per-request by the forwarder via XaiOAuthManager.
+        if provider.is_xai_oauth() {
+            return Some(AuthInfo::new(
+                "xai_oauth_placeholder".to_string(),
+                AuthStrategy::XaiOAuth,
+            ));
+        }
+
+        // Anthropic upstream: the auth field is chosen by the user in the UI (meta.apiKeyField).
+        //   ANTHROPIC_API_KEY    → x-api-key (AuthStrategy::Anthropic)
+        //   ANTHROPIC_AUTH_TOKEN → Authorization: Bearer (default, AuthStrategy::Bearer)
+        // The two are mutually exclusive to avoid a 401 from the gateway receiving
+        // both auth headers at once. All other Codex upstreams stay pure Bearer.
+        let strategy = if codex_provider_uses_anthropic(provider) {
+            let uses_x_api_key = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_key_field.as_deref())
+                .map(|field| field.eq_ignore_ascii_case("ANTHROPIC_API_KEY"))
+                .unwrap_or(false);
+            if uses_x_api_key {
+                AuthStrategy::Anthropic
+            } else {
+                AuthStrategy::Bearer
+            }
+        } else {
+            AuthStrategy::Bearer
+        };
         self.extract_key(provider)
-            .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
+            .map(|key| AuthInfo::new(key, strategy))
     }
 
     fn build_url(&self, base_url: &str, endpoint: &str) -> String {
@@ -568,7 +1292,19 @@ impl ProviderAdapter for CodexAdapter {
         auth: &AuthInfo,
     ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, ProxyError> {
         use super::adapter::auth_header_value;
+        if auth.strategy == AuthStrategy::GitHubCopilot {
+            return super::copilot_auth::build_copilot_request_headers(&auth.api_key);
+        }
         let bearer = format!("Bearer {}", auth.api_key);
+        // Anthropic gateway: send only x-api-key (anthropic-version is filled in by
+        // the forwarder). Mutually exclusive with Bearer to avoid a 401 from the
+        // gateway receiving both auth headers at once.
+        if auth.strategy == AuthStrategy::Anthropic {
+            return Ok(vec![(
+                http::HeaderName::from_static("x-api-key"),
+                auth_header_value(&auth.api_key)?,
+            )]);
+        }
         Ok(vec![(
             http::HeaderName::from_static("authorization"),
             auth_header_value(&bearer)?,
@@ -577,388 +1313,4 @@ impl ProviderAdapter for CodexAdapter {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn create_provider(config: serde_json::Value) -> Provider {
-        Provider {
-            id: "test".to_string(),
-            name: "Test Codex".to_string(),
-            settings_config: config,
-            website_url: None,
-            category: Some("codex".to_string()),
-            created_at: None,
-            sort_index: None,
-            notes: None,
-            meta: None,
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        }
-    }
-
-    #[test]
-    fn test_extract_base_url_direct() {
-        let adapter = CodexAdapter::new();
-        let provider = create_provider(json!({
-            "base_url": "https://api.openai.com/v1"
-        }));
-
-        let url = adapter.extract_base_url(&provider).unwrap();
-        assert_eq!(url, "https://api.openai.com/v1");
-    }
-
-    #[test]
-    fn test_extract_auth_from_auth_field() {
-        let adapter = CodexAdapter::new();
-        let provider = create_provider(json!({
-            "auth": {
-                "OPENAI_API_KEY": "sk-test-key-12345678"
-            }
-        }));
-
-        let auth = adapter.extract_auth(&provider).unwrap();
-        assert_eq!(auth.api_key, "sk-test-key-12345678");
-        assert_eq!(auth.strategy, AuthStrategy::Bearer);
-    }
-
-    #[test]
-    fn test_extract_auth_falls_back_to_config_bearer_when_auth_key_empty() {
-        let adapter = CodexAdapter::new();
-        let provider = create_provider(json!({
-            "auth": {
-                "OPENAI_API_KEY": ""
-            },
-            "config": r#"model_provider = "custom"
-
-[model_providers.custom]
-experimental_bearer_token = "sk-config-key"
-"#
-        }));
-
-        let auth = adapter.extract_auth(&provider).unwrap();
-        assert_eq!(auth.api_key, "sk-config-key");
-        assert_eq!(auth.strategy, AuthStrategy::Bearer);
-    }
-
-    #[test]
-    fn test_extract_auth_from_env() {
-        let adapter = CodexAdapter::new();
-        let provider = create_provider(json!({
-            "env": {
-                "OPENAI_API_KEY": "sk-env-key-12345678"
-            }
-        }));
-
-        let auth = adapter.extract_auth(&provider).unwrap();
-        assert_eq!(auth.api_key, "sk-env-key-12345678");
-    }
-
-    #[test]
-    fn test_build_url() {
-        let adapter = CodexAdapter::new();
-        let url = adapter.build_url("https://api.openai.com/v1", "/responses");
-        assert_eq!(url, "https://api.openai.com/v1/responses");
-    }
-
-    #[test]
-    fn test_build_url_origin_adds_v1() {
-        let adapter = CodexAdapter::new();
-        let url = adapter.build_url("https://api.openai.com", "/responses");
-        assert_eq!(url, "https://api.openai.com/v1/responses");
-    }
-
-    #[test]
-    fn test_build_url_custom_prefix_no_v1() {
-        let adapter = CodexAdapter::new();
-        let url = adapter.build_url("https://example.com/openai", "/responses");
-        assert_eq!(url, "https://example.com/openai/responses");
-    }
-
-    #[test]
-    fn test_build_url_dedup_v1() {
-        let adapter = CodexAdapter::new();
-        // base_url 已包含 /v1，endpoint 也包含 /v1
-        let url = adapter.build_url("https://www.packyapi.com/v1", "/v1/responses");
-        assert_eq!(url, "https://www.packyapi.com/v1/responses");
-    }
-
-    // 官方客户端检测测试
-    #[test]
-    fn test_is_official_client_vscode() {
-        assert!(CodexAdapter::is_official_client("codex_vscode/1.0.0"));
-        assert!(CodexAdapter::is_official_client("codex_vscode/2.3.4"));
-        assert!(CodexAdapter::is_official_client("codex_vscode/0.1"));
-    }
-
-    #[test]
-    fn test_is_official_client_cli() {
-        assert!(CodexAdapter::is_official_client("codex_cli_rs/1.0.0"));
-        assert!(CodexAdapter::is_official_client("codex_cli_rs/0.5.2"));
-    }
-
-    #[test]
-    fn test_is_not_official_client() {
-        assert!(!CodexAdapter::is_official_client("Mozilla/5.0"));
-        assert!(!CodexAdapter::is_official_client("curl/7.68.0"));
-        assert!(!CodexAdapter::is_official_client("python-requests/2.25.1"));
-        assert!(!CodexAdapter::is_official_client("codex_other/1.0.0"));
-        assert!(!CodexAdapter::is_official_client(""));
-    }
-
-    #[test]
-    fn test_is_official_client_partial_match() {
-        // 必须从开头匹配
-        assert!(!CodexAdapter::is_official_client("some codex_vscode/1.0.0"));
-        assert!(!CodexAdapter::is_official_client(
-            "prefix_codex_cli_rs/1.0.0"
-        ));
-    }
-
-    #[test]
-    fn test_codex_provider_uses_chat_completions_from_active_wire_api() {
-        let provider = create_provider(json!({
-            "config": r#"
-model_provider = "chat_only"
-model = "gpt-5"
-
-[model_providers.chat_only]
-name = "Chat Only"
-base_url = "https://example.com/v1"
-wire_api = "chat"
-"#
-        }));
-
-        assert!(codex_provider_uses_chat_completions(&provider));
-        assert!(should_convert_codex_responses_to_chat(
-            &provider,
-            "/responses?stream=true"
-        ));
-        assert!(!should_convert_codex_responses_to_chat(
-            &provider,
-            "/chat/completions"
-        ));
-    }
-
-    #[test]
-    fn test_codex_provider_uses_chat_completions_from_full_chat_url() {
-        let provider = create_provider(json!({
-            "base_url": "https://example.com/v1/chat/completions"
-        }));
-
-        assert!(codex_provider_uses_chat_completions(&provider));
-        assert!(should_convert_codex_responses_to_chat(
-            &provider,
-            "/v1/responses/compact"
-        ));
-    }
-
-    #[test]
-    fn test_codex_provider_uses_chat_completions_from_meta_api_format_for_compact() {
-        let mut provider = create_provider(json!({
-            "base_url": "https://example.com/v1"
-        }));
-        provider.meta = Some(crate::provider::ProviderMeta {
-            api_format: Some("openai_chat".to_string()),
-            ..Default::default()
-        });
-
-        assert!(codex_provider_uses_chat_completions(&provider));
-        assert!(should_convert_codex_responses_to_chat(
-            &provider,
-            "/responses/compact?stream=true"
-        ));
-    }
-
-    #[test]
-    fn test_codex_provider_uses_chat_completions_from_meta_api_format_for_responses() {
-        let mut provider = create_provider(json!({
-            "base_url": "https://api.deepseek.com/v1"
-        }));
-        provider.meta = Some(crate::provider::ProviderMeta {
-            api_format: Some("openai_chat".to_string()),
-            ..Default::default()
-        });
-
-        assert!(should_convert_codex_responses_to_chat(
-            &provider,
-            "/v1/responses"
-        ));
-    }
-
-    #[test]
-    fn test_apply_codex_chat_upstream_model_uses_provider_config_model() {
-        let mut provider = create_provider(json!({
-            "config": r#"
-model_provider = "deepseek"
-model = "deepseek-v4-flash"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com/v1"
-wire_api = "responses"
-"#
-        }));
-        provider.meta = Some(crate::provider::ProviderMeta {
-            api_format: Some("openai_chat".to_string()),
-            ..Default::default()
-        });
-        let mut body = json!({
-            "model": "placeholder-client-model",
-            "input": "ping"
-        });
-
-        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
-
-        assert_eq!(upstream_model.as_deref(), Some("deepseek-v4-flash"));
-        assert_eq!(
-            body.get("model").and_then(|v| v.as_str()),
-            Some("deepseek-v4-flash")
-        );
-    }
-
-    #[test]
-    fn test_apply_codex_chat_upstream_model_preserves_catalog_model_selection() {
-        let mut provider = create_provider(json!({
-            "config": r#"
-model_provider = "deepseek"
-model = "deepseek-v4-flash"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com/v1"
-wire_api = "responses"
-"#,
-            "modelCatalog": {
-                "models": [
-                    { "model": "deepseek-v4-flash" },
-                    { "model": "kimi-k2" }
-                ]
-            }
-        }));
-        provider.meta = Some(crate::provider::ProviderMeta {
-            api_format: Some("openai_chat".to_string()),
-            ..Default::default()
-        });
-        let mut body = json!({
-            "model": "kimi-k2",
-            "input": "ping"
-        });
-
-        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
-
-        assert_eq!(upstream_model.as_deref(), Some("kimi-k2"));
-        assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("kimi-k2"));
-    }
-
-    #[test]
-    fn test_resolve_codex_chat_reasoning_infers_deepseek_effort_support() {
-        let provider = create_provider(json!({
-            "config": r#"
-model_provider = "deepseek"
-model = "deepseek-v4-pro"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com"
-wire_api = "chat"
-"#
-        }));
-
-        let config =
-            resolve_codex_chat_reasoning_config(&provider, &json!({ "model": "deepseek-v4-pro" }))
-                .unwrap();
-
-        assert_eq!(config.supports_thinking, Some(true));
-        assert_eq!(config.supports_effort, Some(true));
-        assert_eq!(config.effort_value_mode.as_deref(), Some("deepseek"));
-    }
-
-    #[test]
-    fn test_resolve_codex_chat_reasoning_explicit_meta_overrides_inference() {
-        let mut provider = create_provider(json!({
-            "config": r#"
-model_provider = "deepseek"
-model = "deepseek-v4-pro"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com"
-wire_api = "chat"
-"#
-        }));
-        provider.meta = Some(crate::provider::ProviderMeta {
-            codex_chat_reasoning: Some(CodexChatReasoningConfig {
-                supports_thinking: Some(false),
-                supports_effort: Some(false),
-                thinking_param: Some("none".to_string()),
-                effort_param: Some("none".to_string()),
-                effort_value_mode: None,
-                output_format: Some("auto".to_string()),
-            }),
-            ..Default::default()
-        });
-
-        let config =
-            resolve_codex_chat_reasoning_config(&provider, &json!({ "model": "deepseek-v4-pro" }))
-                .unwrap();
-
-        assert_eq!(config.supports_thinking, Some(false));
-        assert_eq!(config.supports_effort, Some(false));
-        assert_eq!(config.thinking_param.as_deref(), Some("none"));
-    }
-
-    #[test]
-    fn test_resolve_codex_chat_reasoning_openrouter_platform_overrides_model() {
-        let provider = create_provider(json!({
-            "config": r#"
-model_provider = "openrouter"
-model = "deepseek/deepseek-chat-v3.1"
-
-[model_providers.openrouter]
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-wire_api = "chat"
-"#
-        }));
-
-        // 模型名含 "deepseek"，但平台是 OpenRouter —— 平台规则必须覆盖模型规则。
-        let config = resolve_codex_chat_reasoning_config(
-            &provider,
-            &json!({ "model": "deepseek/deepseek-chat-v3.1" }),
-        )
-        .unwrap();
-
-        assert_eq!(config.thinking_param.as_deref(), Some("none"));
-        assert_eq!(config.effort_param.as_deref(), Some("reasoning.effort"));
-        assert_eq!(config.effort_value_mode.as_deref(), Some("openrouter"));
-        assert_eq!(config.supports_effort, Some(true));
-    }
-
-    #[test]
-    fn test_resolve_codex_chat_reasoning_siliconflow_platform_overrides_minimax() {
-        let provider = create_provider(json!({
-            "config": r#"
-model_provider = "siliconflow"
-model = "MiniMaxAI/MiniMax-M2.7"
-
-[model_providers.siliconflow]
-name = "SiliconFlow"
-base_url = "https://api.siliconflow.cn/v1"
-wire_api = "chat"
-"#
-        }));
-
-        // 模型是 MiniMax（官方用 reasoning_split），但平台是 SiliconFlow —— 应走平台的 enable_thinking。
-        let config = resolve_codex_chat_reasoning_config(
-            &provider,
-            &json!({ "model": "MiniMaxAI/MiniMax-M2.7" }),
-        )
-        .unwrap();
-
-        assert_eq!(config.thinking_param.as_deref(), Some("enable_thinking"));
-        assert_eq!(config.supports_effort, Some(false));
-        assert_eq!(config.output_format.as_deref(), Some("reasoning_content"));
-    }
-}
+mod tests;

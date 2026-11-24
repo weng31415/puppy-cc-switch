@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useLayoutEffect, useCallback, useMemo } from "react";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
@@ -12,11 +12,15 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import JsonEditor from "@/components/JsonEditor";
 import type { UniversalProvider, UniversalProviderModels } from "@/types";
 import {
-  universalProviderPresets,
+  universalProviderPresets as catalog,
   createUniversalProviderFromPreset,
   type UniversalProviderPreset,
 } from "@/config/universalProviderPresets";
 import { deepClone } from "@/utils/deepClone";
+
+const universalProviderPresets = catalog.filter(
+  (preset) => preset.isCustomTemplate || preset.providerType === "puppyrouter",
+);
 
 interface UniversalProviderFormModalProps {
   isOpen: boolean;
@@ -62,8 +66,8 @@ export function UniversalProviderFormModal({
   const [pendingProvider, setPendingProvider] =
     useState<UniversalProvider | null>(null);
 
-  // 初始化表单
-  useEffect(() => {
+  // Populate before paint so opening the panel never shows empty/stale fields.
+  useLayoutEffect(() => {
     if (editingProvider) {
       // 编辑模式：加载现有数据
       setName(editingProvider.name);
@@ -129,11 +133,10 @@ export function UniversalProviderFormModal({
   // 计算 Claude 配置 JSON 预览
   const claudeConfigJson = useMemo(() => {
     if (!claudeEnabled) return null;
-    const model = models.claude?.model || "claude-sonnet-5";
-    const haiku = models.claude?.haikuModel || "claude-haiku-4-5-20251001";
-    const sonnet = models.claude?.sonnetModel || "claude-sonnet-5";
-    const opus = models.claude?.opusModel || "claude-opus-5";
-    const fable = models.claude?.fableModel || "claude-fable-5";
+    const model = models.claude?.model || "claude-sonnet-4-20250514";
+    const haiku = models.claude?.haikuModel || "claude-haiku-4-20250514";
+    const sonnet = models.claude?.sonnetModel || "claude-sonnet-4-20250514";
+    const opus = models.claude?.opusModel || "claude-sonnet-4-20250514";
     return {
       env: {
         ANTHROPIC_BASE_URL: baseUrl,
@@ -142,7 +145,8 @@ export function UniversalProviderFormModal({
         ANTHROPIC_DEFAULT_HAIKU_MODEL: haiku,
         ANTHROPIC_DEFAULT_SONNET_MODEL: sonnet,
         ANTHROPIC_DEFAULT_OPUS_MODEL: opus,
-        ANTHROPIC_DEFAULT_FABLE_MODEL: fable,
+        ANTHROPIC_DEFAULT_FABLE_MODEL:
+          models.claude?.fableModel || "claude-fable-5",
       },
     };
   }, [claudeEnabled, baseUrl, apiKey, models.claude]);
@@ -150,7 +154,7 @@ export function UniversalProviderFormModal({
   // 计算 Codex 配置 JSON 预览
   const codexConfigJson = useMemo(() => {
     if (!codexEnabled) return null;
-    const model = models.codex?.model || "gpt-5.5";
+    const model = models.codex?.model || "gpt-5.6-sol";
     const reasoningEffort = models.codex?.reasoningEffort || "high";
     // 确保 base_url 以 /v1 结尾（Codex 使用 OpenAI 兼容 API）
     const codexBaseUrl = baseUrl.endsWith("/v1")
@@ -159,7 +163,6 @@ export function UniversalProviderFormModal({
     const configToml = `model_provider = "custom"
 model = "${model}"
 model_reasoning_effort = "${reasoningEffort}"
-disable_response_storage = true
 
 [model_providers.custom]
 name = "NewAPI"
@@ -348,6 +351,7 @@ requires_openai_auth = true`;
   return (
     <FullScreenPanel
       isOpen={isOpen}
+      trackUnsavedChanges
       title={
         isEditMode
           ? t("universalProvider.edit", { defaultValue: "编辑统一供应商" })
@@ -373,8 +377,8 @@ requires_openai_auth = true`;
                   onClick={() => handlePresetSelect(preset)}
                   className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
                     selectedPreset?.providerType === preset.providerType
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-accent text-muted-foreground hover:bg-accent/80"
+                      ? "bg-surface text-fg-1 shadow-v7-sm ring-1 ring-border-strong"
+                      : "bg-subtle text-fg-2 hover:bg-subtle"
                   }`}
                 >
                   <ProviderIcon
@@ -387,9 +391,7 @@ requires_openai_auth = true`;
               ))}
             </div>
             {selectedPreset?.description && (
-              <p className="text-xs text-muted-foreground">
-                {selectedPreset.description}
-              </p>
+              <p className="text-xs text-fg-2">{selectedPreset.description}</p>
             )}
           </div>
         )}
@@ -542,7 +544,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "model", e.target.value)
                     }
-                    placeholder="claude-sonnet-5"
+                    placeholder="claude-sonnet-4-20250514"
                   />
                 </div>
                 <div className="space-y-1">
@@ -552,7 +554,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "haikuModel", e.target.value)
                     }
-                    placeholder="claude-haiku-4-5-20251001"
+                    placeholder="claude-haiku-4-20250514"
                   />
                 </div>
                 <div className="space-y-1">
@@ -562,7 +564,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "sonnetModel", e.target.value)
                     }
-                    placeholder="claude-sonnet-5"
+                    placeholder="claude-sonnet-4-20250514"
                   />
                 </div>
                 <div className="space-y-1">
@@ -572,7 +574,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "opusModel", e.target.value)
                     }
-                    placeholder="claude-opus-5"
+                    placeholder="claude-sonnet-4-20250514"
                   />
                 </div>
                 <div className="space-y-1">
@@ -606,7 +608,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("codex", "model", e.target.value)
                     }
-                    placeholder="gpt-5.5"
+                    placeholder="gpt-5.6-sol"
                   />
                 </div>
                 <div className="space-y-1">
@@ -654,7 +656,7 @@ requires_openai_auth = true`;
                 defaultValue: "配置 JSON 预览",
               })}
             </Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-fg-2">
               {t("universalProvider.configJsonPreviewHint", {
                 defaultValue:
                   "以下是将要同步到各应用的配置内容（仅覆盖显示的字段，保留其他自定义配置）",

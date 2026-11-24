@@ -1,10 +1,8 @@
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::{atomic_write, get_claude_mcp_path};
+use crate::config::{get_claude_mcp_path, is_wsl_path};
 use crate::error::AppError;
 
 /// 需要在 Windows 上用 cmd /c 包装的命令
@@ -65,58 +63,10 @@ fn wrap_command_for_windows(_obj: &mut Map<String, Value>) {
     // 非 Windows 平台不做任何处理
 }
 
-/// 检测路径是否为 WSL 网络路径（如 \\wsl$\Ubuntu\... 或 \\wsl.localhost\Ubuntu\...）
-/// WSL 环境运行的是 Linux，不需要 cmd /c 包装
-/// 注意：仅检测直接 UNC 路径，映射磁盘符（如 Z: -> \\wsl$\...）无法检测
-#[cfg(windows)]
-fn is_wsl_path(path: &Path) -> bool {
-    use std::path::{Component, Prefix};
-    if let Some(Component::Prefix(prefix)) = path.components().next() {
-        match prefix.kind() {
-            Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => {
-                let s = server.to_string_lossy();
-                s.eq_ignore_ascii_case("wsl$") || s.eq_ignore_ascii_case("wsl.localhost")
-            }
-            _ => false,
-        }
-    } else {
-        false
-    }
-}
-
-#[cfg(not(windows))]
-fn is_wsl_path(_path: &Path) -> bool {
-    false
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpStatus {
-    pub user_config_path: String,
-    pub user_config_exists: bool,
-    pub server_count: usize,
-}
+static CONFIG_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn user_config_path() -> PathBuf {
     get_claude_mcp_path()
-}
-
-fn read_json_value(path: &Path) -> Result<Value, AppError> {
-    if !path.exists() {
-        return Ok(serde_json::json!({}));
-    }
-    let content = fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
-    let value: Value = serde_json::from_str(&content).map_err(|e| AppError::json(path, e))?;
-    Ok(value)
-}
-
-fn write_json_value(path: &Path, value: &Value) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-    let json =
-        serde_json::to_string_pretty(value).map_err(|e| AppError::JsonSerialize { source: e })?;
-    atomic_write(path, json.as_bytes())
 }
 
 fn custom_api_key_response_array<'a>(
@@ -186,6 +136,7 @@ pub fn approve_custom_api_key(api_key: &str) -> Result<bool, AppError> {
         return Ok(false);
     }
 
+    let _guard = crate::sync_utils::lock_file_operation(&CONFIG_WRITE);
     let path = user_config_path();
     let mut root = if path.exists() {
         read_json_value(&path)?
@@ -201,21 +152,19 @@ pub fn approve_custom_api_key(api_key: &str) -> Result<bool, AppError> {
     Ok(changed)
 }
 
-pub fn get_mcp_status() -> Result<McpStatus, AppError> {
-    let path = user_config_path();
-    let (exists, count) = if path.exists() {
-        let v = read_json_value(&path)?;
-        let servers = v.get("mcpServers").and_then(|x| x.as_object());
-        (true, servers.map(|m| m.len()).unwrap_or(0))
-    } else {
-        (false, 0)
-    };
+fn read_json_value(path: &Path) -> Result<Value, AppError> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
+    let value: Value = serde_json::from_str(&content).map_err(|e| AppError::json(path, e))?;
+    Ok(value)
+}
 
-    Ok(McpStatus {
-        user_config_path: path.to_string_lossy().to_string(),
-        user_config_exists: exists,
-        server_count: count,
-    })
+fn write_json_value(path: &Path, value: &Value) -> Result<(), AppError> {
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|source| AppError::JsonSerialize { source })?;
+    crate::config::atomic_write_private(path, &bytes)
 }
 
 pub fn read_mcp_json() -> Result<Option<String>, AppError> {
@@ -230,6 +179,7 @@ pub fn read_mcp_json() -> Result<Option<String>, AppError> {
 /// 在 ~/.claude.json 根对象写入 hasCompletedOnboarding=true（用于跳过 Claude Code 初次安装确认）
 /// 仅增量写入该字段，其他字段保持不变
 pub fn set_has_completed_onboarding() -> Result<bool, AppError> {
+    let _guard = crate::sync_utils::lock_file_operation(&CONFIG_WRITE);
     let path = user_config_path();
     let mut root = if path.exists() {
         read_json_value(&path)?
@@ -257,6 +207,7 @@ pub fn set_has_completed_onboarding() -> Result<bool, AppError> {
 /// 删除 ~/.claude.json 根对象的 hasCompletedOnboarding 字段（恢复 Claude Code 初次安装确认）
 /// 仅增量删除该字段，其他字段保持不变
 pub fn clear_has_completed_onboarding() -> Result<bool, AppError> {
+    let _guard = crate::sync_utils::lock_file_operation(&CONFIG_WRITE);
     let path = user_config_path();
     if !path.exists() {
         return Ok(false);
@@ -274,135 +225,6 @@ pub fn clear_has_completed_onboarding() -> Result<bool, AppError> {
 
     write_json_value(&path, &root)?;
     Ok(true)
-}
-
-pub fn upsert_mcp_server(id: &str, spec: Value) -> Result<bool, AppError> {
-    if id.trim().is_empty() {
-        return Err(AppError::InvalidInput("MCP 服务器 ID 不能为空".into()));
-    }
-    // 基础字段校验（尽量宽松）
-    if !spec.is_object() {
-        return Err(AppError::McpValidation(
-            "MCP 服务器定义必须为 JSON 对象".into(),
-        ));
-    }
-    let t_opt = spec.get("type").and_then(|x| x.as_str());
-    let is_stdio = t_opt.map(|t| t == "stdio").unwrap_or(true); // 兼容缺省（按 stdio 处理）
-    let is_http = t_opt.map(|t| t == "http").unwrap_or(false);
-    let is_sse = t_opt.map(|t| t == "sse").unwrap_or(false);
-    if !(is_stdio || is_http || is_sse) {
-        return Err(AppError::McpValidation(
-            "MCP 服务器 type 必须是 'stdio'、'http' 或 'sse'（或省略表示 stdio）".into(),
-        ));
-    }
-
-    // stdio 类型必须有 command
-    if is_stdio {
-        let cmd = spec.get("command").and_then(|x| x.as_str()).unwrap_or("");
-        if cmd.is_empty() {
-            return Err(AppError::McpValidation(
-                "stdio 类型的 MCP 服务器缺少 command 字段".into(),
-            ));
-        }
-    }
-
-    // http/sse 类型必须有 url
-    if is_http || is_sse {
-        let url = spec.get("url").and_then(|x| x.as_str()).unwrap_or("");
-        if url.is_empty() {
-            return Err(AppError::McpValidation(if is_http {
-                "http 类型的 MCP 服务器缺少 url 字段".into()
-            } else {
-                "sse 类型的 MCP 服务器缺少 url 字段".into()
-            }));
-        }
-    }
-
-    let path = user_config_path();
-    let mut root = if path.exists() {
-        read_json_value(&path)?
-    } else {
-        serde_json::json!({})
-    };
-
-    // 确保 mcpServers 对象存在
-    {
-        let obj = root
-            .as_object_mut()
-            .ok_or_else(|| AppError::Config("mcp.json 根必须是对象".into()))?;
-        if !obj.contains_key("mcpServers") {
-            obj.insert("mcpServers".into(), serde_json::json!({}));
-        }
-    }
-
-    let before = root.clone();
-    if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.insert(id.to_string(), spec);
-    }
-
-    if before == root && path.exists() {
-        return Ok(false);
-    }
-
-    write_json_value(&path, &root)?;
-    Ok(true)
-}
-
-pub fn delete_mcp_server(id: &str) -> Result<bool, AppError> {
-    if id.trim().is_empty() {
-        return Err(AppError::InvalidInput("MCP 服务器 ID 不能为空".into()));
-    }
-    let path = user_config_path();
-    if !path.exists() {
-        return Ok(false);
-    }
-    let mut root = read_json_value(&path)?;
-    let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) else {
-        return Ok(false);
-    };
-    let existed = servers.remove(id).is_some();
-    if !existed {
-        return Ok(false);
-    }
-    write_json_value(&path, &root)?;
-    Ok(true)
-}
-
-pub fn validate_command_in_path(cmd: &str) -> Result<bool, AppError> {
-    if cmd.trim().is_empty() {
-        return Ok(false);
-    }
-    // 如果包含路径分隔符，直接判断是否存在可执行文件
-    if cmd.contains('/') || cmd.contains('\\') {
-        return Ok(Path::new(cmd).exists());
-    }
-
-    let path_var = env::var_os("PATH").unwrap_or_default();
-    let paths = env::split_paths(&path_var);
-
-    #[cfg(windows)]
-    let exts: Vec<String> = env::var("PATHEXT")
-        .unwrap_or(".COM;.EXE;.BAT;.CMD".into())
-        .split(';')
-        .map(|s| s.trim().to_uppercase())
-        .collect();
-
-    for p in paths {
-        let candidate = p.join(cmd);
-        if candidate.is_file() {
-            return Ok(true);
-        }
-        #[cfg(windows)]
-        {
-            for ext in &exts {
-                let cand = p.join(format!("{}{}", cmd, ext));
-                if cand.is_file() {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
 }
 
 /// 读取 ~/.claude.json 中的 mcpServers 映射
@@ -427,6 +249,7 @@ pub fn read_mcp_servers_map() -> Result<std::collections::HashMap<String, Value>
 pub fn set_mcp_servers_map(
     servers: &std::collections::HashMap<String, Value>,
 ) -> Result<(), AppError> {
+    let _guard = crate::sync_utils::lock_file_operation(&CONFIG_WRITE);
     let path = user_config_path();
     let mut root = if path.exists() {
         read_json_value(&path)?
@@ -680,7 +503,12 @@ mod tests {
             assert!(!is_wsl_path(Path::new(r"\\192.168.1.1\share")));
         }
     }
+}
 
+#[cfg(test)]
+mod puppyrouter_approval_tests {
+    use super::*;
+    use serde_json::json;
     #[test]
     fn approve_custom_api_key_removes_only_matching_rejected_key() {
         let mut root = json!({

@@ -7,6 +7,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { HoverTip } from "@/components/ui/hover-tip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
@@ -15,13 +16,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useUsageFirstDate } from "@/lib/query/usage";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import { getLocaleFromLanguage } from "./format";
 import type { UsageRangePreset, UsageRangeSelection } from "@/types/usage";
 
 type DraftField = "start" | "end";
 
-const PRESETS: UsageRangePreset[] = ["today", "1d", "7d", "14d", "30d"];
+const PRESETS: UsageRangePreset[] = ["today", "1d", "7d", "14d", "30d", "all"];
 
 interface UsageDateRangePickerProps {
   selection: UsageRangeSelection;
@@ -61,12 +63,23 @@ function fmtTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function parseDateInput(ts: number, value: string): number {
-  const [y, m, d] = value.split("-").map(Number);
-  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d))
-    return ts;
+/**
+ * 日期框的 `YYYY-MM-DD` 换成时间戳，保留原来的时分；不是完整日期时返回 null。
+ * 逐位键入年份时浏览器会先给出 `0002-11-18` 这样没打完的值，而 `new Date`
+ * 把 0–99 年当成 1900 年代，提交它会把年份改成 1902 / 1905 并打断输入（#9699），
+ * 所以四位数以下的年份一律当作还没打完。
+ */
+function parseDateInput(ts: number, value: string): number | null {
+  const match = /^(\d{4,})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  if (y < 1000) return null;
   const base = fromTs(ts);
-  return toTs(new Date(y, m - 1, d, base.getHours(), base.getMinutes()));
+  const date = new Date(y, m - 1, d, base.getHours(), base.getMinutes());
+  if (date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  return toTs(date);
 }
 
 function parseTimeInput(ts: number, value: string): number {
@@ -91,6 +104,23 @@ function setDateKeepTime(ts: number, day: Date): number {
   );
 }
 
+/** 本地日期 `YYYY-MM-DD` 当天 0 点的时间戳；认不出时为 null */
+function parseLocalDayStart(value: string | null | undefined): number | null {
+  const match = value ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : null;
+  if (!match) return null;
+  return toTs(
+    new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+  );
+}
+
+/** 今天最后一分钟：结束时间不能选到未来的日子 */
+function endOfTodayTs(): number {
+  const now = new Date();
+  return toTs(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59),
+  );
+}
+
 function getCalendarDays(month: Date): Date[] {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const gridStart = new Date(first);
@@ -104,6 +134,12 @@ function getCalendarDays(month: Date): Date[] {
 
 /* ── component ── */
 
+function resolveCalendarRange(selection: UsageRangeSelection) {
+  const r = resolveUsageRange(selection);
+  if (selection.preset !== "all") return r;
+  return { startDate: r.endDate - 30 * 24 * 60 * 60, endDate: r.endDate };
+}
+
 export function UsageDateRangePicker({
   selection,
   onApply,
@@ -111,9 +147,12 @@ export function UsageDateRangePicker({
 }: UsageDateRangePickerProps) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
+  const prevMonthLabel = t("usage.prevMonth", { defaultValue: "上个月" });
+  const nextMonthLabel = t("usage.nextMonth", { defaultValue: "下个月" });
   const [activeField, setActiveField] = useState<DraftField>("start");
+  // 「全部」的起点是 0，日历草稿改从结束日往前 30 天开始，避免跳到 1970 年
   const resolvedRange = useMemo(
-    () => resolveUsageRange(selection),
+    () => resolveCalendarRange(selection),
     [selection],
   );
   const [draftStart, setDraftStart] = useState(resolvedRange.startDate);
@@ -130,6 +169,25 @@ export function UsageDateRangePicker({
       ),
   );
   const [error, setError] = useState<string | null>(null);
+  // 日期框正在输入时的原始文本：没打完的值不提交，但要原样留在框里，
+  // 受控 value 一被改写浏览器就会重置正在编辑的年份段。失焦后回到格式化的值
+  const [dateText, setDateText] = useState<Record<DraftField, string | null>>({
+    start: null,
+    end: null,
+  });
+  // 可选范围：最早到有用量记录的那天，最晚到今天。趋势图按天出柱，
+  // 选到 1905 年这种起点会一次画四万多根柱子把界面卡死（#9691）。
+  // 最早日期没查到之前不知道下界，先不让确认；查到 null（没有记录）时页面是空状态、不画图，不设下界。
+  // 查询失败时不能让确认一直点不了：放开下界，只保留「不晚于今天」
+  const firstUsageDateQuery = useUsageFirstDate(undefined, {
+    refetchInterval: false,
+  });
+  const boundsReady =
+    firstUsageDateQuery.isSuccess || firstUsageDateQuery.isError;
+  const minTs = parseLocalDayStart(firstUsageDateQuery.data);
+  const maxTs = endOfTodayTs();
+  const clampTs = (ts: number) =>
+    Math.min(Math.max(ts, minTs ?? Number.NEGATIVE_INFINITY), maxTs);
 
   const language = i18n.resolvedLanguage || i18n.language || "en";
   const locale = getLocaleFromLanguage(language);
@@ -137,7 +195,7 @@ export function UsageDateRangePicker({
   // Reset draft when popover opens
   useEffect(() => {
     if (!open) return;
-    const r = resolveUsageRange(selection);
+    const r = resolveCalendarRange(selection);
     setDraftStart(r.startDate);
     setDraftEnd(r.endDate);
     setDraftLiveEnd(
@@ -152,6 +210,7 @@ export function UsageDateRangePicker({
     );
     setActiveField("start");
     setError(null);
+    setDateText({ start: null, end: null });
   }, [open, selection]);
 
   // Keep draftEnd ticking when live mode is active and popover is open
@@ -185,17 +244,17 @@ export function UsageDateRangePicker({
   /* Pick a date from the calendar */
   const handleDatePick = (day: Date) => {
     setError(null);
+    setDateText({ start: null, end: null });
 
     // When live end time is active, calendar only controls start date
     if (draftLiveEnd) {
-      const nextTs = setDateKeepTime(draftStart, day);
+      const nextTs = clampTs(setDateKeepTime(draftStart, day));
       setDraftStart(nextTs);
       return;
     }
 
-    const nextTs = setDateKeepTime(
-      activeField === "start" ? draftStart : draftEnd,
-      day,
+    const nextTs = clampTs(
+      setDateKeepTime(activeField === "start" ? draftStart : draftEnd, day),
     );
 
     if (activeField === "start") {
@@ -227,14 +286,18 @@ export function UsageDateRangePicker({
 
   const handleApply = () => {
     setError(null);
-    if (draftStart > draftEnd) {
+    if (!boundsReady) return;
+    // 手输的日期不在输入时改写（会打断逐位输入年份），确认时再收进可选范围
+    const start = clampTs(draftStart);
+    const end = draftLiveEnd ? draftEnd : clampTs(draftEnd);
+    if (start > end) {
       setError(t("usage.invalidTimeRangeOrder", "开始时间不能晚于结束时间"));
       return;
     }
     onApply({
       preset: "custom",
-      customStartDate: draftStart,
-      customEndDate: draftEnd,
+      customStartDate: start,
+      customEndDate: end,
       liveEndTime: draftLiveEnd,
     });
     setOpen(false);
@@ -258,31 +321,40 @@ export function UsageDateRangePicker({
     return (
       <div
         className={cn(
-          "rounded-lg border px-3 py-2 transition-all",
+          "rounded-panel border px-3 py-2 transition-all",
           isEndLive
-            ? "border-border/30 bg-muted/30 cursor-not-allowed opacity-50"
+            ? "border-border bg-subtle cursor-not-allowed opacity-50"
             : isActive
-              ? "border-primary ring-1 ring-primary/30 bg-primary/5 cursor-pointer"
-              : "border-border/50 hover:border-border cursor-pointer",
+              ? "border-ring ring-1 ring-ring bg-surface cursor-pointer"
+              : "border-border hover:border-border cursor-pointer",
         )}
         onClick={() => {
           if (!isEndLive) setActiveField(field);
         }}
       >
-        <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        <div className="mb-1.5 text-badge font-medium uppercase tracking-wider text-fg-2">
           {label}
         </div>
         <div className="flex items-center gap-1.5">
           <Input
             type="date"
             className={cn(
-              "h-7 flex-1 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
+              "h-7 flex-1 border-0 bg-transparent p-0 text-body shadow-none focus:ring-0 focus-visible:ring-0",
               isEndLive && "pointer-events-none",
             )}
-            value={fmtDate(ts)}
+            value={dateText[field] ?? fmtDate(ts)}
+            min={minTs != null ? fmtDate(minTs) : undefined}
+            max={fmtDate(maxTs)}
             onChange={(e) => {
               if (isEndLive) return;
-              const next = parseDateInput(ts, e.target.value);
+              const raw = e.target.value;
+              const next = parseDateInput(ts, raw);
+              // 完整日期格式化后与原文相同，直接交给 state，草稿只留没打完的值
+              setDateText((prev) => ({
+                ...prev,
+                [field]: next == null ? raw : null,
+              }));
+              if (next == null) return;
               setTs(next);
               const d = fromTs(next);
               setDisplayMonth(new Date(d.getFullYear(), d.getMonth(), 1));
@@ -291,13 +363,14 @@ export function UsageDateRangePicker({
             onFocus={() => {
               if (!isEndLive) setActiveField(field);
             }}
+            onBlur={() => setDateText((prev) => ({ ...prev, [field]: null }))}
             readOnly={isEndLive}
           />
           <Input
             type="time"
             step={60}
             className={cn(
-              "h-7 w-[90px] flex-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
+              "h-7 w-[90px] flex-none border-0 bg-transparent p-0 text-body shadow-none focus:ring-0 focus-visible:ring-0",
               isEndLive && "pointer-events-none",
             )}
             value={fmtTime(ts)}
@@ -321,28 +394,37 @@ export function UsageDateRangePicker({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant={selection.preset === "custom" ? "default" : "outline"}
-          className="h-9 w-[100px] justify-start gap-1.5 text-xs"
-          title={triggerLabel}
+          variant="neutral"
+          size="regular"
+          className="max-w-[220px] shrink-0 gap-1.5 pe-2 ps-2.5"
+          title={`${t("usage.timeRange")}: ${triggerLabel}`}
         >
-          <CalendarDays className="h-4 w-4 shrink-0" />
-          <span className="truncate flex-1">{triggerLabel}</span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+          <CalendarDays
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 text-fg-3"
+          />
+          <span className="min-w-0 truncate">{triggerLabel}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-2" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[340px] max-w-[calc(100vw-2rem)] p-3 sm:w-[620px]"
-        align="end"
+        className="usage-range-popover w-[620px] max-w-[calc(100vw-2rem)] rounded-panel border-border bg-surface p-3 shadow-v7-md"
+        align="start"
       >
         {/* Preset shortcuts */}
-        <div className="flex flex-wrap gap-1.5 pb-2 border-b border-border/40">
+        <div className="flex flex-wrap gap-1.5 pb-2 border-b border-border">
           {PRESETS.map((preset) => (
             <Button
               key={preset}
               type="button"
-              size="sm"
-              variant={selection.preset === preset ? "default" : "outline"}
-              className="h-7 px-2.5 text-xs"
+              size="compact"
+              variant="neutral"
+              aria-pressed={selection.preset === preset}
+              className={cn(
+                "px-2.5",
+                selection.preset === preset &&
+                  "border-fg-1 bg-selected font-semibold",
+              )}
               onClick={() => {
                 onApply({ preset });
                 setOpen(false);
@@ -353,10 +435,10 @@ export function UsageDateRangePicker({
           ))}
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <div className="usage-range-layout mt-3 flex flex-col gap-3">
           {/* Left: date fields */}
-          <div className="space-y-2 sm:w-[250px] sm:flex-none">
-            <p className="text-xs text-muted-foreground">
+          <div className="usage-range-fields space-y-2">
+            <p className="text-caption text-fg-2">
               {t("usage.customRangeHint", "支持日期与时间，最长 30 天")}
             </p>
             {renderField("start")}
@@ -374,18 +456,18 @@ export function UsageDateRangePicker({
                   }
                 }}
               />
-              <span className="text-xs text-muted-foreground">
+              <span className="text-caption text-fg-2">
                 {t("usage.liveEndTime", "结束时间跟随当前时刻")}
               </span>
             </label>
 
-            {error && <p className="text-xs text-destructive">{error}</p>}
+            {error && <p className="text-caption text-danger-text">{error}</p>}
 
             <div className="flex gap-2 pt-1">
               <Button
                 type="button"
-                variant="ghost"
-                size="sm"
+                variant="quiet"
+                size="compact"
                 className="flex-1"
                 onClick={() => setOpen(false)}
               >
@@ -393,8 +475,10 @@ export function UsageDateRangePicker({
               </Button>
               <Button
                 type="button"
-                size="sm"
+                variant="solid"
+                size="compact"
                 className="flex-1"
+                disabled={!boundsReady}
                 onClick={handleApply}
               >
                 {t("common.confirm")}
@@ -403,58 +487,66 @@ export function UsageDateRangePicker({
           </div>
 
           {/* Right: calendar */}
-          <div className="rounded-lg border border-border/50 bg-muted/30 p-2.5 sm:min-w-0 sm:flex-1">
+          <div className="usage-range-calendar rounded-panel border border-border bg-subtle p-2.5">
             {/* Month navigation */}
             <div className="flex items-center justify-between mb-1.5">
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7"
-                onClick={() =>
-                  setDisplayMonth(
-                    new Date(
-                      displayMonth.getFullYear(),
-                      displayMonth.getMonth() - 1,
-                      1,
-                    ),
-                  )
-                }
+              <HoverTip content={prevMonthLabel}>
+                <Button
+                  type="button"
+                  size="icon-compact"
+                  variant="quiet"
+                  aria-label={prevMonthLabel}
+                  onClick={() =>
+                    setDisplayMonth(
+                      new Date(
+                        displayMonth.getFullYear(),
+                        displayMonth.getMonth() - 1,
+                        1,
+                      ),
+                    )
+                  }
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+              </HoverTip>
+              {/* 点月份标题跳回本月：动作不在字面上，用 HoverTip 说明 */}
+              <HoverTip
+                content={t("usage.presetToday", { defaultValue: "当天" })}
               >
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </Button>
-              <button
-                type="button"
-                className="text-sm font-medium hover:text-primary transition-colors"
-                onClick={goToToday}
-                title={t("usage.presetToday", { defaultValue: "当天" })}
-              >
-                {displayMonth.toLocaleDateString(locale, {
-                  year: "numeric",
-                  month: "long",
-                })}
-              </button>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7"
-                onClick={() =>
-                  setDisplayMonth(
-                    new Date(
-                      displayMonth.getFullYear(),
-                      displayMonth.getMonth() + 1,
-                      1,
-                    ),
-                  )
-                }
-              >
-                <ChevronRight className="h-3.5 w-3.5" />
-              </Button>
+                <button
+                  type="button"
+                  className="text-body font-medium text-fg-1 transition-colors hover:text-fg-2"
+                  onClick={goToToday}
+                >
+                  {displayMonth.toLocaleDateString(locale, {
+                    year: "numeric",
+                    month: "long",
+                  })}
+                </button>
+              </HoverTip>
+              <HoverTip content={nextMonthLabel}>
+                <Button
+                  type="button"
+                  size="icon-compact"
+                  variant="quiet"
+                  aria-label={nextMonthLabel}
+                  onClick={() =>
+                    setDisplayMonth(
+                      new Date(
+                        displayMonth.getFullYear(),
+                        displayMonth.getMonth() + 1,
+                        1,
+                      ),
+                    )
+                  }
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </HoverTip>
             </div>
 
             {/* Weekday headers */}
-            <div className="grid grid-cols-7 text-center text-[11px] text-muted-foreground mb-0.5">
+            <div className="grid grid-cols-7 text-center text-badge text-fg-2 mb-0.5">
               {weekdayLabels.map((label, i) => (
                 <div key={i} className="py-0.5">
                   {label}
@@ -475,6 +567,9 @@ export function UsageDateRangePicker({
                   dayStart >= startOfDay(startDay) &&
                   dayStart <= startOfDay(endDay);
                 const isEndpoint = isStart || isEnd;
+                const isOutOfBounds =
+                  (minTs != null && dayStart < startOfDay(fromTs(minTs))) ||
+                  dayStart > fromTs(maxTs);
 
                 return (
                   <button
@@ -483,14 +578,19 @@ export function UsageDateRangePicker({
                     aria-label={day.toLocaleDateString(locale)}
                     aria-current={isToday ? "date" : undefined}
                     aria-pressed={isEndpoint}
+                    disabled={isOutOfBounds}
                     className={cn(
-                      "relative h-7 rounded text-xs transition-colors",
-                      !isCurrentMonth && "text-muted-foreground/30",
-                      isCurrentMonth && !inRange && "hover:bg-muted",
-                      inRange && !isEndpoint && "bg-primary/10 text-primary",
-                      isEndpoint &&
-                        "bg-primary text-primary-foreground font-medium",
-                      isToday && !isEndpoint && "ring-1 ring-primary/40",
+                      "relative h-7 rounded text-caption transition-colors",
+                      !isCurrentMonth && "text-fg-3",
+                      isOutOfBounds &&
+                        "cursor-not-allowed text-fg-3 opacity-40",
+                      isCurrentMonth &&
+                        !inRange &&
+                        !isOutOfBounds &&
+                        "hover:bg-subtle",
+                      inRange && !isEndpoint && "bg-selected text-fg-1",
+                      isEndpoint && "bg-action text-action-fg font-medium",
+                      isToday && !isEndpoint && "ring-1 ring-border-strong",
                     )}
                     onClick={() => handleDatePick(day)}
                   >

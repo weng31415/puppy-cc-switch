@@ -1,6 +1,6 @@
 # Flatpak Build Guide
 
-This directory contains the Flatpak manifest (`com.ccswitch.desktop`) for puppyrouter app, used to convert the generated `.deb` artifact into an installable `.flatpak` package via CI or local builds.
+This directory contains the Flatpak manifest (`com.ccswitch.desktop`) for PuppyRouter App, used to convert the generated `.deb` artifact into an installable `.flatpak` package via CI or local builds.
 
 ## Dependencies
 
@@ -21,7 +21,13 @@ flatpak install -y --user flathub org.gnome.Platform//46 org.gnome.Sdk//46
 1) Build the deb on Linux first:
 
 ```bash
-pnpm tauri build -- --bundles deb
+pnpm tauri build --bundles deb
+```
+
+The last step of this build signs the auto-update bundles, which requires the release private key `TAURI_SIGNING_PRIVATE_KEY`. Without the key, the `.deb` is still produced but the command exits with an error. To skip updater bundle generation instead:
+
+```bash
+pnpm tauri build --bundles deb -c '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
 2) Copy the generated deb to this directory:
@@ -34,13 +40,13 @@ cp "$(find src-tauri/target/release/bundle -name '*.deb' | head -n 1)" flatpak/p
 
 ```bash
 flatpak-builder --force-clean --user --disable-cache --repo flatpak-repo flatpak-build flatpak/com.ccswitch.desktop.yml
-flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo flatpak-repo puppyrouter-app-Linux.flatpak com.ccswitch.desktop
+flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo flatpak-repo PuppyRouter-App-Linux.flatpak com.ccswitch.desktop
 ```
 
 4) Install and run:
 
 ```bash
-flatpak install --user ./puppyrouter-app-Linux.flatpak
+flatpak install --user ./PuppyRouter-App-Linux.flatpak
 flatpak run com.ccswitch.desktop
 ```
 

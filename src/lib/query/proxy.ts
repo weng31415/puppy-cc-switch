@@ -1,111 +1,97 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { proxyApi } from "@/lib/api/proxy";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
-import type { GlobalProxyConfig, AppProxyConfig } from "@/types/proxy";
+import type {
+  AppModeView,
+  GlobalProxyConfig,
+  AppProxyConfig,
+  ProxyStackWriteError,
+  ProxyTakeoverStatus,
+} from "@/types/proxy";
+import { extractErrorMessage } from "@/utils/errorUtils";
+import { getAppLabel } from "@/config/appConfig";
+
+export const proxyKeys = {
+  status: ["proxyStatus"] as const,
+  takeoverStatus: ["proxyTakeoverStatus"] as const,
+  globalConfig: ["globalProxyConfig"] as const,
+  clientHost: ["proxyClientHost"] as const,
+  appConfig: (appType: string) => ["appProxyConfig", appType] as const,
+};
 
 // ========== 代理服务器状态 Hooks ==========
 
 /**
  * 获取代理服务器状态
  */
-export function useProxyStatus() {
+export function useProxyStatusQuery() {
   return useQuery({
-    queryKey: ["proxyStatus"],
+    queryKey: proxyKeys.status,
     queryFn: () => proxyApi.getProxyStatus(),
-    refetchInterval: 5000, // 每 5 秒刷新一次
-  });
-}
-
-/**
- * 检查代理服务器是否运行
- */
-export function useIsProxyRunning() {
-  return useQuery({
-    queryKey: ["proxyRunning"],
-    queryFn: () => proxyApi.isProxyRunning(),
-    refetchInterval: 2000,
-  });
-}
-
-/**
- * 检查是否处于接管模式
- */
-export function useIsLiveTakeoverActive() {
-  return useQuery({
-    queryKey: ["liveTakeoverActive"],
-    queryFn: () => proxyApi.isLiveTakeoverActive(),
-    refetchInterval: 2000,
+    // 仅在服务运行时轮询
+    refetchInterval: (query) => (query.state.data?.running ? 2000 : false),
+    // 保持之前的数据，避免闪烁
+    placeholderData: (previousData) => previousData,
   });
 }
 
 /**
  * 获取各应用接管状态
  */
-export function useProxyTakeoverStatus() {
+export function useProxyTakeoverStatus(poll = true) {
   return useQuery({
-    queryKey: ["proxyTakeoverStatus"],
+    queryKey: proxyKeys.takeoverStatus,
     queryFn: () => proxyApi.getProxyTakeoverStatus(),
-    refetchInterval: 2000,
-  });
-}
-
-// ========== 代理服务器控制 Hooks ==========
-
-/**
- * 启动代理服务器
- */
-export function useStartProxyServer() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: () => proxyApi.startProxyServer(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyRunning"] });
-      queryClient.invalidateQueries({ queryKey: ["liveTakeoverActive"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
-    },
+    refetchInterval: poll ? 2000 : false,
+    ...(poll
+      ? {}
+      : {
+          placeholderData: (previousData: ProxyTakeoverStatus | undefined) =>
+            previousData,
+        }),
   });
 }
 
 /**
- * 停止代理服务器
+ * 应用的模式状态（直连 / 路由 / 聚合、路由目标、直连那家）。放在 ["providers", appId] 前缀下：
+ * 进出模式、切换供应商时随供应商列表一起失效。
  */
-export function useStopProxyServer() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: () => proxyApi.stopProxyWithRestore(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyRunning"] });
-      queryClient.invalidateQueries({ queryKey: ["liveTakeoverActive"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
-    },
+export function useAppMode(appType: string, enabled = true) {
+  return useQuery({
+    queryKey: ["providers", appType, "mode"] as const,
+    queryFn: () => proxyApi.getAppMode(appType),
+    enabled,
+    placeholderData: (previous: AppModeView | undefined) => previous,
   });
 }
 
 /**
- * 设置应用接管状态
+ * Stack 模型名单。放在 ["providers", appId] 前缀下：编辑、删除供应商时随列表一起失效。
  */
-export function useSetProxyTakeoverForApp() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
-      proxyApi.setProxyTakeoverForApp(appType, enabled),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["liveTakeoverActive"] });
-    },
+export function useProxyStack(appType: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["providers", appType, "stack"] as const,
+    queryFn: () => proxyApi.getProxyStack(appType),
+    enabled,
   });
 }
 
+function isStackWriteError(error: unknown): error is ProxyStackWriteError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as ProxyStackWriteError).partial === "boolean"
+  );
+}
+
 /**
- * 代理模式下切换供应商
+ * 把一家加入或移出 Stack 模型。Claude Code 运行中就会读到改过的 settings.json，Codex 只在
+ * 启动时读模型目录，成功后提示重启。失败分两种：
+ * 什么都没改（弹后端的错误），已部分写入（下次操作或重启 puppyrouter app 时补完）。两种都按
+ * 后端的状态重新显示，不在前端假设名单不变。
  */
-export function useSwitchProxyProvider() {
+export function useSetProxyStackMember() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -113,57 +99,131 @@ export function useSwitchProxyProvider() {
     mutationFn: ({
       appType,
       providerId,
+      enabled,
     }: {
       appType: string;
       providerId: string;
-    }) => proxyApi.switchProxyProvider(appType, providerId),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+      enabled: boolean;
+    }) => proxyApi.setProxyStackMember(appType, providerId, enabled),
+    onSuccess: (notice, variables) => {
+      toast.success(
+        t(
+          // 这两个客户端只在启动时读配置（Desktop 的模型列表写在配置里）
+          variables.appType === "codex" ||
+            variables.appType === "claude-desktop"
+            ? "provider.stackSaved"
+            : "provider.stackSavedLive",
+          { client: getAppLabel(variables.appType) },
+        ),
+        {
+          description: variables.enabled
+            ? t("provider.stackReselectHint")
+            : undefined,
+          closeButton: true,
+        },
+      );
+      if (notice) {
+        toast.warning(t(`provider.${notice}`), { closeButton: true });
+      }
+    },
+    onError: (error: unknown) => {
+      if (isStackWriteError(error) && error.partial) {
+        toast.warning(t("provider.stackPartial"), {
+          description: error.message,
+          closeButton: true,
+        });
+        return;
+      }
+      toast.error(
+        t("provider.stackFailed", { error: extractErrorMessage(error) }),
+      );
+    },
+    onSettled: (_data, _error, variables) => {
       queryClient.invalidateQueries({
         queryKey: ["providers", variables.appType],
       });
     },
-    onError: (error: Error) => {
-      toast.error(t("proxy.switchFailed", { error: error.message }));
-    },
   });
 }
 
-// ========== Legacy 代理配置 Hooks (兼容) ==========
-
 /**
- * 获取代理配置（旧版）
+ * Codex 聚合的模型被路由供应商自己的模型目录挡住（routeOwnsCatalog）时，改用 puppyrouter app
+ * 生成的目录。客户端只在启动时读模型目录，成功后提示重启；还剩别的提示照样弹出。
  */
-export function useProxyConfig() {
+export function useAdoptCodexStackCatalog() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
-  const { data: config, isLoading } = useQuery({
-    queryKey: ["proxyConfig"],
-    queryFn: () => proxyApi.getProxyConfig(),
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: proxyApi.updateProxyConfig,
-    onSuccess: () => {
-      toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
-      queryClient.invalidateQueries({ queryKey: ["proxyConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+  return useMutation({
+    mutationFn: () => proxyApi.adoptCodexStackCatalog(),
+    onSuccess: (notice) => {
+      toast.success(t("provider.adoptCatalogDone"), { closeButton: true });
+      if (notice) {
+        toast.warning(t(`provider.${notice}`), { closeButton: true });
+      }
     },
-    onError: (error: Error) => {
+    onError: (error: unknown) => {
       toast.error(
-        t("proxy.settings.toast.saveFailed", { error: error.message }),
+        t("provider.adoptCatalogFailed", {
+          error: extractErrorMessage(error),
+        }),
       );
     },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["providers", "codex"] });
+    },
   });
-
-  return {
-    config,
-    isLoading,
-    updateConfig: updateMutation.mutateAsync,
-    isUpdating: updateMutation.isPending,
-  };
 }
+
+/**
+ * 重启 Codex 的托管守护进程，让它重读模型目录。结束后重新查 Stack 名单：重启成功时
+ * 「还在用旧模型列表」的提示随之消失。
+ */
+export function useRestartCodexAppServerDaemon() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: () => proxyApi.restartCodexAppServerDaemon(),
+    onSuccess: (outcome) => {
+      if (outcome === "notRunning") {
+        toast.info(t("proxy.stackMode.codexStale.notRunning"), {
+          closeButton: true,
+        });
+        return;
+      }
+      toast.success(t("proxy.stackMode.codexStale.restarted"), {
+        closeButton: true,
+      });
+    },
+    onError: (error: unknown) => {
+      toast.error(
+        t("proxy.stackMode.codexStale.failed", {
+          error: extractErrorMessage(error),
+        }),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["providers", "codex"] });
+    },
+  });
+}
+
+/**
+ * 关掉看不到进程时出的「Codex 可能还在用旧的」提示：后端记下现在这份，之后再变才提示。
+ */
+export function useAcknowledgeCodexStaleClients() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => proxyApi.acknowledgeCodexStaleClients(),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["providers", "codex"] });
+    },
+  });
+}
+
+// ========== 代理服务器控制 Hooks ==========
 
 // ========== v3+ 全局/应用级配置 Hooks ==========
 
@@ -172,7 +232,7 @@ export function useProxyConfig() {
  */
 export function useGlobalProxyConfig() {
   return useQuery({
-    queryKey: ["globalProxyConfig"],
+    queryKey: proxyKeys.globalConfig,
     queryFn: () => proxyApi.getGlobalProxyConfig(),
   });
 }
@@ -189,9 +249,8 @@ export function useUpdateGlobalProxyConfig() {
       proxyApi.updateGlobalProxyConfig(config),
     onSuccess: () => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
-      queryClient.invalidateQueries({ queryKey: ["globalProxyConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.globalConfig });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
     },
     onError: (error: Error) => {
       toast.error(
@@ -202,11 +261,45 @@ export function useUpdateGlobalProxyConfig() {
 }
 
 /**
+ * 获取客户端地址
+ */
+export function useProxyClientHost() {
+  return useQuery({
+    queryKey: proxyKeys.clientHost,
+    queryFn: () => proxyApi.getProxyClientHost(),
+  });
+}
+
+/**
+ * 保存客户端地址（后端会重写接上路由的客户端）
+ */
+export function useSetProxyClientHost() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: (host: string) => proxyApi.setProxyClientHost(host),
+    onSuccess: () => {
+      toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
+    },
+    onError: (error: Error) => {
+      toast.error(
+        t("proxy.settings.toast.saveFailed", { error: error.message }),
+      );
+    },
+    // 重写失败时地址也已经存下了，两种情况都刷新
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: proxyKeys.clientHost });
+    },
+  });
+}
+
+/**
  * 获取指定应用的代理配置
  */
 export function useAppProxyConfig(appType: string) {
   return useQuery({
-    queryKey: ["appProxyConfig", appType],
+    queryKey: proxyKeys.appConfig(appType),
     queryFn: () => proxyApi.getProxyConfigForApp(appType),
     enabled: !!appType,
   });
@@ -225,14 +318,13 @@ export function useUpdateAppProxyConfig() {
     onSuccess: (_, variables) => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({
-        queryKey: ["appProxyConfig", variables.appType],
+        queryKey: proxyKeys.appConfig(variables.appType),
       });
       queryClient.invalidateQueries({
         queryKey: ["autoFailoverEnabled", variables.appType],
       });
-      queryClient.invalidateQueries({ queryKey: ["proxyConfig"] });
       queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
     },
     onError: (error: Error) => {
       toast.error(

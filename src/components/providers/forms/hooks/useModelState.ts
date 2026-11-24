@@ -3,6 +3,12 @@ import { useState, useCallback, useEffect, useRef } from "react";
 interface UseModelStateProps {
   settingsConfig: string;
   onConfigChange: (config: string) => void;
+  /**
+   * 现读当前配置。latestConfigRef 只在渲染期从 settingsConfig 快照赋值，可能
+   * 早于别处（如 JSON 编辑器）的写入。改模型时若基于它重建整份 JSON 会把那些
+   * 改动覆盖回去。
+   */
+  getSettingsConfig?: () => string;
 }
 
 export type ClaudeModelEnvField =
@@ -14,9 +20,10 @@ export type ClaudeModelEnvField =
   | "ANTHROPIC_DEFAULT_OPUS_MODEL"
   | "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"
   | "ANTHROPIC_DEFAULT_FABLE_MODEL"
-  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME";
+  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
+  | "CLAUDE_CODE_SUBAGENT_MODEL";
 
-export const CLAUDE_ONE_M_MARKER = "[1M]";
+export const CLAUDE_ONE_M_MARKER = "[1m]";
 
 export function hasClaudeOneMMarker(model: string): boolean {
   return model.trimEnd().toLowerCase().endsWith("[1m]");
@@ -32,6 +39,31 @@ export function setClaudeOneMMarker(model: string, enabled: boolean): string {
   const base = stripClaudeOneMMarker(model).trim();
   if (!base) return "";
   return enabled ? `${base}${CLAUDE_ONE_M_MARKER}` : base;
+}
+
+/** Copilot 报的上下文到这个数才算原生 1M（与代理测试里的 1_000_000 / 1_048_576 一致）。 */
+const COPILOT_NATIVE_ONE_M = 1_000_000;
+
+/**
+ * Copilot 有没有这个模型的 1M 版本：列表里有 `<模型>-1m`，或同名模型本身报的上下文
+ * 就有 1M。代理把 `[1M]` 改写成 `-1m` 发出，所以没有时勾 1M 只会请求一个不存在的
+ * 模型（或被退回普通版、上下文却按 1M 规划）。模型名两种写法（`5.1` / `5-1`）都认。
+ * 列表还没取、或模型名为空时返回 `undefined`（不知道）。
+ */
+export function copilotOneMAvailable(
+  model: string,
+  models: readonly { id: string; context_window?: number }[],
+): boolean | undefined {
+  const canon = (id: string) => id.trim().toLowerCase().replace(/\./g, "-");
+  const base = canon(stripClaudeOneMMarker(model));
+  if (!base || models.length === 0) return undefined;
+  return models.some((candidate) => {
+    const id = canon(candidate.id);
+    return (
+      id === `${base}-1m` ||
+      (id === base && (candidate.context_window ?? 0) >= COPILOT_NATIVE_ONE_M)
+    );
+  });
 }
 
 /**
@@ -81,6 +113,10 @@ function parseModelsFromConfig(settingsConfig: string) {
       typeof env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME === "string"
         ? env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME
         : stripClaudeOneMMarker(fable);
+    const subagent =
+      typeof env.CLAUDE_CODE_SUBAGENT_MODEL === "string"
+        ? env.CLAUDE_CODE_SUBAGENT_MODEL
+        : "";
 
     return {
       model,
@@ -92,6 +128,7 @@ function parseModelsFromConfig(settingsConfig: string) {
       opusName,
       fable,
       fableName,
+      subagent,
     };
   } catch {
     return {
@@ -104,6 +141,7 @@ function parseModelsFromConfig(settingsConfig: string) {
       opusName: "",
       fable: "",
       fableName: "",
+      subagent: "",
     };
   }
 }
@@ -115,6 +153,7 @@ function parseModelsFromConfig(settingsConfig: string) {
 export function useModelState({
   settingsConfig,
   onConfigChange,
+  getSettingsConfig,
 }: UseModelStateProps) {
   const initial = useState(() => parseModelsFromConfig(settingsConfig))[0];
   const [claudeModel, setClaudeModel] = useState(initial.model);
@@ -134,6 +173,7 @@ export function useModelState({
   const [defaultFableModelName, setDefaultFableModelName] = useState(
     initial.fableName,
   );
+  const [subagentModel, setSubagentModel] = useState(initial.subagent);
 
   const isUserEditingRef = useRef(false);
   const lastConfigRef = useRef(settingsConfig);
@@ -164,6 +204,7 @@ export function useModelState({
     setDefaultOpusModelName(parsed.opusName);
     setDefaultFableModel(parsed.fable);
     setDefaultFableModelName(parsed.fableName);
+    setSubagentModel(parsed.subagent);
   }, [settingsConfig]);
 
   const handleModelChange = useCallback(
@@ -186,11 +227,11 @@ export function useModelState({
         setDefaultFableModel(value);
       if (field === "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME")
         setDefaultFableModelName(value);
+      if (field === "CLAUDE_CODE_SUBAGENT_MODEL") setSubagentModel(value);
 
       try {
-        const currentConfig = latestConfigRef.current
-          ? JSON.parse(latestConfigRef.current)
-          : { env: {} };
+        const currentRaw = getSettingsConfig?.() ?? latestConfigRef.current;
+        const currentConfig = currentRaw ? JSON.parse(currentRaw) : { env: {} };
         if (!currentConfig.env) currentConfig.env = {};
         const env = currentConfig.env as Record<string, unknown>;
 
@@ -211,7 +252,7 @@ export function useModelState({
         console.error("Failed to update model config:", err);
       }
     },
-    [onConfigChange],
+    [getSettingsConfig, onConfigChange],
   );
 
   return {
@@ -233,6 +274,8 @@ export function useModelState({
     setDefaultFableModel,
     defaultFableModelName,
     setDefaultFableModelName,
+    subagentModel,
+    setSubagentModel,
     handleModelChange,
   };
 }

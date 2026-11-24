@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use crate::error::AppError;
 use crate::proxy::http_client;
+use crate::services::sync_protocol::{
+    transfer_timeout, transport_failure_reason, TRANSFER_IDLE_TIMEOUT,
+};
 use futures::StreamExt;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-/// Timeout for large file transfers (PUT/GET of db.sql, skills.zip).
-const TRANSFER_TIMEOUT_SECS: u64 = 300;
 
 /// Auth pair: `(username, Some(password))`.
 pub type WebDavAuth = Option<(String, Option<String>)>;
@@ -106,23 +107,25 @@ fn webdav_transport_error(
     op_zh: &str,
     op_en: &str,
     target_url: &str,
-    err: &reqwest::Error,
+    err: reqwest::Error,
 ) -> AppError {
-    let (zh_reason, en_reason) = if err.is_timeout() {
-        ("请求超时", "request timed out")
-    } else if err.is_connect() {
-        ("连接失败", "connection failed")
-    } else if err.is_request() {
-        ("请求构造失败", "request build failed")
-    } else {
-        ("网络请求失败", "network request failed")
-    };
+    let (zh_reason, en_reason) = transport_failure_reason(err);
 
     let safe_url = redact_url(target_url);
     AppError::localized(
         key,
         format!("WebDAV {op_zh}失败（{zh_reason}）: {safe_url}"),
         format!("WebDAV {op_en} failed ({en_reason}): {safe_url}"),
+    )
+}
+
+fn webdav_stalled_error(key: &'static str, op_zh: &str, op_en: &str, target_url: &str) -> AppError {
+    let secs = TRANSFER_IDLE_TIMEOUT.as_secs();
+    let safe_url = redact_url(target_url);
+    AppError::localized(
+        key,
+        format!("WebDAV {op_zh}失败（{secs} 秒未收到数据）: {safe_url}"),
+        format!("WebDAV {op_en} failed (no data received for {secs}s): {safe_url}"),
     )
 }
 
@@ -148,7 +151,7 @@ pub async fn test_connection(base_url: &str, auth: &WebDavAuth) -> Result<(), Ap
             "连接",
             "connection",
             base_url,
-            &e,
+            e,
         )
     })?;
 
@@ -195,7 +198,7 @@ pub async fn ensure_remote_directories(
                 "MKCOL 请求",
                 "MKCOL request",
                 &dir_url,
-                &e,
+                e,
             )
         })?;
 
@@ -204,9 +207,15 @@ pub async fn ensure_remote_directories(
             s if s == StatusCode::CREATED || s.is_success() => {
                 log::info!("[WebDAV] MKCOL ok: {}", redact_url(&dir_url));
             }
-            // Ambiguous — verify directory actually exists via PROPFIND
+            // Ambiguous — verify directory actually exists via PROPFIND.
+            // Some servers (e.g. several NAS WebDAV implementations) return
+            // `400 Bad Request` when MKCOL targets a path that already exists
+            // (e.g. an existing shared folder root) instead of the standard
+            // `405 Method Not Allowed`. Treat it as ambiguous and confirm with
+            // PROPFIND rather than failing outright.
             s if s == StatusCode::METHOD_NOT_ALLOWED
                 || s == StatusCode::CONFLICT
+                || s == StatusCode::BAD_REQUEST
                 || s.is_redirection() =>
             {
                 if !propfind_exists(&client, &dir_url, auth).await? {
@@ -233,13 +242,13 @@ pub async fn put_bytes(
         client
             .put(url)
             .header("Content-Type", content_type)
-            .body(bytes)
-            .timeout(Duration::from_secs(TRANSFER_TIMEOUT_SECS)),
+            .timeout(transfer_timeout(bytes.len() as u64))
+            .body(bytes),
         auth,
     )
     .send()
     .await
-    .map_err(|e| webdav_transport_error("webdav.put_failed", "PUT 请求", "PUT request", url, &e))?;
+    .map_err(|e| webdav_transport_error("webdav.put_failed", "PUT 请求", "PUT request", url, e))?;
 
     if resp.status().is_success() {
         return Ok(());
@@ -256,15 +265,16 @@ pub async fn get_bytes(
     max_bytes: usize,
 ) -> Result<Option<(Vec<u8>, Option<String>)>, AppError> {
     let client = http_client::get();
-    let resp = apply_auth(
-        client
-            .get(url)
-            .timeout(Duration::from_secs(TRANSFER_TIMEOUT_SECS)),
+    let request = apply_auth(
+        client.get(url).timeout(transfer_timeout(max_bytes as u64)),
         auth,
-    )
-    .send()
-    .await
-    .map_err(|e| webdav_transport_error("webdav.get_failed", "GET 请求", "GET request", url, &e))?;
+    );
+    let resp = tokio::time::timeout(TRANSFER_IDLE_TIMEOUT, request.send())
+        .await
+        .map_err(|_| webdav_stalled_error("webdav.get_failed", "GET 请求", "GET request", url))?
+        .map_err(|e| {
+            webdav_transport_error("webdav.get_failed", "GET 请求", "GET request", url, e)
+        })?;
 
     if resp.status() == StatusCode::NOT_FOUND {
         return Ok(None);
@@ -281,7 +291,18 @@ pub async fn get_bytes(
         .map(|s| s.to_string());
     let mut bytes = Vec::new();
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    // Slow transfers may run long; only a stretch without any data fails them.
+    while let Some(chunk) = tokio::time::timeout(TRANSFER_IDLE_TIMEOUT, stream.next())
+        .await
+        .map_err(|_| {
+            webdav_stalled_error(
+                "webdav.response_read_failed",
+                "读取响应",
+                "response read",
+                url,
+            )
+        })?
+    {
         let chunk = chunk.map_err(|e| {
             AppError::localized(
                 "webdav.response_read_failed",
@@ -309,7 +330,7 @@ pub async fn head_etag(url: &str, auth: &WebDavAuth) -> Result<Option<String>, A
     .send()
     .await
     .map_err(|e| {
-        webdav_transport_error("webdav.head_failed", "HEAD 请求", "HEAD request", url, &e)
+        webdav_transport_error("webdav.head_failed", "HEAD 请求", "HEAD request", url, e)
     })?;
 
     if resp.status() == StatusCode::NOT_FOUND {
@@ -401,33 +422,7 @@ pub fn webdav_status_error(op: &str, status: StatusCode, url: &str) -> AppError 
 }
 
 fn redact_url(raw: &str) -> String {
-    match Url::parse(raw) {
-        Ok(mut parsed) => {
-            let _ = parsed.set_username("");
-            let _ = parsed.set_password(None);
-
-            let mut out = format!("{}://", parsed.scheme());
-            if let Some(host) = parsed.host_str() {
-                out.push_str(host);
-            }
-            if let Some(port) = parsed.port() {
-                out.push(':');
-                out.push_str(&port.to_string());
-            }
-            out.push_str(parsed.path());
-
-            let mut keys: Vec<String> = parsed.query_pairs().map(|(k, _)| k.into_owned()).collect();
-            keys.sort();
-            keys.dedup();
-            if !keys.is_empty() {
-                out.push_str("?[keys:");
-                out.push_str(&keys.join(","));
-                out.push(']');
-            }
-            out
-        }
-        Err(_) => raw.split('?').next().unwrap_or(raw).to_string(),
-    }
+    crate::redact_url_for_log(raw)
 }
 
 fn response_too_large_error(url: &str, max_bytes: usize) -> AppError {
@@ -477,7 +472,7 @@ mod tests {
         let url = build_remote_url(
             "https://dav.example.com/remote.php/dav/files/demo/",
             &[
-                "puppyrouter-app-sync".to_string(),
+                "cc switch-sync".to_string(),
                 "v2".to_string(),
                 "db-v6".to_string(),
                 "default profile".to_string(),
@@ -487,12 +482,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             url,
-            "https://dav.example.com/remote.php/dav/files/demo/puppyrouter-app-sync/v2/db-v6/default%20profile/manifest.json"
+            "https://dav.example.com/remote.php/dav/files/demo/cc%20switch-sync/v2/db-v6/default%20profile/manifest.json"
         );
-        assert!(
-            !url.contains("//puppyrouter"),
-            "should not have double-slash"
-        );
+        assert!(!url.contains("//cc"), "should not have double-slash");
     }
 
     #[test]
@@ -523,9 +515,11 @@ mod tests {
 
     #[test]
     fn redact_url_hides_credentials_and_query_values() {
+        // userinfo 与整个 query 一并剥离，host+path 保留用于诊断。
         let redacted = redact_url("https://alice:secret@example.com:8443/dav?token=abc&foo=1");
-        assert_eq!(redacted, "https://example.com:8443/dav?[keys:foo,token]");
+        assert_eq!(redacted, "https://example.com:8443/dav");
         assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("abc"));
     }
 
     #[test]

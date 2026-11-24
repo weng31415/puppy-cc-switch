@@ -5,184 +5,14 @@
 //! ## Session ID 提取
 //!
 //! 支持从客户端请求中提取 Session ID，用于关联同一对话的多个请求：
-//! - Claude: 从 `metadata.user_id` (格式: `user_xxx_session_yyy`) 或 `metadata.session_id` 提取
-//! - Codex: 从 headers 中的 `session_id` / `x-session-id` 或 `metadata.session_id` 提取
+//! - Claude / Claude Desktop: 从会话 headers、`metadata.user_id` (JSON 字符串或旧版
+//!   `user_xxx_session_yyy` 格式) 或 `metadata.session_id` 提取
+//! - Codex: 从 headers 中的 `session_id` / `x-session-id` / `session-id` / `thread-id` 或 `metadata.session_id` 提取
+//! - Grok Build: 从 headers 中的 `x-grok-conv-id` / `x-grok-session-id` 提取
 //! - 其他: 生成新的 UUID
 
 use axum::http::HeaderMap;
-use std::time::Instant;
 use uuid::Uuid;
-
-/// 客户端请求格式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum ClientFormat {
-    /// Claude Messages API (/v1/messages)
-    Claude,
-    /// Codex Response API (/v1/responses)
-    Codex,
-    /// OpenAI Chat Completions API (/v1/chat/completions)
-    OpenAI,
-    /// Gemini API (/v1beta/models/*/generateContent)
-    Gemini,
-    /// Gemini CLI API (/v1internal/models/*/generateContent)
-    GeminiCli,
-    /// 未知格式
-    Unknown,
-}
-
-#[allow(dead_code)]
-impl ClientFormat {
-    /// 从请求路径检测格式
-    pub fn from_path(path: &str) -> Self {
-        if path.contains("/v1/messages") {
-            ClientFormat::Claude
-        } else if path.contains("/v1/responses") {
-            ClientFormat::Codex
-        } else if path.contains("/v1/chat/completions") {
-            ClientFormat::OpenAI
-        } else if path.contains("/v1internal/") && path.contains("generateContent") {
-            // Gemini CLI 使用 /v1internal/ 路径
-            ClientFormat::GeminiCli
-        } else if (path.contains("/v1beta/") || path.contains("/v1/"))
-            && path.contains("generateContent")
-        {
-            // Gemini API 使用 /v1beta/ 或 /v1/ 路径
-            ClientFormat::Gemini
-        } else if path.contains("generateContent") {
-            // 通用 Gemini 端点
-            ClientFormat::Gemini
-        } else {
-            ClientFormat::Unknown
-        }
-    }
-
-    /// 从请求体内容检测格式（回退方案）
-    pub fn from_body(body: &serde_json::Value) -> Self {
-        // Claude 格式特征: messages 数组 + model 字段 + 无 response_format
-        if body.get("messages").is_some()
-            && body.get("model").is_some()
-            && body.get("response_format").is_none()
-            && body.get("contents").is_none()
-        {
-            // 区分 Claude 和 OpenAI
-            if body.get("max_tokens").is_some() {
-                return ClientFormat::Claude;
-            }
-            return ClientFormat::OpenAI;
-        }
-
-        // Codex 格式特征: input 字段
-        if body.get("input").is_some() {
-            return ClientFormat::Codex;
-        }
-
-        // Gemini 格式特征: contents 数组
-        if body.get("contents").is_some() {
-            return ClientFormat::Gemini;
-        }
-
-        ClientFormat::Unknown
-    }
-
-    /// 转换为字符串
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ClientFormat::Claude => "claude",
-            ClientFormat::Codex => "codex",
-            ClientFormat::OpenAI => "openai",
-            ClientFormat::Gemini => "gemini",
-            ClientFormat::GeminiCli => "gemini_cli",
-            ClientFormat::Unknown => "unknown",
-        }
-    }
-}
-
-impl std::fmt::Display for ClientFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-/// 代理会话
-///
-/// 包含请求全生命周期的上下文数据
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ProxySession {
-    /// 唯一会话 ID
-    pub session_id: String,
-    /// 请求开始时间
-    pub start_time: Instant,
-    /// HTTP 方法
-    pub method: String,
-    /// 请求 URL
-    pub request_url: String,
-    /// User-Agent
-    pub user_agent: Option<String>,
-    /// 客户端请求格式
-    pub client_format: ClientFormat,
-    /// 选定的供应商 ID
-    pub provider_id: Option<String>,
-    /// 模型名称
-    pub model: Option<String>,
-    /// 是否为流式请求
-    pub is_streaming: bool,
-}
-
-#[allow(dead_code)]
-impl ProxySession {
-    /// 从请求创建会话
-    pub fn from_request(
-        method: &str,
-        request_url: &str,
-        user_agent: Option<&str>,
-        body: Option<&serde_json::Value>,
-    ) -> Self {
-        // 检测客户端格式
-        let mut client_format = ClientFormat::from_path(request_url);
-        if client_format == ClientFormat::Unknown {
-            if let Some(body) = body {
-                client_format = ClientFormat::from_body(body);
-            }
-        }
-
-        // 检测是否为流式请求
-        let is_streaming = body
-            .and_then(|b| b.get("stream"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        // 提取模型名称
-        let model = body
-            .and_then(|b| b.get("model"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        Self {
-            session_id: Uuid::new_v4().to_string(),
-            start_time: Instant::now(),
-            method: method.to_string(),
-            request_url: request_url.to_string(),
-            user_agent: user_agent.map(|s| s.to_string()),
-            client_format,
-            provider_id: None,
-            model,
-            is_streaming,
-        }
-    }
-
-    /// 设置供应商 ID
-    pub fn with_provider(mut self, provider_id: &str) -> Self {
-        self.provider_id = Some(provider_id.to_string());
-        self
-    }
-
-    /// 获取请求延迟（毫秒）
-    pub fn latency_ms(&self) -> u64 {
-        self.start_time.elapsed().as_millis() as u64
-    }
-}
 
 // ============================================================================
 // Session ID 提取器
@@ -195,7 +25,7 @@ pub enum SessionIdSource {
     MetadataUserId,
     /// 从 metadata.session_id 提取
     MetadataSessionId,
-    /// 从 headers 提取 (Codex)
+    /// 从 headers 提取
     Header,
     /// 新生成
     Generated,
@@ -214,17 +44,23 @@ pub struct SessionIdResult {
 
 /// 从请求中提取或生成 Session ID
 ///
-/// 轻量化实现，仅提取 session_id 用于日志记录，不做复杂的 Session 管理。
+/// 轻量化实现，提取 session_id 用于关联请求及上游缓存身份，不做复杂的 Session 管理。
 ///
 /// ## 提取优先级
 ///
-/// ### Claude 请求
-/// 1. `metadata.user_id` (格式: `user_xxx_session_yyy`) → 提取 `yyy` 部分
-/// 2. `metadata.session_id` → 直接使用
-/// 3. 生成新 UUID
+/// ### Claude / Claude Desktop 请求
+/// 1. Headers: `x-claude-code-session-id` 或 `claude-code-session-id`
+/// 2. `metadata.user_id` → JSON 字符串中的 `session_id` 或旧版 `_session_` 后缀
+/// 3. `metadata.session_id` → 直接使用
+/// 4. 生成新 UUID
 ///
 /// ### Codex 请求
-/// 1. Headers: `session_id` 或 `x-session-id`
+/// 1. Headers: `session_id` → `x-session-id` → `session-id` → `thread-id`
+/// 2. `metadata.session_id`
+/// 3. 生成新 UUID
+///
+/// ### Grok Build 请求
+/// 1. Headers: `x-grok-conv-id` 或 `x-grok-session-id`
 /// 2. `metadata.session_id`
 /// 3. 生成新 UUID
 ///
@@ -239,15 +75,21 @@ pub fn extract_session_id(
     body: &serde_json::Value,
     client_format: &str,
 ) -> SessionIdResult {
-    if client_format == "claude" {
+    if matches!(client_format, "claude" | "claude-desktop") {
         if let Some(result) = extract_claude_session(headers, body) {
             return result;
         }
     }
 
-    // Codex 请求特殊处理
-    if client_format == "codex" || client_format == "openai" {
-        if let Some(result) = extract_codex_session(headers, body) {
+    // Responses 请求特殊处理。Grok Build 使用与 Codex 相同的客户端协议，
+    // 但保留独立前缀，避免统计和缓存键跨应用碰撞。
+    if matches!(client_format, "codex" | "openai" | "grokbuild") {
+        let prefix = if client_format == "grokbuild" {
+            "grokbuild"
+        } else {
+            "codex"
+        };
+        if let Some(result) = extract_responses_session(headers, body, prefix) {
             return result;
         }
     }
@@ -283,16 +125,29 @@ fn extract_claude_session(
     extract_from_metadata(body)
 }
 
-/// 提取 Codex Session ID
-fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Option<SessionIdResult> {
+/// 提取 Responses 客户端的 Session ID
+fn extract_responses_session(
+    headers: &HeaderMap,
+    body: &serde_json::Value,
+    prefix: &str,
+) -> Option<SessionIdResult> {
     // 1. 从 headers 提取
-    for header_name in &["session_id", "x-session-id"] {
+    let header_names: &[&str] = if prefix == "grokbuild" {
+        // Conversation ID 跨多轮请求保持稳定；session ID 作为客户端缺少
+        // conversation ID 时的回退。x-grok-req-id 是逐请求 ID，不能用于聚合。
+        &["x-grok-conv-id", "x-grok-session-id"]
+    } else {
+        // 保留旧拼写的优先级；原生 session-id 优先于 thread-id 回退。
+        &["session_id", "x-session-id", "session-id", "thread-id"]
+    };
+    for header_name in header_names {
         if let Some(value) = headers.get(*header_name) {
             if let Ok(session_id) = value.to_str() {
-                // Codex Session ID 通常较长（UUID 格式）
+                let session_id = session_id.trim();
+                // Responses 客户端的 Session ID 通常较长（UUID 格式）
                 if session_id.len() > 20 {
                     return Some(SessionIdResult {
-                        session_id: format!("codex_{session_id}"),
+                        session_id: format!("{prefix}_{session_id}"),
                         source: SessionIdSource::Header,
                         client_provided: true,
                     });
@@ -307,9 +162,10 @@ fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Optio
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
     {
+        let session_id = session_id.trim();
         if session_id.len() > 10 {
             return Some(SessionIdResult {
-                session_id: format!("codex_{session_id}"),
+                session_id: format!("{prefix}_{session_id}"),
                 source: SessionIdSource::MetadataSessionId,
                 client_provided: true,
             });
@@ -327,7 +183,7 @@ fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Optio
 fn extract_from_metadata(body: &serde_json::Value) -> Option<SessionIdResult> {
     let metadata = body.get("metadata")?;
 
-    // 1. 从 metadata.user_id 提取（格式: user_xxx_session_yyy）
+    // 1. 从 metadata.user_id 提取（JSON 字符串或旧版 _session_ 后缀）
     if let Some(user_id) = metadata.get("user_id").and_then(|v| v.as_str()) {
         if let Some(session_id) = parse_session_from_user_id(user_id) {
             return Some(SessionIdResult {
@@ -354,8 +210,17 @@ fn extract_from_metadata(body: &serde_json::Value) -> Option<SessionIdResult> {
 
 /// 从 user_id 解析 session_id
 ///
-/// 格式: `user_identifier_session_actual_session_id`
+/// 支持 JSON 对象字符串中的 `session_id` 和旧版 `user_identifier_session_actual_session_id`。
 pub(super) fn parse_session_from_user_id(user_id: &str) -> Option<String> {
+    let trimmed = user_id.trim();
+    if trimmed.starts_with('{') {
+        // 新版 Claude Code 将会话元数据编码为 JSON 字符串。只读取当前 session_id，
+        // 不把 device/account/parent ID 或 JSON 字段里的 _session_ 文本当作会话。
+        let metadata: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        let session_id = metadata.get("session_id")?.as_str()?.trim();
+        return (!session_id.is_empty()).then(|| session_id.to_string());
+    }
+
     // 查找 "_session_" 分隔符
     if let Some(pos) = user_id.find("_session_") {
         let session_id = &user_id[pos + 9..]; // "_session_" 长度为 9
@@ -376,126 +241,86 @@ fn generate_new_session_id() -> SessionIdResult {
 }
 
 #[cfg(test)]
+mod header_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn test_client_format_from_path_claude() {
-        assert_eq!(
-            ClientFormat::from_path("/v1/messages"),
-            ClientFormat::Claude
-        );
-        assert_eq!(
-            ClientFormat::from_path("/api/v1/messages"),
-            ClientFormat::Claude
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_path_codex() {
-        assert_eq!(
-            ClientFormat::from_path("/v1/responses"),
-            ClientFormat::Codex
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_path_openai() {
-        assert_eq!(
-            ClientFormat::from_path("/v1/chat/completions"),
-            ClientFormat::OpenAI
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_path_gemini() {
-        assert_eq!(
-            ClientFormat::from_path("/v1beta/models/gemini-pro:generateContent"),
-            ClientFormat::Gemini
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_path_gemini_cli() {
-        assert_eq!(
-            ClientFormat::from_path("/v1internal/models/gemini-pro:generateContent"),
-            ClientFormat::GeminiCli
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_body_claude() {
-        let body = json!({
-            "model": "claude-3-5-sonnet",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 1024
-        });
-        assert_eq!(ClientFormat::from_body(&body), ClientFormat::Claude);
-    }
-
-    #[test]
-    fn test_client_format_from_body_codex() {
-        let body = json!({
-            "input": "Write a function"
-        });
-        assert_eq!(ClientFormat::from_body(&body), ClientFormat::Codex);
-    }
-
-    #[test]
-    fn test_client_format_from_body_gemini() {
-        let body = json!({
-            "contents": [{"parts": [{"text": "Hello"}]}]
-        });
-        assert_eq!(ClientFormat::from_body(&body), ClientFormat::Gemini);
-    }
-
-    #[test]
-    fn test_session_id_uniqueness() {
-        let session1 = ProxySession::from_request("POST", "/v1/messages", None, None);
-        let session2 = ProxySession::from_request("POST", "/v1/messages", None, None);
-        assert_ne!(session1.session_id, session2.session_id);
-    }
-
-    #[test]
-    fn test_session_from_request() {
-        let body = json!({
-            "model": "claude-3-5-sonnet",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 1024,
-            "stream": true
-        });
-
-        let session =
-            ProxySession::from_request("POST", "/v1/messages", Some("Mozilla/5.0"), Some(&body));
-
-        assert_eq!(session.method, "POST");
-        assert_eq!(session.request_url, "/v1/messages");
-        assert_eq!(session.user_agent, Some("Mozilla/5.0".to_string()));
-        assert_eq!(session.client_format, ClientFormat::Claude);
-        assert_eq!(session.model, Some("claude-3-5-sonnet".to_string()));
-        assert!(session.is_streaming);
-    }
-
-    #[test]
-    fn test_session_with_provider() {
-        let session = ProxySession::from_request("POST", "/v1/messages", None, None)
-            .with_provider("provider-123");
-
-        assert_eq!(session.provider_id, Some("provider-123".to_string()));
-    }
-
-    #[test]
-    fn test_client_format_as_str() {
-        assert_eq!(ClientFormat::Claude.as_str(), "claude");
-        assert_eq!(ClientFormat::Codex.as_str(), "codex");
-        assert_eq!(ClientFormat::OpenAI.as_str(), "openai");
-        assert_eq!(ClientFormat::Gemini.as_str(), "gemini");
-        assert_eq!(ClientFormat::GeminiCli.as_str(), "gemini_cli");
-        assert_eq!(ClientFormat::Unknown.as_str(), "unknown");
-    }
-
     // ========== Session ID 提取测试 ==========
+
+    #[test]
+    fn test_claude_json_user_id_keeps_session_across_requests() {
+        let headers = HeaderMap::new();
+        for client_format in ["claude", "claude-desktop"] {
+            for turn in 0..3 {
+                let body = json!({
+                    "metadata": { "user_id": json!({
+                        "device_id": "device_session_not-the-session",
+                        "account_uuid": "account-123",
+                        "session_id": "conversation-123",
+                        "parent_session_id": "parent-456",
+                        "ti": turn
+                    }).to_string() },
+                    "messages": [{"role": "user", "content": format!("turn {turn}")}]
+                });
+                let result = extract_session_id(&headers, &body, client_format);
+                assert_eq!(result.session_id, "conversation-123");
+                assert_eq!(result.source, SessionIdSource::MetadataUserId);
+                assert!(result.client_provided);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_claude_json_user_id_falls_back_to_metadata_session() {
+        for user_id in [
+            r#"{"session_id":""}"#,
+            r#"{"session_id":"  "}"#,
+            r#"{"session_id":null}"#,
+            r#"{"session_id":123}"#,
+            r#"{"device_id":"device_session_wrong","parent_session_id":"parent"}"#,
+            r#"{"session_id":"broken_session_wrong""#,
+        ] {
+            let body = json!({"metadata": {
+                "user_id": user_id,
+                "session_id": "fallback-session"
+            }});
+            let result = extract_session_id(&HeaderMap::new(), &body, "claude-desktop");
+            assert_eq!(result.session_id, "fallback-session", "{user_id}");
+            assert_eq!(result.source, SessionIdSource::MetadataSessionId);
+            assert!(result.client_provided);
+
+            let body = json!({"metadata": {"user_id": user_id}});
+            let result = extract_session_id(&HeaderMap::new(), &body, "claude");
+            assert_eq!(result.source, SessionIdSource::Generated, "{user_id}");
+            assert!(!result.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_claude_desktop_headers_precede_json_metadata() {
+        for header_name in ["x-claude-code-session-id", "claude-code-session-id"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header_name, "header-session".parse().unwrap());
+            let body = json!({"metadata": {"user_id":
+                r#"{"session_id":"metadata-session"}"#
+            }});
+            let result = extract_session_id(&headers, &body, "claude-desktop");
+            assert_eq!(result.session_id, "header-session");
+            assert_eq!(result.source, SessionIdSource::Header);
+            assert!(result.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_parse_claude_json_user_id_with_whitespace() {
+        assert_eq!(
+            parse_session_from_user_id(" \n{\"session_id\":\" conversation-123 \"} \n"),
+            Some("conversation-123".to_string())
+        );
+    }
 
     #[test]
     fn test_extract_session_from_claude_metadata_user_id() {
@@ -585,6 +410,101 @@ mod tests {
         let result = extract_session_id(&headers, &body, "codex");
 
         assert!(!result.session_id.is_empty());
+        assert_eq!(result.source, SessionIdSource::Generated);
+        assert!(!result.client_provided);
+    }
+
+    #[test]
+    fn test_codex_keeps_existing_response_session_headers() {
+        let body = json!({ "input": "Write a function" });
+
+        for header_name in ["session_id", "x-session-id"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header_name,
+                "d937243f-2702-4f20-97b6-c9682235ab81".parse().unwrap(),
+            );
+
+            let result = extract_session_id(&headers, &body, "codex");
+
+            assert_eq!(
+                result.session_id,
+                "codex_d937243f-2702-4f20-97b6-c9682235ab81"
+            );
+            assert_eq!(result.source, SessionIdSource::Header);
+            assert!(result.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_grokbuild_prefers_conversation_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-grok-conv-id",
+            "conv-724f4275-584e-43af-ad46-b5e7509a3ca2".parse().unwrap(),
+        );
+        headers.insert(
+            "x-grok-session-id",
+            "session-d937243f-2702-4f20-97b6-c9682235ab81"
+                .parse()
+                .unwrap(),
+        );
+        let body = json!({ "input": "Write a function" });
+
+        let result = extract_session_id(&headers, &body, "grokbuild");
+
+        assert_eq!(
+            result.session_id,
+            "grokbuild_conv-724f4275-584e-43af-ad46-b5e7509a3ca2"
+        );
+        assert_eq!(result.source, SessionIdSource::Header);
+        assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_grokbuild_falls_back_to_session_header() {
+        let body = json!({ "input": "Write a function" });
+
+        for conversation_id in ["", "                         "] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-grok-conv-id", conversation_id.parse().unwrap());
+            headers.insert(
+                "x-grok-session-id",
+                "session-d937243f-2702-4f20-97b6-c9682235ab81"
+                    .parse()
+                    .unwrap(),
+            );
+
+            let result = extract_session_id(&headers, &body, "grokbuild");
+
+            assert_eq!(
+                result.session_id,
+                "grokbuild_session-d937243f-2702-4f20-97b6-c9682235ab81"
+            );
+            assert_eq!(result.source, SessionIdSource::Header);
+            assert!(result.client_provided);
+        }
+    }
+
+    #[test]
+    fn test_grokbuild_ignores_request_and_codex_session_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-grok-req-id",
+            "request-724f4275-584e-43af-ad46-b5e7509a3ca2"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            "x-session-id",
+            "codex-d937243f-2702-4f20-97b6-c9682235ab81"
+                .parse()
+                .unwrap(),
+        );
+        let body = json!({ "input": "Write a function" });
+
+        let result = extract_session_id(&headers, &body, "grokbuild");
+
         assert_eq!(result.source, SessionIdSource::Generated);
         assert!(!result.client_provided);
     }

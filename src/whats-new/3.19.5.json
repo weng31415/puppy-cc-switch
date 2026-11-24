@@ -1,0 +1,12 @@
+{
+  "version": "3.19.5",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "浅蓝主题和绿色启用状态，新增 Codex 配置诊断。",
+      "zh-TW": "淺藍主題與綠色啟用狀態，新增 Codex 設定診斷。",
+      "en": "Introduced the light blue theme, green active states and Codex configuration diagnostics.",
+      "ja": "ライトブルーのテーマと緑色の有効表示、Codex 設定の診断を追加しました。"
+    }
+  ]
+}

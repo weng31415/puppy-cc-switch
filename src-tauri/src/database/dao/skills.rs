@@ -13,6 +13,44 @@ use crate::services::skill::SkillRepo;
 use indexmap::IndexMap;
 use rusqlite::params;
 
+const INSTALLED_SKILL_SELECT: &str = "SELECT id, name, description, directory, repo_owner, repo_name, repo_branch,
+        readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild,
+        enabled_opencode, enabled_hermes, installed_at, content_hash, updated_at, enabled_mcode, enabled_agy, enabled_kimi, enabled_dsh, enabled_copilot, enabled_workbuddy, repo_host
+ FROM skills";
+
+fn row_to_installed_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledSkill> {
+    Ok(InstalledSkill {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        directory: row.get(3)?,
+        repo_host: row.get(23)?,
+        repo_owner: row.get(4)?,
+        repo_name: row.get(5)?,
+        repo_branch: row.get(6)?,
+        readme_url: row.get(7)?,
+        apps: SkillApps {
+            claude: row.get(8)?,
+            codex: row.get(9)?,
+            gemini: row.get(10)?,
+            grokbuild: row.get(11)?,
+            opencode: row.get(12)?,
+            hermes: row.get(13)?,
+            pi: false,
+            omp: false,
+            mcode: row.get(17)?,
+            agy: row.get(18)?,
+            kimi: row.get(19)?,
+            dsh: row.get(20)?,
+            copilot: row.get(21)?,
+            workbuddy: row.get(22)?,
+        },
+        installed_at: row.get(14)?,
+        content_hash: row.get(15)?,
+        updated_at: row.get::<_, i64>(16).unwrap_or(0),
+    })
+}
+
 impl Database {
     // ========== InstalledSkill CRUD ==========
 
@@ -20,37 +58,11 @@ impl Database {
     pub fn get_all_installed_skills(&self) -> Result<IndexMap<String, InstalledSkill>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, directory, repo_owner, repo_name, repo_branch,
-                        readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_opencode,
-                        enabled_hermes, installed_at, content_hash, updated_at
-                 FROM skills ORDER BY name ASC",
-            )
+            .prepare(&format!("{INSTALLED_SKILL_SELECT} ORDER BY name ASC"))
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let skill_iter = stmt
-            .query_map([], |row| {
-                Ok(InstalledSkill {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    directory: row.get(3)?,
-                    repo_owner: row.get(4)?,
-                    repo_name: row.get(5)?,
-                    repo_branch: row.get(6)?,
-                    readme_url: row.get(7)?,
-                    apps: SkillApps {
-                        claude: row.get(8)?,
-                        codex: row.get(9)?,
-                        gemini: row.get(10)?,
-                        opencode: row.get(11)?,
-                        hermes: row.get(12)?,
-                    },
-                    installed_at: row.get(13)?,
-                    content_hash: row.get(14)?,
-                    updated_at: row.get::<_, i64>(15).unwrap_or(0),
-                })
-            })
+            .query_map([], row_to_installed_skill)
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let mut skills = IndexMap::new();
@@ -65,36 +77,10 @@ impl Database {
     pub fn get_installed_skill(&self, id: &str) -> Result<Option<InstalledSkill>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, directory, repo_owner, repo_name, repo_branch,
-                        readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_opencode,
-                        enabled_hermes, installed_at, content_hash, updated_at
-                 FROM skills WHERE id = ?1",
-            )
+            .prepare(&format!("{INSTALLED_SKILL_SELECT} WHERE id = ?1"))
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let result = stmt.query_row([id], |row| {
-            Ok(InstalledSkill {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                directory: row.get(3)?,
-                repo_owner: row.get(4)?,
-                repo_name: row.get(5)?,
-                repo_branch: row.get(6)?,
-                readme_url: row.get(7)?,
-                apps: SkillApps {
-                    claude: row.get(8)?,
-                    codex: row.get(9)?,
-                    gemini: row.get(10)?,
-                    opencode: row.get(11)?,
-                    hermes: row.get(12)?,
-                },
-                installed_at: row.get(13)?,
-                content_hash: row.get(14)?,
-                updated_at: row.get::<_, i64>(15).unwrap_or(0),
-            })
-        });
+        let result = stmt.query_row([id], row_to_installed_skill);
 
         match result {
             Ok(skill) => Ok(Some(skill)),
@@ -109,9 +95,9 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO skills
              (id, name, description, directory, repo_owner, repo_name, repo_branch,
-              readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_opencode, enabled_hermes,
-              installed_at, content_hash, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+              readme_url, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes,
+              installed_at, content_hash, updated_at, enabled_mcode, enabled_agy, enabled_kimi, enabled_dsh, enabled_copilot, enabled_workbuddy, repo_host)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 skill.id,
                 skill.name,
@@ -124,15 +110,63 @@ impl Database {
                 skill.apps.claude,
                 skill.apps.codex,
                 skill.apps.gemini,
+                skill.apps.grokbuild,
                 skill.apps.opencode,
                 skill.apps.hermes,
                 skill.installed_at,
                 skill.content_hash,
                 skill.updated_at,
+                skill.apps.mcode,
+                skill.apps.agy,
+                skill.apps.kimi,
+                skill.apps.dsh,
+                skill.apps.copilot,
+                skill.apps.workbuddy,
+                skill.repo_host,
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// 仅更新已安装 Skill 的元数据，不修改各应用的启用状态。
+    ///
+    /// 与 [`Self::save_skill`] 不同，本方法不会插入缺失记录。更新操作可能在网络
+    /// 下载期间与启用状态切换或卸载并发发生，因此调用方必须保留数据库中的
+    /// `enabled_*` 字段，并在记录已被删除时停止后续处理。
+    pub fn update_skill_metadata(&self, skill: &InstalledSkill) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        let affected = conn
+            .execute(
+                "UPDATE skills
+                 SET name = ?1,
+                     description = ?2,
+                     directory = ?3,
+                     repo_owner = ?4,
+                     repo_name = ?5,
+                     repo_branch = ?6,
+                     readme_url = ?7,
+                     installed_at = ?8,
+                     content_hash = ?9,
+                     updated_at = ?10
+                 WHERE id = ?11 AND installed_at = ?12",
+                params![
+                    skill.name,
+                    skill.description,
+                    skill.directory,
+                    skill.repo_owner,
+                    skill.repo_name,
+                    skill.repo_branch,
+                    skill.readme_url,
+                    skill.installed_at,
+                    skill.content_hash,
+                    skill.updated_at,
+                    skill.id,
+                    skill.installed_at,
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected > 0)
     }
 
     /// 删除 Skill
@@ -157,8 +191,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let affected = conn
             .execute(
-                "UPDATE skills SET enabled_claude = ?1, enabled_codex = ?2, enabled_gemini = ?3, enabled_opencode = ?4, enabled_hermes = ?5 WHERE id = ?6",
-                params![apps.claude, apps.codex, apps.gemini, apps.opencode, apps.hermes, id],
+                "UPDATE skills SET enabled_claude = ?1, enabled_codex = ?2, enabled_gemini = ?3, enabled_grokbuild = ?4, enabled_opencode = ?5, enabled_hermes = ?6, enabled_mcode = ?8, enabled_agy = ?9, enabled_kimi = ?10, enabled_dsh = ?11, enabled_copilot = ?12, enabled_workbuddy = ?13 WHERE id = ?7",
+                params![apps.claude, apps.codex, apps.gemini, apps.grokbuild, apps.opencode, apps.hermes, id, apps.mcode, apps.agy, apps.kimi, apps.dsh, apps.copilot, apps.workbuddy],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
@@ -188,13 +222,14 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
             .prepare(
-                "SELECT owner, name, branch, enabled FROM skill_repos ORDER BY owner ASC, name ASC",
+                "SELECT owner, name, branch, enabled, host FROM skill_repos ORDER BY owner ASC, name ASC",
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let repo_iter = stmt
             .query_map([], |row| {
                 Ok(SkillRepo {
+                    host: row.get(4)?,
                     owner: row.get(0)?,
                     name: row.get(1)?,
                     branch: row.get(2)?,
@@ -214,8 +249,8 @@ impl Database {
     pub fn save_skill_repo(&self, repo: &SkillRepo) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
-            "INSERT OR REPLACE INTO skill_repos (owner, name, branch, enabled) VALUES (?1, ?2, ?3, ?4)",
-            params![repo.owner, repo.name, repo.branch, repo.enabled],
+            "INSERT OR REPLACE INTO skill_repos (owner, name, branch, enabled, host) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![repo.owner, repo.name, repo.branch, repo.enabled, repo.host],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -232,32 +267,170 @@ impl Database {
         Ok(())
     }
 
-    /// 初始化默认的 Skill 仓库（启动时调用，补充缺失的默认仓库）
+    /// 初始化默认的 Skill 仓库（启动时调用，每个数据库仅执行一次）
     pub fn init_default_skill_repos(&self) -> Result<usize, AppError> {
-        // 获取已有仓库列表
-        let existing = self.get_skill_repos()?;
-        let existing_keys: std::collections::HashSet<(String, String)> = existing
-            .iter()
-            .map(|r| (r.owner.clone(), r.name.clone()))
-            .collect();
+        const INITIALIZED_KEY: &str = "default_skill_repos_initialized";
 
-        // 获取默认仓库列表
+        if self.get_bool_flag(INITIALIZED_KEY)? {
+            return Ok(0);
+        }
+
+        // 兼容升级前已经存在的用户选择，并记录初始化状态，避免以后删空后恢复默认值。
+        if !self.get_skill_repos()?.is_empty() {
+            self.set_setting(INITIALIZED_KEY, "true")?;
+            return Ok(0);
+        }
+
         let default_store = crate::services::skill::SkillStore::default();
         let mut count = 0;
 
-        // 仅插入缺失的默认仓库
         for repo in &default_store.repos {
-            let key = (repo.owner.clone(), repo.name.clone());
-            if !existing_keys.contains(&key) {
-                self.save_skill_repo(repo)?;
-                count += 1;
-                log::info!("补充默认 Skill 仓库: {}/{}", repo.owner, repo.name);
-            }
+            self.save_skill_repo(repo)?;
+            count += 1;
+            log::info!("初始化默认 Skill 仓库: {}/{}", repo.owner, repo.name);
         }
 
-        if count > 0 {
-            log::info!("补充默认 Skill 仓库完成，新增 {count} 个");
-        }
+        self.set_setting(INITIALIZED_KEY, "true")?;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_config::AppType;
+
+    fn skill(id: &str, name: &str, apps: SkillApps) -> InstalledSkill {
+        InstalledSkill {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: Some(format!("{name} description")),
+            directory: format!("{name}-directory"),
+            repo_host: None,
+            repo_owner: Some("owner".to_string()),
+            repo_name: Some("repo".to_string()),
+            repo_branch: Some("main".to_string()),
+            readme_url: Some(format!("https://example.com/{name}")),
+            apps,
+            installed_at: 1,
+            content_hash: Some(format!("{name}-hash")),
+            updated_at: 2,
+        }
+    }
+
+    #[test]
+    fn repo_and_skill_hosts_round_trip() {
+        let db = Database::memory().expect("memory db");
+
+        db.save_skill_repo(&SkillRepo {
+            host: "gitlab.example.com:8443".to_string(),
+            owner: "group/subgroup".to_string(),
+            name: "skills".to_string(),
+            branch: "main".to_string(),
+            enabled: true,
+        })
+        .expect("save gitlab repo");
+        let repos = db.get_skill_repos().expect("get repos");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].host, "gitlab.example.com:8443");
+        assert_eq!(repos[0].owner, "group/subgroup");
+
+        let mut gitlab_skill = skill("group/subgroup/skills:demo", "demo", SkillApps::default());
+        gitlab_skill.repo_host = Some("gitlab.example.com:8443".to_string());
+        db.save_skill(&gitlab_skill).expect("save gitlab skill");
+        db.save_skill(&skill("owner/repo:plain", "plain", SkillApps::default()))
+            .expect("save github skill");
+
+        let stored = db.get_all_installed_skills().expect("get skills");
+        assert_eq!(
+            stored[&gitlab_skill.id].repo_host.as_deref(),
+            Some("gitlab.example.com:8443")
+        );
+        assert_eq!(stored["owner/repo:plain"].repo_host, None);
+        assert_eq!(
+            db.get_installed_skill(&gitlab_skill.id)
+                .expect("get skill")
+                .expect("skill exists")
+                .repo_host
+                .as_deref(),
+            Some("gitlab.example.com:8443")
+        );
+    }
+
+    #[test]
+    fn update_skill_metadata_preserves_enabled_apps() {
+        let db = Database::memory().expect("memory db");
+        let installed_apps = SkillApps::only(&AppType::Codex);
+        let original = skill("owner/repo:skill", "original", installed_apps.clone());
+        db.save_skill(&original).expect("seed skill");
+
+        let mut candidate = skill(&original.id, "updated", SkillApps::only(&AppType::Claude));
+        candidate.repo_branch = Some("next".to_string());
+        candidate.updated_at = 42;
+
+        assert!(db
+            .update_skill_metadata(&candidate)
+            .expect("update metadata"));
+
+        let stored = db
+            .get_installed_skill(&original.id)
+            .expect("query skill")
+            .expect("skill remains installed");
+        assert_eq!(stored.name, candidate.name);
+        assert_eq!(stored.description, candidate.description);
+        assert_eq!(stored.directory, candidate.directory);
+        assert_eq!(stored.repo_branch, candidate.repo_branch);
+        assert_eq!(stored.readme_url, candidate.readme_url);
+        assert_eq!(stored.content_hash, candidate.content_hash);
+        assert_eq!(stored.updated_at, candidate.updated_at);
+        assert_eq!(stored.apps, installed_apps);
+    }
+
+    #[test]
+    fn update_skill_metadata_does_not_insert_missing_skill() {
+        let db = Database::memory().expect("memory db");
+        let candidate = skill(
+            "owner/repo:missing",
+            "missing",
+            SkillApps::only(&AppType::Claude),
+        );
+
+        assert!(!db
+            .update_skill_metadata(&candidate)
+            .expect("missing update is not an error"));
+        assert!(db
+            .get_installed_skill(&candidate.id)
+            .expect("query skill")
+            .is_none());
+    }
+
+    #[test]
+    fn update_skill_metadata_does_not_touch_reinstalled_generation() {
+        let db = Database::memory().expect("memory db");
+        let stale_update = skill(
+            "owner/repo:skill",
+            "stale-update",
+            SkillApps::only(&AppType::Claude),
+        );
+
+        let mut reinstalled = skill(
+            &stale_update.id,
+            "reinstalled",
+            SkillApps::only(&AppType::Gemini),
+        );
+        reinstalled.installed_at = stale_update.installed_at + 1;
+        db.save_skill(&reinstalled).expect("seed reinstalled skill");
+
+        assert!(!db
+            .update_skill_metadata(&stale_update)
+            .expect("stale generation update is not an error"));
+
+        let stored = db
+            .get_installed_skill(&reinstalled.id)
+            .expect("query skill")
+            .expect("reinstalled generation remains");
+        assert_eq!(stored.name, reinstalled.name);
+        assert_eq!(stored.installed_at, reinstalled.installed_at);
+        assert_eq!(stored.apps, reinstalled.apps);
     }
 }

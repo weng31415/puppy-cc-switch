@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const DOWNLOAD_URL = "https://puppyrouter.com/client";
+const RELEASES_URL = "https://puppyrouter.com/client";
 
 interface DatabaseUpgradeProps {
   payload: {
@@ -41,9 +41,10 @@ interface DownloadProgress {
 /**
  * 数据库版本过新（应用过旧）时的应用内恢复界面。
  *
- * 启动时先检查官网更新源：
- * - 有可用更新：提供一键下载、安装、重启。
- * - 没有更新：说明当前客户端仍不兼容，提示用户备份后处理。
+ * 启动时先检查是否有可用更新：
+ * - 有 → 提供「升级应用」一键下载+安装+重启，并展示下载进度条。
+ * - 无 → 说明当前已是最新版本但数据库仍不兼容（通常由第三方客户端或更高版本创建），
+ *   升级无法解决，及时提醒用户备份后改用兼容客户端或等待官方支持。
  */
 export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const { t } = useTranslation();
@@ -56,7 +57,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const dbVersion = payload.db_version;
   const supportedVersion = payload.supported_version;
 
-  // 启动时检查可用更新，决定 upgradable / incompatible。
+  // 启动时检查可用更新，决定 upgradable / incompatible
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -72,7 +73,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           setPhase("incompatible");
         }
       } catch {
-        // 离线或官网 manifest 暂不可达时仍允许用户手动尝试升级。
+        // 检查失败（如离线）：仍允许尝试升级，避免完全卡死
         if (!cancelled) setPhase("upgradable");
       }
     })();
@@ -123,18 +124,18 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const isIncompatible = phase === "incompatible";
   const accent = isIncompatible
     ? {
-        chip: "bg-red-100 text-red-600 dark:bg-red-950/50 dark:text-red-400",
+        chip: "bg-danger-soft text-danger-text",
         Icon: AlertTriangle,
       }
     : {
-        chip: "bg-amber-100 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400",
+        chip: "bg-warning-soft text-warning-text",
         Icon: Database,
       };
   const AccentIcon = accent.Icon;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-      <div className="w-full max-w-lg space-y-5 rounded-2xl border border-border/60 bg-card/80 p-7 shadow-xl">
+    <div className="flex min-h-screen items-center justify-center bg-surface p-6 text-fg-1">
+      <div className="w-full max-w-lg space-y-5 rounded-2xl border border-border/60 bg-surface p-7 shadow-xl">
         <div className="flex items-start gap-4">
           <div
             className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${accent.chip}`}
@@ -145,14 +146,14 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             <h1 className="text-lg font-semibold">
               {t("dbUpgrade.title", "数据库版本过新")}
             </h1>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-fg-2">
               {t(
                 "dbUpgrade.description",
-                "当前客户端不兼容该数据库版本。你的数据不会被删除，请使用支持该数据库版本的客户端。",
+                "当前数据库由更新版本的 puppyrouter app 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
               )}
             </p>
             {dbVersion != null && supportedVersion != null && (
-              <p className="pt-0.5 text-xs text-muted-foreground tabular-nums">
+              <p className="pt-0.5 text-xs text-fg-2 tabular-nums">
                 {t("dbUpgrade.versionInfo", {
                   db: dbVersion,
                   supported: supportedVersion,
@@ -164,7 +165,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         </div>
 
         {/* 错误详情 / 数据库路径 */}
-        <div className="space-y-1 rounded-lg border border-border/50 bg-muted/40 p-3 text-xs text-muted-foreground">
+        <div className="space-y-1 rounded-lg border border-border/50 bg-subtle p-3 text-xs text-fg-2">
           {payload.error && (
             <p className="break-words font-mono">{payload.error}</p>
           )}
@@ -176,14 +177,14 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         </div>
 
         {phase === "checking" && (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <p className="flex items-center gap-2 text-sm text-fg-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            {t("dbUpgrade.checking", "正在检查数据库兼容性…")}
+            {t("dbUpgrade.checking", "正在检查可用更新…")}
           </p>
         )}
 
         {phase === "upgradable" && availableVersion && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-fg-2">
             {t("dbUpgrade.updateAvailable", {
               version: availableVersion,
               defaultValue: "发现新版本 v{{version}}，升级后即可继续使用。",
@@ -192,7 +193,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         )}
 
         {phase === "incompatible" && (
-          <div className="space-y-2 rounded-lg border border-red-300/60 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-300">
+          <div className="space-y-2 rounded-lg border border-transparent bg-danger-soft p-3 text-sm text-danger-text">
             <p className="font-medium">
               {t("dbUpgrade.incompatibleTitle", "升级也无法解决")}
             </p>
@@ -201,7 +202,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
                 db: dbVersion,
                 supported: supportedVersion,
                 defaultValue:
-                  "数据库版本（v{{db}}）高于本应用支持的版本（v{{supported}}）。当前官网更新源没有可用新版，请换用支持该数据库版本的客户端，或先备份后处理数据文件。",
+                  "你已是最新版本，但数据库版本（v{{db}}）仍高于本应用支持的版本（v{{supported}}）。该数据库可能由第三方客户端或更高版本创建，升级当前官方应用也无法兼容。",
               })}
             </p>
           </div>
@@ -210,28 +211,26 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         {phase === "updating" && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-muted-foreground">
+              <span className="flex items-center gap-2 text-fg-2">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 {percent === null
                   ? t("dbUpgrade.preparing", "正在准备更新…")
                   : t("dbUpgrade.downloading", "正在下载更新…")}
               </span>
               {percent !== null && (
-                <span className="tabular-nums text-muted-foreground">
-                  {percent}%
-                </span>
+                <span className="tabular-nums text-fg-2">{percent}%</span>
               )}
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-subtle">
               <div
-                className={`h-full rounded-full bg-primary transition-all duration-200 ${
+                className={`h-full rounded-full bg-warning transition-all duration-200 ${
                   percent === null ? "w-1/3 animate-pulse" : ""
                 }`}
                 style={percent === null ? undefined : { width: `${percent}%` }}
               />
             </div>
             {progress && (
-              <p className="text-right text-xs tabular-nums text-muted-foreground">
+              <p className="text-right text-xs tabular-nums text-fg-2">
                 {fmtMB(progress.downloaded)} MB
                 {progress.total ? ` / ${fmtMB(progress.total)} MB` : ""}
               </p>
@@ -240,7 +239,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         )}
 
         {phase === "error" && errorMsg && (
-          <p className="rounded-lg border border-red-300/60 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-300">
+          <p className="rounded-lg border border-transparent bg-danger-soft p-3 text-sm text-danger-text">
             {errorMsg}
           </p>
         )}
@@ -249,7 +248,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           {(phase === "upgradable" || phase === "error") && (
             <Button
               onClick={startUpgrade}
-              className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+              className="gap-2 bg-warning text-white hover:bg-warning"
             >
               {phase === "error" ? (
                 <RefreshCw className="h-4 w-4" />
@@ -267,7 +266,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
               variant="outline"
               className="gap-2"
               onClick={() =>
-                void invoke("open_external", { url: DOWNLOAD_URL })
+                void invoke("open_external", { url: RELEASES_URL })
               }
             >
               <ExternalLink className="h-4 w-4" />
@@ -287,7 +286,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
 
           <Button
             variant="ghost"
-            className="ml-auto text-muted-foreground"
+            className="ml-auto text-fg-2"
             onClick={() => void exit(0)}
             disabled={phase === "updating"}
           >
@@ -298,5 +297,3 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
     </div>
   );
 }
-
-export default DatabaseUpgrade;

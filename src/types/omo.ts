@@ -29,7 +29,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Sisyphus",
     descKey: "omo.agentDesc.sisyphus",
     tooltipKey: "omo.agentTooltip.sisyphus",
-    recommended: "claude-opus-4-8",
+    recommended: "claude-opus-5",
     group: "main",
   },
   {
@@ -37,7 +37,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Hephaestus",
     descKey: "omo.agentDesc.hephaestus",
     tooltipKey: "omo.agentTooltip.hephaestus",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "main",
   },
   {
@@ -45,7 +45,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Prometheus",
     descKey: "omo.agentDesc.prometheus",
     tooltipKey: "omo.agentTooltip.prometheus",
-    recommended: "claude-opus-4-8",
+    recommended: "claude-opus-5",
     group: "main",
   },
   {
@@ -61,7 +61,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Oracle",
     descKey: "omo.agentDesc.oracle",
     tooltipKey: "omo.agentTooltip.oracle",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "sub",
   },
   {
@@ -85,7 +85,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Multimodal-Looker",
     descKey: "omo.agentDesc.multimodalLooker",
     tooltipKey: "omo.agentTooltip.multimodalLooker",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "sub",
   },
   {
@@ -101,7 +101,7 @@ export const OMO_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Momus",
     descKey: "omo.agentDesc.momus",
     tooltipKey: "omo.agentTooltip.momus",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "sub",
   },
   {
@@ -120,28 +120,28 @@ export const OMO_BUILTIN_CATEGORIES: OmoCategoryDef[] = [
     display: "Visual Engineering",
     descKey: "omo.categoryDesc.visualEngineering",
     tooltipKey: "omo.categoryTooltip.visualEngineering",
-    recommended: "gemini-3.5-flash",
+    recommended: "gemini-3.6-flash",
   },
   {
     key: "ultrabrain",
     display: "Ultrabrain",
     descKey: "omo.categoryDesc.ultrabrain",
     tooltipKey: "omo.categoryTooltip.ultrabrain",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
   },
   {
     key: "deep",
     display: "Deep",
     descKey: "omo.categoryDesc.deep",
     tooltipKey: "omo.categoryTooltip.deep",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
   },
   {
     key: "artistry",
     display: "Artistry",
     descKey: "omo.categoryDesc.artistry",
     tooltipKey: "omo.categoryTooltip.artistry",
-    recommended: "gemini-3.5-flash",
+    recommended: "gemini-3.6-flash",
   },
   {
     key: "quick",
@@ -162,7 +162,7 @@ export const OMO_BUILTIN_CATEGORIES: OmoCategoryDef[] = [
     display: "Unspecified High",
     descKey: "omo.categoryDesc.unspecifiedHigh",
     tooltipKey: "omo.categoryTooltip.unspecifiedHigh",
-    recommended: "claude-opus-4-8",
+    recommended: "claude-opus-5",
   },
   {
     key: "writing",
@@ -172,132 +172,6 @@ export const OMO_BUILTIN_CATEGORIES: OmoCategoryDef[] = [
     recommended: "k2p5",
   },
 ];
-
-export const OMO_DISABLEABLE_AGENTS = [
-  { value: "Prometheus (Planner)", label: "Prometheus (Planner)" },
-  { value: "Atlas", label: "Atlas" },
-  { value: "oracle", label: "Oracle" },
-  { value: "librarian", label: "Librarian" },
-  { value: "explore", label: "Explore" },
-  { value: "multimodal-looker", label: "Multimodal Looker" },
-  { value: "frontend-ui-ux-engineer", label: "Frontend UI/UX Engineer" },
-  { value: "document-writer", label: "Document Writer" },
-  { value: "Sisyphus-Junior", label: "Sisyphus-Junior" },
-  { value: "Metis (Plan Consultant)", label: "Metis (Plan Consultant)" },
-  { value: "Momus (Plan Reviewer)", label: "Momus (Plan Reviewer)" },
-  { value: "OpenCode-Builder", label: "OpenCode-Builder" },
-] as const;
-
-export const OMO_DISABLEABLE_MCPS = [
-  { value: "context7", label: "context7" },
-  { value: "grep_app", label: "grep_app" },
-  { value: "websearch", label: "websearch" },
-] as const;
-
-export const OMO_DISABLEABLE_HOOKS = [
-  { value: "todo-continuation-enforcer", label: "todo-continuation-enforcer" },
-  { value: "context-window-monitor", label: "context-window-monitor" },
-  { value: "session-recovery", label: "session-recovery" },
-  { value: "session-notification", label: "session-notification" },
-  { value: "comment-checker", label: "comment-checker" },
-  { value: "grep-output-truncator", label: "grep-output-truncator" },
-  { value: "tool-output-truncator", label: "tool-output-truncator" },
-  {
-    value: "directory-agents-injector",
-    label: "directory-agents-injector",
-  },
-  {
-    value: "directory-readme-injector",
-    label: "directory-readme-injector",
-  },
-  {
-    value: "empty-task-response-detector",
-    label: "empty-task-response-detector",
-  },
-  { value: "think-mode", label: "think-mode" },
-  {
-    value: "anthropic-context-window-limit-recovery",
-    label: "anthropic-context-window-limit-recovery",
-  },
-  { value: "rules-injector", label: "rules-injector" },
-  { value: "background-notification", label: "background-notification" },
-  { value: "auto-update-checker", label: "auto-update-checker" },
-  { value: "startup-toast", label: "startup-toast" },
-  { value: "keyword-detector", label: "keyword-detector" },
-  { value: "agent-usage-reminder", label: "agent-usage-reminder" },
-  { value: "non-interactive-env", label: "non-interactive-env" },
-  { value: "interactive-bash-session", label: "interactive-bash-session" },
-  {
-    value: "compaction-context-injector",
-    label: "compaction-context-injector",
-  },
-  {
-    value: "thinking-block-validator",
-    label: "thinking-block-validator",
-  },
-  { value: "claude-code-hooks", label: "claude-code-hooks" },
-  { value: "ralph-loop", label: "ralph-loop" },
-  { value: "preemptive-compaction", label: "preemptive-compaction" },
-] as const;
-
-export const OMO_DISABLEABLE_SKILLS = [
-  { value: "playwright", label: "playwright" },
-  { value: "agent-browser", label: "agent-browser" },
-  { value: "git-master", label: "git-master" },
-] as const;
-
-export const OMO_DEFAULT_SCHEMA_URL =
-  "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/oh-my-opencode.schema.json";
-
-export const OMO_SISYPHUS_AGENT_PLACEHOLDER = `{
-  "disabled": false,
-  "default_builder_enabled": false,
-  "planner_enabled": true,
-  "replace_plan": true
-}`;
-
-export const OMO_LSP_PLACEHOLDER = `{
-  "typescript-language-server": {
-    "command": ["typescript-language-server", "--stdio"],
-    "extensions": [".ts", ".tsx"],
-    "priority": 10
-  },
-  "pylsp": {
-    "disabled": true
-  }
-}`;
-
-export const OMO_EXPERIMENTAL_PLACEHOLDER = `{
-  "truncate_all_tool_outputs": true,
-  "aggressive_truncation": true,
-  "auto_resume": true
-}`;
-
-export const OMO_BACKGROUND_TASK_PLACEHOLDER = `{
-  "defaultConcurrency": 5,
-  "providerConcurrency": {
-    "anthropic": 3,
-    "openai": 5,
-    "google": 10
-  },
-  "modelConcurrency": {
-    "anthropic/claude-opus-4-8": 2,
-    "google/gemini-3.5-flash": 10
-  }
-}`;
-
-export const OMO_BROWSER_AUTOMATION_PLACEHOLDER = `{
-  "provider": "playwright"
-}`;
-
-export const OMO_CLAUDE_CODE_PLACEHOLDER = `{
-  "mcp": true,
-  "commands": true,
-  "skills": true,
-  "agents": true,
-  "hooks": true,
-  "plugins": true
-}`;
 
 export function parseOmoOtherFieldsObject(
   raw: string,
@@ -320,7 +194,7 @@ export const OMO_SLIM_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Orchestrator",
     descKey: "omo.slimAgentDesc.orchestrator",
     tooltipKey: "omo.slimAgentTooltip.orchestrator",
-    recommended: "claude-opus-4-8",
+    recommended: "claude-opus-5",
     group: "main",
   },
   {
@@ -328,7 +202,7 @@ export const OMO_SLIM_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Oracle",
     descKey: "omo.slimAgentDesc.oracle",
     tooltipKey: "omo.slimAgentTooltip.oracle",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "sub",
   },
   {
@@ -336,7 +210,7 @@ export const OMO_SLIM_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Librarian",
     descKey: "omo.slimAgentDesc.librarian",
     tooltipKey: "omo.slimAgentTooltip.librarian",
-    recommended: "gemini-3.5-flash",
+    recommended: "gemini-3.6-flash",
     group: "sub",
   },
   {
@@ -352,7 +226,7 @@ export const OMO_SLIM_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Designer",
     descKey: "omo.slimAgentDesc.designer",
     tooltipKey: "omo.slimAgentTooltip.designer",
-    recommended: "gemini-3.5-flash",
+    recommended: "gemini-3.6-flash",
     group: "sub",
   },
   {
@@ -360,7 +234,7 @@ export const OMO_SLIM_BUILTIN_AGENTS: OmoAgentDef[] = [
     display: "Fixer",
     descKey: "omo.slimAgentDesc.fixer",
     tooltipKey: "omo.slimAgentTooltip.fixer",
-    recommended: "gpt-5.5",
+    recommended: "gpt-5.6-sol",
     group: "sub",
   },
   {
@@ -382,21 +256,6 @@ export const OMO_SLIM_DISABLEABLE_AGENTS = [
   { value: "fixer", label: "Fixer" },
   { value: "council", label: "Council" },
 ] as const;
-
-export const OMO_SLIM_DISABLEABLE_MCPS = [
-  { value: "context7", label: "context7" },
-  { value: "grep_app", label: "grep_app" },
-  { value: "websearch", label: "websearch" },
-] as const;
-
-export const OMO_SLIM_DISABLEABLE_HOOKS = [
-  { value: "auto-update-checker", label: "auto-update-checker" },
-  { value: "phase-reminder", label: "phase-reminder" },
-  { value: "post-read-nudge", label: "post-read-nudge" },
-] as const;
-
-export const OMO_SLIM_DEFAULT_SCHEMA_URL =
-  "https://raw.githubusercontent.com/alvinunreal/oh-my-opencode-slim/master/assets/oh-my-opencode-slim.schema.json";
 
 export function buildOmoProfilePreview(
   agents: Record<string, Record<string, unknown>>,
@@ -421,14 +280,4 @@ export function buildOmoProfilePreview(
   } catch {}
 
   return result;
-}
-
-/** @deprecated Use buildOmoProfilePreview with options.slim=true */
-export function buildOmoSlimProfilePreview(
-  agents: Record<string, Record<string, unknown>>,
-  otherFieldsStr: string,
-): Record<string, unknown> {
-  return buildOmoProfilePreview(agents, undefined, otherFieldsStr, {
-    slim: true,
-  });
 }

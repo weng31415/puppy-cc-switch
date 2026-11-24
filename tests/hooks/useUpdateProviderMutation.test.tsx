@@ -83,7 +83,12 @@ describe("useUpdateProviderMutation", () => {
       await result.current.mutateAsync({ provider });
     });
 
-    expect(apiMocks.update).toHaveBeenCalledWith(provider, "codex", undefined);
+    expect(apiMocks.update).toHaveBeenCalledWith(
+      provider,
+      "codex",
+      undefined,
+      undefined,
+    );
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["providers", "codex"],
     });
@@ -113,6 +118,7 @@ describe("useUpdateProviderMutation", () => {
       provider,
       "openclaw",
       "provider-old",
+      undefined,
     );
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: usageKeys.script("provider-new", "openclaw"),
@@ -122,6 +128,69 @@ describe("useUpdateProviderMutation", () => {
     });
     expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: usageKeys.all,
+    });
+  });
+
+  it("refreshes Pi provider caches even when an update fails", async () => {
+    apiMocks.update.mockRejectedValueOnce(new Error("conflict"));
+    const { wrapper, invalidateSpy } = createWrapper();
+    const provider = createProvider({ id: "pi-provider" });
+    const { result } = renderHook(() => useUpdateProviderMutation("pi"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync({ provider })).rejects.toThrow(
+        "conflict",
+      );
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["pi", "currentState"],
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["providers", "pi"],
+    });
+  });
+
+  // 保存当前绑号的 Grok 官方卡可能改写 CLI 登录：成功失败都重读授权中心和 CLI 额度
+  it.each([false, true])(
+    "invalidates the xAI account list and Grok CLI quota after a grokbuild update (failed=%s)",
+    async (fails) => {
+      if (fails) apiMocks.update.mockRejectedValue(new Error("boom"));
+      const { wrapper, invalidateSpy } = createWrapper();
+      const { result } = renderHook(
+        () => useUpdateProviderMutation("grokbuild"),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current
+          .mutateAsync({ provider: createProvider() })
+          .catch(() => undefined);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["managed-auth-status", "xai_oauth"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["subscription", "quota", "grokbuild"],
+      });
+    },
+  );
+
+  it("leaves the Grok caches alone for other apps", async () => {
+    const { wrapper, invalidateSpy } = createWrapper();
+    const { result } = renderHook(() => useUpdateProviderMutation("claude"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ provider: createProvider() });
+    });
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ["managed-auth-status", "xai_oauth"],
     });
   });
 });
