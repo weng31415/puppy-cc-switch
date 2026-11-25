@@ -57,7 +57,7 @@ pub(crate) const ROW_TOP_FIELDS: &[&str] = &[
     "plan_mode_reasoning_effort",
 ];
 
-fn is_built_in_id(id: &str) -> bool {
+pub(crate) fn is_built_in_id(id: &str) -> bool {
     BUILT_IN_IDS.contains(&id)
 }
 
@@ -262,7 +262,7 @@ fn declares_authorization_header(item: Option<&Item>) -> bool {
 
 /// 表自己带的凭据来源。`requires_openai_auth = true` 时 `Authorization` 头不算：官方
 /// 登录会在头之后覆盖它（Codex 0.149），只有注入的 Key 能挡住回退。
-fn declared_auth(table: &dyn TableLike) -> Option<RouteAuth> {
+pub(crate) fn declared_auth(table: &dyn TableLike) -> Option<RouteAuth> {
     if table.get("env_key").is_some() {
         return Some(RouteAuth::EnvKey);
     }

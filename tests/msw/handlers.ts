@@ -53,8 +53,11 @@ export const handlers = [
       );
     },
   ),
-  http.post(`${TAURI_ENDPOINT}/read_puppyrouter_native_provider`, () =>
-    success(null),
+  http.post(`${TAURI_ENDPOINT}/diagnose_puppyrouter_config`, () =>
+    success({ scope: "staged", issues: ["ProviderNotCurrent"] }),
+  ),
+  http.post(`${TAURI_ENDPOINT}/reapply_puppyrouter_config`, () =>
+    success(true),
   ),
   http.post(`${TAURI_ENDPOINT}/cancel_puppyrouter_account_login`, () =>
     success(null),

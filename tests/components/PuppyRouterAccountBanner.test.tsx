@@ -9,7 +9,6 @@ import {
   type PuppyRouterApiKey,
 } from "@/lib/api";
 import * as clipboard from "@/lib/clipboard";
-import { proxyApi } from "@/lib/api/proxy";
 import { renderWithQueryClient } from "../utils/testQueryClient";
 
 const signedIn = {
@@ -154,11 +153,9 @@ describe("PuppyRouter account interaction", () => {
         keys: [key],
         total: 1,
       });
-      vi.spyOn(proxyApi, "getAppMode").mockResolvedValue({
-        mode: routed ? "route" : "direct",
-        attached: routed,
-        routeProviderId: "universal-codex-puppyrouter",
-        directProviderId: "codex-official",
+      vi.spyOn(puppyrouterAccountApi, "diagnoseConfig").mockResolvedValue({
+        scope: routed ? "proxy" : "staged",
+        issues: routed ? [] : ["ProviderNotCurrent"],
       });
       const apply = vi
         .spyOn(puppyrouterAccountApi, "applyApiKey")
@@ -180,6 +177,139 @@ describe("PuppyRouter account interaction", () => {
       );
       expect(apply).toHaveBeenCalledWith(key.id, "codex");
       expect(change).not.toHaveBeenCalled();
+    },
+  );
+
+  function signInForDiagnostics() {
+    vi.spyOn(puppyrouterAccountApi, "getStatus").mockResolvedValue(signedIn);
+    vi.spyOn(puppyrouterAccountApi, "listGroups").mockResolvedValue([]);
+    vi.spyOn(puppyrouterAccountApi, "getBalance").mockReturnValue(pending());
+    return vi.spyOn(puppyrouterAccountApi, "listApiKeys").mockResolvedValue({
+      selectedTokenId: key.id,
+      keys: [{ ...key, providerKeyMatch: true }],
+      total: 1,
+    });
+  }
+
+  it.each(["direct", "native", "launch", "proxy"] as const)(
+    "reports only what was checked for %s",
+    async (scope) => {
+      signInForDiagnostics();
+      vi.spyOn(puppyrouterAccountApi, "diagnoseConfig").mockResolvedValue({
+        scope,
+        issues: [],
+      });
+      renderWithQueryClient(<PuppyRouterAccountBanner activeApp="codex" />);
+      await click("puppyrouterAccount.diagnose");
+      expect(
+        await screen.findByText("puppyrouterAccount.diagnoseScope." + scope),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", {
+          name: "puppyrouterAccount.diagnoseFixLiveConfig",
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("keeps native findings visible when cloud verification is unavailable and never proposes rewriting a route", async () => {
+    signInForDiagnostics().mockResolvedValue({
+      keys: [{ ...key, providerKeyMatch: null }],
+      total: 1,
+      selectedTokenId: key.id,
+    });
+    vi.spyOn(puppyrouterAccountApi, "diagnoseConfig").mockResolvedValue({
+      scope: "proxy",
+      issues: ["ProxyConfigMismatch"],
+    });
+    const write = vi.spyOn(providersApi, "switch");
+    renderWithQueryClient(<PuppyRouterAccountBanner activeApp="codex" />);
+    await click("puppyrouterAccount.diagnose");
+    expect(
+      await screen.findByText("puppyrouterAccount.diagnoseCloudUnverified"),
+    ).toBeVisible();
+    expect(
+      screen.getByText("puppyrouterAccount.diagnoseProxyConfigMismatch"),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", {
+        name: "puppyrouterAccount.diagnoseFixLiveConfig",
+      }),
+    ).toBeNull();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the mode before repairing and preserves a newly selected route", async () => {
+    signInForDiagnostics();
+    const read = vi
+      .spyOn(puppyrouterAccountApi, "diagnoseConfig")
+      .mockResolvedValue({ scope: "direct", issues: ["KeyMismatch"] });
+    const write = vi.spyOn(providersApi, "switch");
+    const reapply = vi.spyOn(puppyrouterAccountApi, "reapplyConfig");
+    renderWithQueryClient(<PuppyRouterAccountBanner activeApp="codex" />);
+    await click("puppyrouterAccount.diagnose");
+    await screen.findByText("puppyrouterAccount.diagnoseKeyMismatch");
+    read.mockResolvedValue({ scope: "staged", issues: ["ProxyNotSelected"] });
+    await click("puppyrouterAccount.diagnoseFixLiveConfig");
+    expect(
+      await screen.findByText("puppyrouterAccount.diagnoseProxyNotSelected"),
+    ).toBeVisible();
+    expect(write).not.toHaveBeenCalled();
+    expect(reapply).not.toHaveBeenCalled();
+  });
+
+  it("repairs the active client from its saved card without switching its supplier", async () => {
+    signInForDiagnostics();
+    const read = vi
+      .spyOn(puppyrouterAccountApi, "diagnoseConfig")
+      .mockResolvedValue({ scope: "direct", issues: ["KeyMismatch"] });
+    const reapply = vi
+      .spyOn(puppyrouterAccountApi, "reapplyConfig")
+      .mockImplementation(async () => {
+        read.mockResolvedValue({ scope: "direct", issues: [] });
+        return true;
+      });
+    const change = vi.spyOn(providersApi, "switch");
+    renderWithQueryClient(<PuppyRouterAccountBanner activeApp="codex" />);
+    await click("puppyrouterAccount.diagnose");
+    await click("puppyrouterAccount.diagnoseFixLiveConfig");
+    expect(
+      await screen.findByText("puppyrouterAccount.diagnoseHealthy"),
+    ).toBeVisible();
+    expect(reapply).toHaveBeenCalledWith("codex");
+    expect(change).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "disabled"] as const)(
+    "identifies a %s cloud selection even when the client matches its saved card",
+    async (state) => {
+      signInForDiagnostics().mockResolvedValue({
+        selectedTokenId: key.id,
+        total: 1,
+        keys: [
+          {
+            ...key,
+            id: state === "missing" ? key.id + 1 : key.id,
+            usable: state === "missing",
+            providerKeyMatch: true,
+          },
+        ],
+      });
+      vi.spyOn(puppyrouterAccountApi, "diagnoseConfig").mockResolvedValue({
+        scope: "direct",
+        issues: [],
+      });
+      renderWithQueryClient(<PuppyRouterAccountBanner activeApp="codex" />);
+      await click("puppyrouterAccount.diagnose");
+      expect(
+        await screen.findByText(
+          "puppyrouterAccount.diagnoseCloudKey" +
+            (state === "missing" ? "Missing" : "Unusable"),
+        ),
+      ).toBeVisible();
+      expect(
+        screen.queryByText("puppyrouterAccount.diagnoseHealthy"),
+      ).toBeNull();
     },
   );
 });

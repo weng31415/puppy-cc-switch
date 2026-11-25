@@ -19,7 +19,7 @@ pub(crate) fn is_official(provider: &Provider) -> bool {
             == Some("google-official")
 }
 
-fn live_settings(provider: &Provider) -> Result<Value, AppError> {
+pub(super) fn live_settings(provider: &Provider) -> Result<Value, AppError> {
     crate::gemini_config::validate_gemini_settings(&provider.settings_config)?;
     let mut settings = provider.settings_config.clone();
     if is_official(provider) {

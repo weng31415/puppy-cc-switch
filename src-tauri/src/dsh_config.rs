@@ -674,6 +674,48 @@ pub(crate) fn get_providers() -> Result<IndexMap<String, Value>, AppError> {
     Ok(merged)
 }
 
+/// Read every target of a provider write, including a missing copy or an unreadable profile.
+pub(crate) fn provider_copies_for_diagnostics(id: &str) -> Result<Vec<Option<Value>>, AppError> {
+    ensure_providers_not_shadowed(&home_patch_path())?;
+    let paths = target_paths();
+    let texts = paths
+        .iter()
+        .map(|p| read_text(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_provider_copies_agree(&paths, authoritative_index(&paths), &texts, id)?;
+    let credentials = credential_document(&credentials_path())?;
+    texts
+        .iter()
+        .map(|text| {
+            let provider = decode_provider_entries(text, &credentials)?.shift_remove(id);
+            if provider.is_some() {
+                for entry in entries(text)? {
+                    if entry["disabled"].as_bool() == Some(true) {
+                        match entry["id"].as_str() {
+                            Some("llm-pi-ai") => {
+                                return Err(AppError::localized(
+                                    "dsh.provider_plugin_disabled",
+                                    "供应商插件在此配置档中已禁用",
+                                    "The provider plugin is disabled in this profile",
+                                ))
+                            }
+                            Some("credentials") => {
+                                return Err(AppError::localized(
+                                    "dsh.credentials_disabled",
+                                    "此配置档已禁用凭据存储",
+                                    "The credential store is disabled in this profile",
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(provider)
+        })
+        .collect()
+}
+
 /// An `llm-pi-ai` config in the home patch is applied after every profile, so providers puppyrouter app
 /// writes into the profiles would never take effect.
 fn ensure_providers_not_shadowed(home: &Path) -> Result<(), AppError> {
@@ -700,8 +742,14 @@ fn get_providers_from(
     path: &Path,
     credentials_path: &Path,
 ) -> Result<IndexMap<String, Value>, AppError> {
-    let entry = provider_entry(&read_text(path)?)?;
-    let credentials = credential_document(credentials_path)?;
+    decode_provider_entries(&read_text(path)?, &credential_document(credentials_path)?)
+}
+
+fn decode_provider_entries(
+    text: &str,
+    credentials: &Yaml,
+) -> Result<IndexMap<String, Value>, AppError> {
+    let entry = provider_entry(text)?;
     let mut result = IndexMap::new();
     for (key, native) in entry["config"]["providers"].as_mapping().unwrap() {
         let id = key

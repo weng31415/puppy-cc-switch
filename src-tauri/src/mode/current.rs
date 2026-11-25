@@ -77,15 +77,35 @@ pub fn provider_in_use(db: &Database, app: &AppType) -> Result<Option<Provider>,
 /// 代理模式下代理路由那一家的 id；不在代理模式、或者路由那家在库里不存在（按直连处理）
 /// 时为 `None`。只看在不在、不解析那一行：它读不出来时指针照样指着它。
 fn proxy_route_id(db: &Database, app: &AppType) -> Result<Option<String>, AppError> {
-    let mode = mode_state(app);
+    valid_proxy_route(db, app, &mode_state(app))
+}
+
+/// Resolve the same effective provider for a read-only check, including legacy
+/// device state, without repairing a stale preference while the user inspects it.
+pub(crate) fn inspect_provider_id(
+    db: &Database,
+    app: &AppType,
+    mode: &ModeState,
+) -> Result<Option<String>, AppError> {
+    if let Some(route) = valid_proxy_route(db, app, mode)? {
+        return Ok(Some(route));
+    }
+    crate::settings::resolve_current_provider(db, app, false)
+}
+
+fn valid_proxy_route(
+    db: &Database,
+    app: &AppType,
+    mode: &ModeState,
+) -> Result<Option<String>, AppError> {
     if !mode.is_proxy() {
         return Ok(None);
     }
-    let Some(route) = mode.proxy_route else {
+    let Some(route) = mode.proxy_route.as_deref() else {
         return Ok(None);
     };
-    if db.provider_exists(&route, app)? {
-        return Ok(Some(route));
+    if db.provider_exists(route, app)? {
+        return Ok(Some(route.to_string()));
     }
     log::warn!(
         "{} 的代理路由 {route} 在数据库中不存在，按直连指针处理",

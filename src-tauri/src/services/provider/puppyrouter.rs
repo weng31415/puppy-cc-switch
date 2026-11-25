@@ -6,6 +6,8 @@ use super::*;
 use crate::provider::{ClaudeDesktopMode, UniversalProvider, UniversalProviderApps};
 use serde_json::json;
 
+pub(crate) mod diagnostics;
+
 pub(crate) const BASE_URL: &str = "https://puppyrouter.com";
 pub(crate) const UNIVERSAL_ID: &str = "puppyrouter";
 
@@ -264,6 +266,24 @@ pub(crate) fn with_api_key(
         AppType::OpenClaw | AppType::Pi | AppType::Omp => {
             set_path(settings, &["apiKey"], key_value)?;
             set_path(settings, &["baseUrl"], base)?;
+            // A model-level credential or endpoint otherwise overrides this cloud card.
+            if matches!(app, AppType::Pi | AppType::Omp) {
+                let clear = |model: &mut Value| {
+                    if let Some(model) = model.as_object_mut() {
+                        model.remove("apiKey");
+                        model.remove("baseUrl");
+                    }
+                };
+                if let Some(models) = settings.get_mut("models").and_then(Value::as_array_mut) {
+                    models.iter_mut().for_each(clear);
+                }
+                if let Some(models) = settings
+                    .get_mut("modelOverrides")
+                    .and_then(Value::as_object_mut)
+                {
+                    models.values_mut().for_each(clear);
+                }
+            }
         }
         AppType::WorkBuddy => {
             set_path(settings, &["apiKey"], key_value)?;

@@ -1,9 +1,3 @@
-import { appHas } from "@/config/appSpecs";
-import { proxyApi } from "@/lib/api/proxy";
-import { extractCodexBaseUrl } from "@/utils/codexConfigUtils";
-import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
-const extractGrokBuildApiKey = (text: string) =>
-  parseGrokBuildConfig(text).apiKey;
 import { APP_IDS } from "@/config/appSpecs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -39,7 +33,7 @@ import {
   type PuppyRouterApiKey,
   type PuppyRouterApiKeyList,
   type PuppyRouterLoginStart,
-  vscodeApi,
+  type PuppyRouterConfigReport,
 } from "@/lib/api";
 import {
   clearPuppyRouterAccountCache,
@@ -60,18 +54,11 @@ import {
   formatQuotaForDisplay,
 } from "@/utils/displayCurrency";
 import { APP_ICON_MAP } from "@/config/appConfig";
-import {
-  isPuppyRouterProvider,
-  PUPPYROUTER_PROVIDER_IDS,
-} from "@/utils/lockedProviders";
+import { PUPPYROUTER_PROVIDER_IDS } from "@/utils/lockedProviders";
 import {
   needsClientRestart,
   routeSwitchNotification,
 } from "@/utils/routeSwitchNotification";
-import { parse as parseToml } from "smol-toml";
-import { normalizeTomlText } from "@/utils/textNormalization";
-import { getApiKeyFromConfig } from "@/utils/providerConfigUtils";
-import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -97,7 +84,7 @@ const AUTO_APPLY_APP_IDS: AppId[] = [...APP_IDS];
 const MANUAL_ONLY_APP_IDS: AppId[] = [];
 const PUPPYROUTER_WALLET_URL = "https://puppyrouter.com/console/topup";
 
-type DiagnoseFixAction = "cloud" | "live";
+type DiagnoseFixAction = "cloud" | "live" | "enable";
 
 interface DiagnoseIssue {
   id: string;
@@ -106,11 +93,73 @@ interface DiagnoseIssue {
 }
 
 interface DiagnoseResult {
-  appLabel: string;
-  providerId?: string;
+  app: AppId;
+  scope: PuppyRouterConfigReport["scope"];
   selectedTokenId?: number;
   issues: DiagnoseIssue[];
-  scope?: string;
+}
+
+function localFix(
+  issue: PuppyRouterConfigReport["issues"][number],
+  { scope, issues }: PuppyRouterConfigReport,
+): DiagnoseFixAction | undefined {
+  if (
+    issues.some(
+      (id) =>
+        id === "SavedConfigInvalid" ||
+        id === "ExternalAuth" ||
+        id === "NativeProfileConflict" ||
+        id === "NativeDisabled" ||
+        id === "ReadFailed",
+    )
+  )
+    return;
+  if (issue === "ProviderNotCurrent" || issue === "NativeMissing")
+    return "enable";
+  if (scope !== "direct" && scope !== "native") return;
+  switch (issue) {
+    case "EndpointMismatch":
+    case "KeyMismatch":
+    case "KeyMissing":
+    case "CodexProviderTableMissing":
+    case "CodexWireApiNotResponses":
+    case "AuthSource":
+    case "DesktopProfile":
+    case "GeminiAuthMode":
+    case "ModelConfigMismatch":
+      return "live";
+  }
+}
+
+function keyUsageFor(report?: PuppyRouterConfigReport) {
+  if (!report) return;
+  if (
+    report.issues.length === 0 ||
+    (report.scope === "staged" &&
+      report.issues.every(
+        (issue) =>
+          issue === "ProviderNotCurrent" ||
+          issue === "NativeMissing" ||
+          issue === "ProxyNotSelected",
+      ))
+  )
+    return report.scope;
+}
+
+function cloudIssue(
+  list: PuppyRouterApiKeyList,
+): { id: string; fixAction?: DiagnoseFixAction } | undefined {
+  const selected = list.keys.find((key) => key.id === list.selectedTokenId);
+  if (list.selectedTokenId != null && !selected)
+    return { id: "CloudKeyMissing" };
+  const candidates = selected ? [selected] : list.keys;
+  if (selected && !selected.usable) return { id: "CloudKeyUnusable" };
+  if (candidates.some((key) => key.providerKeyMatch && key.usable)) return;
+  if (candidates.some((key) => key.providerKeyMatch))
+    return { id: "CloudKeyUnusable" };
+  if (candidates.some((key) => key.providerKeyMatch == null))
+    return { id: "CloudUnverified" };
+  return { id: "CloudKeyMismatch", fixAction: selected ? "cloud" : undefined };
 }
 
 function keyStatusLabel(t: TFunction, status: number) {
@@ -128,267 +177,17 @@ function keyStatusLabel(t: TFunction, status: number) {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === "object" && value !== null;
-}
-
-function readStringPath(value: unknown, path: string[]): string {
-  let current: unknown = value;
-  for (const key of path) {
-    if (!isRecord(current)) return "";
-    current = current[key];
-  }
-  return typeof current === "string" ? current.trim() : "";
-}
-
-function normalizeUrl(value: string) {
-  return value.trim().replace(/\/+$/, "");
-}
-
-function sameNonEmptyString(a: string, b: string) {
-  return Boolean(a && b && a === b);
-}
-
-function sameUrl(a: string, b: string) {
-  return Boolean(a && b && normalizeUrl(a) === normalizeUrl(b));
-}
-
-function isPuppyRouterUrl(value: string) {
-  if (!value) return false;
-  try {
-    const host = new URL(value).hostname.replace(/^www\./, "");
-    return host === "puppyrouter.com";
-  } catch {
-    return false;
-  }
-}
-
-function resolveOpenCodeProviderSettings(
-  settings: unknown,
-  providerId?: string,
-): unknown {
-  if (!providerId || !isRecord(settings)) return settings;
-  for (const providers of [settings.providers, settings.provider]) {
-    if (isRecord(providers) && isRecord(providers[providerId]))
-      return providers[providerId];
-  }
-  return settings;
-}
-
-const CODEX_RESERVED_PROVIDER_IDS = new Set([
-  "amazon-bedrock",
-  "openai",
-  "ollama",
-  "lmstudio",
-  "oss",
-  "ollama-chat",
-]);
-
-function hasAuthorizationHeader(headers: unknown): boolean {
-  if (!isRecord(headers)) return false;
-  return Object.keys(headers).some(
-    (key) => key.toLowerCase() === "authorization",
-  );
-}
-
-// Mirrors codex_config::codex_provider_table_declares_auth — a provider table
-// that carries its own credential source must not be force-normalized.
-function codexTableDeclaresAuth(table: Record<string, any>): boolean {
-  if (table.auth != null || table.aws != null || table.env_key != null) {
-    return true;
-  }
-  if (table.requires_openai_auth === true) return false;
-  return (
-    hasAuthorizationHeader(table.http_headers) ||
-    hasAuthorizationHeader(table.env_http_headers)
-  );
-}
-
-function collectCodexLiveConfigIssues(
-  configText: string,
-  t: TFunction,
-): DiagnoseIssue[] {
-  const text = normalizeTomlText(configText);
-  if (!text) return [];
-
-  let doc: Record<string, any>;
-  try {
-    doc = parseToml(text) as Record<string, any>;
-  } catch {
-    return [
-      {
-        id: "codex-config-invalid",
-        message: t("puppyrouterAccount.diagnoseCodexConfigInvalid"),
-        fixAction: "live",
-      },
-    ];
-  }
-
-  const issues: DiagnoseIssue[] = [];
-  const modelProvider =
-    typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
-  if (
-    !modelProvider ||
-    CODEX_RESERVED_PROVIDER_IDS.has(modelProvider.toLowerCase())
-  ) {
-    return issues;
-  }
-
-  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-  const table = providers[modelProvider];
-  if (!isRecord(table)) {
-    issues.push({
-      id: "codex-provider-table-missing",
-      message: t("puppyrouterAccount.diagnoseCodexProviderTableMissing"),
-      fixAction: "live",
-    });
-    return issues;
-  }
-
-  if (table.wire_api !== "responses") {
-    issues.push({
-      id: "codex-wire-api",
-      message: t("puppyrouterAccount.diagnoseCodexWireApiNotResponses"),
-      fixAction: "live",
-    });
-  }
-
-  const declaresAuth = codexTableDeclaresAuth(table);
-  const hasBearer =
-    typeof table.experimental_bearer_token === "string" &&
-    table.experimental_bearer_token.trim() !== "";
-  const requiresAuth = table.requires_openai_auth === true;
-
-  if (!declaresAuth && !hasBearer && !requiresAuth) {
-    issues.push({
-      id: "codex-auth-missing",
-      message: t("puppyrouterAccount.diagnoseCodexAuthMissing"),
-      fixAction: "live",
-    });
-  } else if (!declaresAuth && !requiresAuth) {
-    issues.push({
-      id: "codex-requires-auth-missing",
-      message: t("puppyrouterAccount.diagnoseCodexRequiresAuthMissing"),
-      fixAction: "live",
-    });
-  }
-
-  return issues;
-}
-
-function readBaseUrlFromSettings(
-  appId: AppId,
-  settings: unknown,
-  providerId?: string,
-) {
-  if (appId === "codex") {
-    return extractCodexBaseUrl(readStringPath(settings, ["config"])) ?? "";
-  }
-  if (appId === "gemini" || appId === "agy") {
-    return readStringPath(settings, ["env", "GOOGLE_GEMINI_BASE_URL"]);
-  }
-  if (appId === "grokbuild") {
-    return extractGrokBuildBaseUrl(readStringPath(settings, ["config"]));
-  }
-  if (appId === "opencode") {
-    const entry = resolveOpenCodeProviderSettings(settings, providerId);
-    return readStringPath(entry, [
-      isRecord(entry) && "settings" in entry ? "settings" : "options",
-      "baseURL",
-    ]);
-  }
-  if (["mcode", "dsh"].includes(appId))
-    return readStringPath(settings, ["options", "baseURL"]);
-  if (["openclaw", "pi", "omp"].includes(appId))
-    return readStringPath(settings, ["baseUrl"]);
-  if (appId === "hermes") return readStringPath(settings, ["base_url"]);
-  if (appId === "kimi")
-    return readStringPath(settings, ["provider", "base_url"]);
-  if (appId === "copilot")
-    return readStringPath(settings, ["provider", "baseUrl"]);
-  if (appId === "workbuddy")
-    return readStringPath(settings, ["url"]).replace(
-      /\/chat\/completions\/?$/,
-      "",
-    );
-  return readStringPath(settings, ["env", "ANTHROPIC_BASE_URL"]);
-}
-
-function readApiKeyFromSettings(
-  appId: AppId,
-  settings: unknown,
-  providerId?: string,
-) {
-  if (appId === "opencode") {
-    const entry = resolveOpenCodeProviderSettings(settings, providerId);
-    return readStringPath(entry, [
-      isRecord(entry) && "settings" in entry ? "settings" : "options",
-      "apiKey",
-    ]);
-  }
-  if (appId === "grokbuild") {
-    return extractGrokBuildApiKey(readStringPath(settings, ["config"]));
-  }
-  if (["mcode", "dsh"].includes(appId))
-    return readStringPath(settings, ["options", "apiKey"]);
-  if (["openclaw", "pi", "omp", "workbuddy"].includes(appId))
-    return readStringPath(settings, ["apiKey"]);
-  if (appId === "hermes") return readStringPath(settings, ["api_key"]);
-  if (appId === "kimi")
-    return readStringPath(settings, ["provider", "api_key"]);
-  if (appId === "copilot")
-    return readStringPath(settings, ["provider", "apiKey"]);
-  if (appId === "agy")
-    return readStringPath(settings, ["env", "GEMINI_API_KEY"]);
-  if (!isRecord(settings)) return "";
-  return getApiKeyFromConfig(JSON.stringify(settings), appId);
-}
-
-type KeyUsage = "staged" | "direct" | "native" | "proxy" | "launch";
-
-async function puppyRouterKeyUsage(app: AppId): Promise<KeyUsage> {
-  const id = PUPPYROUTER_PROVIDER_IDS[app];
-  if (app === "agy") return "launch";
-  if (appHas(app, "routeMode")) {
-    const mode = await proxyApi.getAppMode(app);
-    if (mode.mode !== "direct") {
-      if (!mode.attached) return "staged";
-      if (mode.routeProviderId === id) return "proxy";
-      const member =
-        mode.mode === "stack" &&
-        (await proxyApi.getProxyStack(app)).members.some(
-          (row) => row.providerId === id,
-        );
-      return member ? "proxy" : "staged";
-    }
-    if (mode.directProviderId && mode.directProviderId !== id) return "staged";
-  }
-  if (app === "claude-desktop") {
-    return isPuppyRouterUrl(
-      (await providersApi.getClaudeDesktopStatus()).actualBaseUrl ?? "",
-    )
-      ? "direct"
-      : "staged";
-  }
-  const additive = appHas(app, "additive");
-  const live = additive
-    ? await puppyrouterAccountApi.readNativeProvider(app)
-    : await vscodeApi.getLiveProviderSettings(app);
-  if (!isPuppyRouterUrl(readBaseUrlFromSettings(app, live, id)))
-    return "staged";
-  return additive ? "native" : "direct";
-}
-
 export function PuppyRouterAccountBanner({
   activeApp,
 }: PuppyRouterAccountBannerProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const { data: keyUsage } = useQuery({
+  const { data: localConfig } = useQuery({
     queryKey: ["providers", activeApp, "puppyrouterLiveConfig"],
-    queryFn: () => puppyRouterKeyUsage(activeApp),
+    queryFn: () => puppyrouterAccountApi.diagnoseConfig(activeApp),
     retry: false,
   });
+  const keyUsage = keyUsageFor(localConfig);
   const { data: settings } = useSettingsQuery();
   const {
     data: account,
@@ -438,6 +237,16 @@ export function PuppyRouterAccountBanner({
   const [fixingDiagnoseAction, setFixingDiagnoseAction] =
     useState<DiagnoseFixAction | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const diagnoseGeneration = useRef(0);
+  useEffect(() => {
+    setIsDiagnoseOpen(false);
+    setDiagnoseResult(null);
+    setIsDiagnosing(false);
+    setFixingDiagnoseAction(null);
+    return () => {
+      diagnoseGeneration.current++;
+    };
+  }, [activeApp]);
   const activeGrant = useRef<string | null>(null);
   const mounted = useRef(false);
   useEffect(() => {
@@ -756,13 +565,14 @@ export function PuppyRouterAccountBanner({
         queryKey: ["providers", activeApp],
         refetchType: "all",
       });
-      const usage = queryClient.getQueryState<KeyUsage>([
+      const usage = queryClient.getQueryState<PuppyRouterConfigReport>([
         "providers",
         activeApp,
         "puppyrouterLiveConfig",
       ]);
       const app = APP_ICON_MAP[activeApp].label;
-      const scope = usage?.status === "success" ? usage.data : undefined;
+      const scope =
+        usage?.status === "success" ? keyUsageFor(usage.data) : undefined;
       toast.success(
         t("puppyrouterAccount.syncSuccess", { name: result.name, app }),
         {
@@ -835,373 +645,139 @@ export function PuppyRouterAccountBanner({
 
   const handleDiagnosePuppyRouterConfig = async () => {
     if (isDiagnosing) return;
-
-    const providerId = PUPPYROUTER_PROVIDER_IDS[activeApp];
-    if (!providerId || isManualOnlyApp) {
-      setDiagnoseResult({
-        appLabel: APP_ICON_MAP[activeApp].label,
-        issues: [
-          {
-            id: "manual-only",
-            message: t("puppyrouterAccount.diagnoseManualOnly", {
-              app: APP_ICON_MAP[activeApp].label,
-            }),
-          },
-        ],
-      });
-      setIsDiagnoseOpen(true);
-      return;
-    }
-
+    const generation = diagnoseGeneration.current;
+    const app = APP_ICON_MAP[activeApp].label;
     setIsDiagnosing(true);
     try {
-      const providers = await providersApi.getAll(activeApp);
-      const provider = providers[providerId];
-      if (!provider || !isPuppyRouterProvider(provider, activeApp)) {
-        setDiagnoseResult({
-          appLabel: APP_ICON_MAP[activeApp].label,
-          providerId,
-          issues: [
-            {
-              id: "provider-missing",
-              message: t("puppyrouterAccount.diagnoseProviderMissing", {
-                app: APP_ICON_MAP[activeApp].label,
-              }),
-            },
-          ],
-        });
-        setIsDiagnoseOpen(true);
+      const [local, cloud] = await Promise.allSettled([
+        puppyrouterAccountApi.diagnoseConfig(activeApp),
+        puppyrouterAccountApi.listApiKeys(activeApp),
+      ]);
+      if (generation !== diagnoseGeneration.current) return;
+      if (
+        cloud.status === "rejected" &&
+        isPuppyRouterSessionExpiredError(cloud.reason)
+      )
         return;
-      }
-
-      const issues: DiagnoseIssue[] = [];
-      const cloudKeys = await puppyrouterAccountApi.listApiKeys(activeApp);
-      const selectedCloudKey =
-        cloudKeys.selectedTokenId != null
-          ? cloudKeys.keys.find((key) => key.id === cloudKeys.selectedTokenId)
-          : undefined;
-      const providerMatchesCloud = selectedCloudKey
-        ? selectedCloudKey.providerKeyMatch
-        : cloudKeys.keys.some((key) => key.providerKeyMatch);
-      if (cloudKeys.selectedTokenId != null && !selectedCloudKey) {
-        issues.push({
-          id: "cloud-key-missing",
-          message: t("puppyrouterAccount.diagnoseCloudKeyMissing"),
+      const report: PuppyRouterConfigReport =
+        local.status === "fulfilled"
+          ? local.value
+          : { scope: "staged", issues: ["ReadFailed"] };
+      const issues: DiagnoseIssue[] = report.issues.map((id) => ({
+        id,
+        message: t(`puppyrouterAccount.diagnose${id}`, { app }),
+        fixAction: localFix(id, report),
+      }));
+      const cloudProblem =
+        cloud.status === "fulfilled"
+          ? cloudIssue(cloud.value)
+          : { id: "CloudUnverified" };
+      if (cloudProblem)
+        issues.unshift({
+          ...cloudProblem,
+          message: t(`puppyrouterAccount.diagnose${cloudProblem.id}`, { app }),
         });
-      } else if (!providerMatchesCloud) {
-        issues.push({
-          id: "cloud-key-mismatch",
-          message: t("puppyrouterAccount.diagnoseCloudKeyMismatch"),
-          fixAction: cloudKeys.selectedTokenId != null ? "cloud" : undefined,
-        });
-      }
-
-      if (appHas(activeApp, "routeMode")) {
-        const mode = await proxyApi.getAppMode(activeApp);
-        if (mode.mode !== "direct") {
-          if (!mode.attached)
-            issues.push({
-              id: "proxy-detached",
-              message: t("puppyrouterAccount.diagnoseProxyDetached", {
-                defaultValue: "本地路由尚未接入，请在模式栏重新启用路由。",
-              }),
-            });
-          setDiagnoseResult({
-            appLabel: APP_ICON_MAP[activeApp].label,
-            providerId,
-            selectedTokenId: cloudKeys.selectedTokenId,
-            issues,
-            scope: t("puppyrouterAccount.diagnoseProxyScope", {
-              defaultValue:
-                "已检查云端密钥和路由接入状态。路由与聚合使用本地代理凭据；连通性请使用供应商卡片的测试功能。",
-            }),
-          });
-          setIsDiagnoseOpen(true);
-          return;
-        }
-      }
-      if (activeApp === "agy") {
-        setDiagnoseResult({
-          appLabel: APP_ICON_MAP[activeApp].label,
-          providerId,
-          selectedTokenId: cloudKeys.selectedTokenId,
-          issues,
-          scope: t("puppyrouterAccount.diagnoseLaunchScope", {
-            defaultValue:
-              "已检查云端密钥与本地配置。此应用在从供应商卡片启动时注入密钥，无需写入全局配置文件。",
-          }),
-        });
-        setIsDiagnoseOpen(true);
-        return;
-      }
-      if (!appHas(activeApp, "additive")) {
-        const currentId = await providersApi
-          .getCurrent(activeApp)
-          .catch(() => "");
-        if (currentId !== providerId) {
-          issues.push({
-            id: "provider-not-current",
-            message: t("puppyrouterAccount.diagnoseProviderNotCurrent", {
-              app: APP_ICON_MAP[activeApp].label,
-            }),
-            fixAction: "live",
-          });
-        }
-      }
-
-      const expectedBaseUrl = readBaseUrlFromSettings(
-        activeApp,
-        provider.settingsConfig,
-        providerId,
-      );
-      const expectedApiKey = readApiKeyFromSettings(
-        activeApp,
-        provider.settingsConfig,
-        providerId,
-      );
-
-      if (activeApp === "claude-desktop") {
-        const status = await providersApi.getClaudeDesktopStatus();
-        const liveBaseUrl = status.actualBaseUrl ?? "";
-        const expectedDesktopBaseUrl =
-          status.expectedBaseUrl || expectedBaseUrl;
-
-        if (!status.supported) {
-          issues.push({
-            id: "claude-desktop-unsupported",
-            message: t("claudeDesktop.statusUnsupported", {
-              defaultValue: "当前平台暂不支持 Claude Desktop 3P 配置写入。",
-            }),
-          });
-        } else if (!isPuppyRouterUrl(liveBaseUrl)) {
-          issues.push({
-            id: "endpoint-not-puppyrouter",
-            message: t("puppyrouterAccount.diagnoseEndpointNotPuppyRouter", {
-              app: APP_ICON_MAP[activeApp].label,
-            }),
-            fixAction: "live",
-          });
-        } else if (
-          expectedDesktopBaseUrl &&
-          !sameUrl(expectedDesktopBaseUrl, liveBaseUrl)
-        ) {
-          issues.push({
-            id: "endpoint-mismatch",
-            message: t("puppyrouterAccount.diagnoseEndpointMismatch"),
-            fixAction: "live",
-          });
-        }
-
-        if (status.supported) {
-          if (!status.profileGatewayKeyConfigured) {
-            issues.push({
-              id: "key-missing",
-              message: t("puppyrouterAccount.diagnoseKeyMissing"),
-              fixAction: "live",
-            });
-          } else if (expectedApiKey && !status.gatewayTokenMatchesProvider) {
-            issues.push({
-              id: "key-mismatch",
-              message: t("puppyrouterAccount.diagnoseKeyMismatch"),
-              fixAction: "live",
-            });
-          }
-        }
-
-        setDiagnoseResult({
-          appLabel: APP_ICON_MAP[activeApp].label,
-          providerId,
-          selectedTokenId: cloudKeys.selectedTokenId,
-          issues,
-        });
-        setIsDiagnoseOpen(true);
-        return;
-      }
-
-      let liveSettings: unknown;
-      try {
-        liveSettings = appHas(activeApp, "additive")
-          ? await puppyrouterAccountApi.readNativeProvider(activeApp)
-          : await vscodeApi.getLiveProviderSettings(activeApp);
-      } catch (error) {
-        setDiagnoseResult({
-          appLabel: APP_ICON_MAP[activeApp].label,
-          providerId,
-          selectedTokenId: cloudKeys.selectedTokenId,
-          issues: [
-            {
-              id: "live-read-failed",
-              message: extractErrorMessage(error),
-            },
-          ],
-        });
-        setIsDiagnoseOpen(true);
-        return;
-      }
-
-      if (liveSettings == null && appHas(activeApp, "additive")) {
-        setDiagnoseResult({
-          appLabel: APP_ICON_MAP[activeApp].label,
-          providerId,
-          selectedTokenId: cloudKeys.selectedTokenId,
-          issues: [
-            ...issues,
-            {
-              id: "provider-not-current",
-              message: t("puppyrouterAccount.diagnoseProviderNotCurrent", {
-                app: APP_ICON_MAP[activeApp].label,
-              }),
-              fixAction: "live",
-            },
-          ],
-        });
-        setIsDiagnoseOpen(true);
-        return;
-      }
-      const liveBaseUrl = readBaseUrlFromSettings(
-        activeApp,
-        liveSettings,
-        providerId,
-      );
-      const liveApiKey = readApiKeyFromSettings(
-        activeApp,
-        liveSettings,
-        providerId,
-      );
-
-      if (!isPuppyRouterUrl(liveBaseUrl)) {
-        issues.push({
-          id: "endpoint-not-puppyrouter",
-          message: t("puppyrouterAccount.diagnoseEndpointNotPuppyRouter", {
-            app: APP_ICON_MAP[activeApp].label,
-          }),
-          fixAction: "live",
-        });
-      } else if (expectedBaseUrl && !sameUrl(expectedBaseUrl, liveBaseUrl)) {
-        issues.push({
-          id: "endpoint-mismatch",
-          message: t("puppyrouterAccount.diagnoseEndpointMismatch"),
-          fixAction: "live",
-        });
-      }
-
-      if (!liveApiKey) {
-        issues.push({
-          id: "key-missing",
-          message: t("puppyrouterAccount.diagnoseKeyMissing"),
-          fixAction: "live",
-        });
-      } else if (
-        expectedApiKey &&
-        !sameNonEmptyString(expectedApiKey, liveApiKey)
-      ) {
-        issues.push({
-          id: "key-mismatch",
-          message: t("puppyrouterAccount.diagnoseKeyMismatch"),
-          fixAction: "live",
-        });
-      }
-
-      if (activeApp === "codex") {
-        issues.push(
-          ...collectCodexLiveConfigIssues(
-            readStringPath(liveSettings, ["config"]),
-            t,
-          ),
-        );
-      }
-
       setDiagnoseResult({
-        appLabel: APP_ICON_MAP[activeApp].label,
-        providerId,
-        selectedTokenId: cloudKeys.selectedTokenId,
+        app: activeApp,
+        scope: report.scope,
         issues,
-      });
-      setIsDiagnoseOpen(true);
-    } catch (error) {
-      if (isPuppyRouterSessionExpiredError(error)) return;
-      setDiagnoseResult({
-        appLabel: APP_ICON_MAP[activeApp].label,
-        providerId,
-        issues: [
-          {
-            id: "diagnose-failed",
-            message: extractErrorMessage(error),
-          },
-        ],
+        selectedTokenId:
+          cloud.status === "fulfilled"
+            ? cloud.value.selectedTokenId
+            : undefined,
       });
       setIsDiagnoseOpen(true);
     } finally {
-      setIsDiagnosing(false);
+      if (generation === diagnoseGeneration.current) setIsDiagnosing(false);
     }
   };
 
   const handleFixDiagnoseIssue = async (action: DiagnoseFixAction) => {
-    if (!diagnoseResult || fixingDiagnoseAction) return;
-
+    if (
+      !diagnoseResult ||
+      diagnoseResult.app !== activeApp ||
+      fixingDiagnoseAction
+    )
+      return;
+    const generation = diagnoseGeneration.current;
     setFixingDiagnoseAction(action);
     try {
       if (action === "cloud") {
-        if (diagnoseResult.selectedTokenId == null) {
-          throw new Error(t("puppyrouterAccount.diagnoseCloudKeyMissing"));
+        if (diagnoseResult.selectedTokenId == null) return;
+        const keys = await puppyrouterAccountApi.listApiKeys(activeApp);
+        if (generation !== diagnoseGeneration.current) return;
+        if (
+          keys.selectedTokenId === diagnoseResult.selectedTokenId &&
+          cloudIssue(keys)?.fixAction === "cloud"
+        ) {
+          await puppyrouterAccountApi.applyApiKey(
+            diagnoseResult.selectedTokenId,
+            activeApp,
+          );
         }
-        await puppyrouterAccountApi.applyApiKey(
-          diagnoseResult.selectedTokenId,
-          activeApp,
-        );
         await queryClient.invalidateQueries({
           queryKey: puppyrouterAccountKeys.apiKeys(activeApp),
         });
       } else {
-        const providerId =
-          diagnoseResult.providerId ?? PUPPYROUTER_PROVIDER_IDS[activeApp];
-        if (!providerId) {
-          throw new Error(
-            t("puppyrouterAccount.diagnoseManualOnly", {
-              app: APP_ICON_MAP[activeApp].label,
-            }),
-          );
-        }
-        if (appHas(activeApp, "additive")) {
-          const provider = (await providersApi.getAll(activeApp))[providerId];
-          if (provider) await providersApi.update(provider, activeApp);
-        }
-        if (activeApp === "kimi" || activeApp === "copilot") {
-          await providersApi.addToLiveConfig(providerId, activeApp);
-        } else {
-          const result = await providersApi.switch(providerId, activeApp);
-          if (result?.route) {
-            toast.success(
-              routeSwitchNotification(
-                result.route,
-                activeApp,
-                "PuppyRouter",
-                t,
-              ),
-            );
-          } else if (needsClientRestart(activeApp)) {
-            toast.info(
-              t("mode.toast.restartHint", {
-                app: APP_ICON_MAP[activeApp].label,
-              }),
-            );
+        const report = await puppyrouterAccountApi.diagnoseConfig(activeApp);
+        if (generation !== diagnoseGeneration.current) return;
+        // A stale dialog must never switch a newly chosen route or overwrite an official login.
+        if (
+          report.scope === diagnoseResult.scope &&
+          report.issues.some((issue) => localFix(issue, report) === action)
+        ) {
+          const providerId = PUPPYROUTER_PROVIDER_IDS[activeApp];
+          if (action === "live") {
+            const applied =
+              await puppyrouterAccountApi.reapplyConfig(activeApp);
+            if (
+              applied &&
+              report.scope === "direct" &&
+              needsClientRestart(activeApp)
+            ) {
+              toast.info(
+                t("mode.toast.restartHint", {
+                  app: APP_ICON_MAP[activeApp].label,
+                }),
+              );
+            }
+          } else if (activeApp === "kimi" || activeApp === "copilot") {
+            await providersApi.addToLiveConfig(providerId, activeApp);
+          } else {
+            const result = await providersApi.switch(providerId, activeApp);
+            if (result?.route) {
+              toast.success(
+                routeSwitchNotification(
+                  result.route,
+                  activeApp,
+                  "PuppyRouter",
+                  t,
+                ),
+              );
+            } else if (needsClientRestart(activeApp)) {
+              toast.info(
+                t("mode.toast.restartHint", {
+                  app: APP_ICON_MAP[activeApp].label,
+                }),
+              );
+            }
           }
         }
       }
-
       await queryClient.invalidateQueries({
         queryKey: ["providers", activeApp],
         refetchType: "all",
       });
-      await handleDiagnosePuppyRouterConfig();
+      if (generation === diagnoseGeneration.current)
+        await handleDiagnosePuppyRouterConfig();
     } catch (error) {
-      if (isPuppyRouterSessionExpiredError(error)) return;
-      toast.error(t("puppyrouterAccount.diagnoseFixFailed"), {
-        description: extractErrorMessage(error),
-        closeButton: true,
-      });
+      if (!isPuppyRouterSessionExpiredError(error))
+        toast.error(t("puppyrouterAccount.diagnoseFixFailed"), {
+          closeButton: true,
+        });
     } finally {
-      setFixingDiagnoseAction(null);
+      if (generation === diagnoseGeneration.current)
+        setFixingDiagnoseAction(null);
     }
   };
 
@@ -1698,30 +1274,28 @@ export function PuppyRouterAccountBanner({
             <DialogTitle>{t("puppyrouterAccount.diagnoseTitle")}</DialogTitle>
             <DialogDescription>
               {t("puppyrouterAccount.diagnoseDescription", {
-                app: diagnoseResult?.appLabel ?? APP_ICON_MAP[activeApp].label,
+                app: APP_ICON_MAP[activeApp].label,
               })}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3 px-6 py-5">
-            {diagnoseResult?.scope && (
-              <p className="text-sm text-muted-foreground">
-                {diagnoseResult.scope}
-              </p>
-            )}
             {diagnoseResult && diagnoseResult.issues.length === 0 ? (
               <div className="flex items-start gap-3 rounded-lg border border-emerald-600/30 dark:border-emerald-400/35 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-50">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
                 <div>
                   <div className="font-medium">
-                    {t("puppyrouterAccount.diagnoseHealthy")}
+                    {t(
+                      diagnoseResult.scope === "direct"
+                        ? "puppyrouterAccount.diagnoseHealthy"
+                        : "puppyrouterAccount.diagnoseChecked",
+                    )}
                   </div>
                   <div className="mt-1 text-xs text-emerald-800/75 dark:text-emerald-50/75">
-                    {t("puppyrouterAccount.diagnoseSuccess", {
-                      app:
-                        diagnoseResult?.appLabel ??
-                        APP_ICON_MAP[activeApp].label,
-                    })}
+                    {t(
+                      `puppyrouterAccount.diagnoseScope.${diagnoseResult.scope}`,
+                      { app: APP_ICON_MAP[activeApp].label },
+                    )}
                   </div>
                 </div>
               </div>
@@ -1759,7 +1333,9 @@ export function PuppyRouterAccountBanner({
                         )}
                         {issue.fixAction === "cloud"
                           ? t("puppyrouterAccount.diagnoseFixCloudKey")
-                          : t("puppyrouterAccount.diagnoseFixLiveConfig")}
+                          : issue.fixAction === "enable"
+                            ? t("puppyrouterAccount.diagnoseEnable")
+                            : t("puppyrouterAccount.diagnoseFixLiveConfig")}
                       </Button>
                     )}
                   </div>

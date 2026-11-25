@@ -22,6 +22,10 @@ use crate::live::patch::{KeyPath, LiveWriteError};
 /// 代理契约写进模型表的接口类型（本地代理只提供 Responses）。
 pub const PROXY_API_BACKEND: &str = "responses";
 
+pub(crate) fn proxy_base_url(origin: &str) -> String {
+    format!("{}/grokbuild/v1", origin.trim_end_matches('/'))
+}
+
 /// 一个供应商在 `config.toml` 里拥有的东西。
 #[derive(Debug, Clone)]
 pub struct GrokProjection {

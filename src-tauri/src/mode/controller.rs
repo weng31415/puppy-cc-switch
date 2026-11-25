@@ -471,7 +471,7 @@ async fn write_proxy(
             unchanged
         }
         AppType::GrokBuild => {
-            let base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+            let base_url = crate::live::project::grok::proxy_base_url(&proxy_url);
             let projection = GrokProjection::proxy_contract(
                 &grok_direct::projection(route).map_err(err)?,
                 &base_url,

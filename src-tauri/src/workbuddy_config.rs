@@ -109,6 +109,28 @@ pub(crate) fn get_providers() -> Result<IndexMap<String, Value>, AppError> {
     providers_at(&config_path())
 }
 
+/// Native models have no shared credentials. Keep missing fields observable for diagnostics.
+pub(crate) fn read_provider_models(id: &str) -> Result<(Vec<Value>, bool), AppError> {
+    let config = read(&config_path())?;
+    let available = config
+        .get("availableModels")
+        .and_then(Value::as_array)
+        .filter(|list| !list.is_empty());
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    let mut all_selectable = true;
+    for model in models_of(&config)? {
+        let key = model_id(model);
+        let first = key.is_some_and(|key| seen.insert(key));
+        if owner_of(model) == Some(id) {
+            all_selectable &=
+                first && available.is_none_or(|list| list.iter().any(|item| item.as_str() == key));
+            models.push(model.clone());
+        }
+    }
+    Ok((models, all_selectable))
+}
+
 fn providers_at(path: &Path) -> Result<IndexMap<String, Value>, AppError> {
     let document = read(path)?;
     let mut grouped: IndexMap<String, Vec<Map<String, Value>>> = IndexMap::new();

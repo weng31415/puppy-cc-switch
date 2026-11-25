@@ -26,7 +26,7 @@ pub const PROFILE_NAME: &str = "puppyrouter app";
 const CONFIG_FILE: &str = "claude_desktop_config.json";
 #[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 const CONFIG_LIBRARY_DIR: &str = "configLibrary";
-const GATEWAY_TOKEN_SETTING_KEY: &str = "claude_desktop_gateway_token";
+pub(crate) const GATEWAY_TOKEN_SETTING_KEY: &str = "claude_desktop_gateway_token";
 const CLAUDE_DESKTOP_PROXY_PREFIX: &str = "/claude-desktop";
 pub const DEFAULT_CREATED_AT: &str = "2024-01-01T00:00:00Z";
 /// `inferenceModels` 的上限（Desktop 的 schema 写着 `maxItems: 200`）。
@@ -327,6 +327,28 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
 
 pub fn get_config_library_path() -> Result<PathBuf, AppError> {
     Ok(current_platform_paths()?.config_library_path)
+}
+
+pub(crate) fn active_gateway_credentials() -> Result<Option<DirectGatewayCredentials>, AppError> {
+    let paths = current_platform_paths()?;
+    let meta = read_json_or_empty(&paths.meta_path)?;
+    if meta["appliedId"].as_str() != Some(PROFILE_ID) || !contains_gateway_profile(&meta) {
+        return Ok(None);
+    }
+    let profile = read_json_or_empty(&paths.profile_path)?;
+    if profile["inferenceProvider"].as_str() != Some("gateway") {
+        return Ok(None);
+    }
+    Ok(Some(DirectGatewayCredentials {
+        base_url: profile["inferenceGatewayBaseUrl"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        api_key: profile["inferenceGatewayApiKey"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    }))
 }
 
 pub fn default_proxy_routes() -> Vec<ClaudeDesktopDefaultRoute> {
@@ -1538,14 +1560,15 @@ fn read_applied_id(path: &Path) -> Option<String> {
 }
 
 fn meta_has_profile_entry(path: &Path) -> bool {
-    read_json_or_empty(path)
-        .ok()
-        .and_then(|value| value.get("entries").and_then(Value::as_array).cloned())
-        .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry.get("id").and_then(Value::as_str) == Some(PROFILE_ID))
-        })
+    read_json_or_empty(path).is_ok_and(|meta| contains_gateway_profile(&meta))
+}
+
+fn contains_gateway_profile(meta: &Value) -> bool {
+    meta["entries"].as_array().is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some(PROFILE_ID))
+    })
 }
 
 /// Claude Desktop 没有可调的命令，只能推断装没装。
@@ -1570,7 +1593,7 @@ fn macos_app_bundle_candidates() -> Option<Vec<PathBuf>> {
     })
 }
 
-fn is_supported_platform() -> bool {
+pub(crate) fn is_supported_platform() -> bool {
     cfg!(any(target_os = "macos", windows, target_os = "linux"))
 }
 

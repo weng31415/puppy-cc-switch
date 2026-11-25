@@ -140,7 +140,7 @@ pub struct PuppyRouterApiKey {
     pub model_limits: Option<String>,
     pub usable: bool,
     pub recommended: bool,
-    pub provider_key_match: bool,
+    pub provider_key_match: Option<bool>,
     pub active: bool,
 }
 
@@ -431,8 +431,7 @@ fn desktop_session_cookie(headers: &reqwest::header::HeaderMap) -> String {
         .iter()
         .filter_map(|header| header.to_str().ok())
         .filter_map(|header| header.split(';').next()?.trim().split_once('='))
-        .filter(|(name, _)| *name == "session")
-        .next_back()
+        .rfind(|(name, _)| *name == "session")
         .filter(|(_, value)| !value.trim().is_empty())
         .map(|(_, value)| format!("session={value}"))
         .unwrap_or_default()
@@ -671,13 +670,14 @@ fn token_to_api_key(
 ) -> PuppyRouterApiKey {
     let usable = is_token_usable(&token);
     let recommended = usable && token.name == DEFAULT_TOKEN_NAME;
-    let active_by_key = provider_api_key
-        .zip(full_key)
-        .map(|(provider_key, token_key)| {
-            normalize_puppyrouter_api_key(provider_key) == normalize_puppyrouter_api_key(token_key)
-        })
-        .unwrap_or(false);
-    let active = active_by_key || active_token_id == Some(token.id);
+    // A batch lookup can fail or omit a key. Absence of evidence is distinct
+    // from a successful comparison with a different credential.
+    let provider_key_match = match provider_api_key {
+        None => Some(false),
+        Some(saved) => full_key
+            .map(|key| normalize_puppyrouter_api_key(saved) == normalize_puppyrouter_api_key(key)),
+    };
+    let active = provider_key_match == Some(true) || active_token_id == Some(token.id);
 
     PuppyRouterApiKey {
         id: token.id,
@@ -699,7 +699,7 @@ fn token_to_api_key(
             .filter(|value| !value.is_empty()),
         usable,
         recommended,
-        provider_key_match: active_by_key,
+        provider_key_match,
         active,
     }
 }
@@ -1369,27 +1369,27 @@ pub async fn apply_puppyrouter_api_key(
     })
 }
 
-/// Read only the PuppyRouter entry from a native additive config, without importing credentials.
+/// Return only findings. Client configuration can contain unrelated official login credentials.
 #[tauri::command]
-pub fn read_puppyrouter_native_provider(target_app: String) -> Result<Option<Value>, String> {
+pub async fn diagnose_puppyrouter_config(
+    state: State<'_, AppState>,
+    target_app: String,
+) -> Result<puppyrouter::diagnostics::Report, String> {
     let app = AppType::from_str(&target_app)?;
-    let id = puppyrouter::provider_id(&app);
-    let result = match app {
-        AppType::OpenCode => crate::opencode_config::get_providers().map(|mut p| p.remove(id)),
-        AppType::OpenClaw => crate::openclaw_config::get_provider(id),
-        AppType::Hermes => crate::hermes_config::get_provider(id),
-        AppType::Pi => crate::pi_config::read_pi_native_provider(id),
-        AppType::Omp => crate::omp_config::get_providers().map(|mut p| p.shift_remove(id)),
-        AppType::Mcode => crate::mcode_config::get_providers().map(|mut p| p.shift_remove(id)),
-        AppType::Kimi => crate::kimi_config::get_providers().map(|mut p| p.shift_remove(id)),
-        AppType::Dsh => crate::dsh_config::get_providers().map(|mut p| p.shift_remove(id)),
-        AppType::WorkBuddy => {
-            crate::workbuddy_config::get_providers().map(|mut p| p.shift_remove(id))
-        }
-        AppType::Copilot => crate::copilot_config::get_providers().map(|mut p| p.shift_remove(id)),
-        _ => return Err("This application does not use a native additive provider entry".into()),
-    };
-    result.map_err(|error| error.to_string())
+    Ok(puppyrouter::diagnostics::inspect(state.inner(), &app).await)
+}
+
+#[tauri::command]
+pub async fn reapply_puppyrouter_config(
+    state: State<'_, AppState>,
+    target_app: String,
+) -> Result<bool, String> {
+    let app = AppType::from_str(&target_app)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || puppyrouter::diagnostics::reapply(&state, app))
+        .await
+        .map_err(|_| "PuppyRouter configuration update interrupted".to_string())?
+        .map_err(|_| "Could not reapply the saved PuppyRouter configuration".to_string())
 }
 
 #[cfg(test)]
@@ -1670,9 +1670,10 @@ mod tests {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn additive_cloud_keys_round_trip_through_the_native_provider_commands() {
+    async fn additive_cloud_keys_round_trip_through_the_native_provider_commands() {
+        use puppyrouter::diagnostics::{inspect, Issue, Scope};
         let _home = TestHomeGuard::new();
         let state = AppState::new(Arc::new(Database::memory().unwrap()));
         ProviderService::ensure_locked_puppyrouter_defaults(&state).unwrap();
@@ -1683,12 +1684,10 @@ mod tests {
             let row = state.db.get_provider_by_id(id, &app).unwrap().unwrap();
             let row = puppyrouter::with_api_key(&app, &row, "sk-explicit-enable-fixture").unwrap();
             ProviderService::update(&state, app.clone(), None, row.clone()).unwrap();
-            assert!(
-                read_puppyrouter_native_provider(app.as_str().into())
-                    .unwrap()
-                    .is_none(),
-                "{}",
-                app.as_str()
+            assert_eq!(
+                inspect(&state, &app).await.issues,
+                [Issue::NativeMissing],
+                "{app:?}"
             );
             let enabled = if matches!(app, AppType::Kimi | AppType::Copilot) {
                 ProviderService::add_to_live_config(&state, app.clone(), id)
@@ -1696,25 +1695,20 @@ mod tests {
                 ProviderService::switch(&state, app.clone(), id).map(|_| ())
             };
             enabled.unwrap_or_else(|error| panic!("enable {}: {error}", app.as_str()));
-            let native = read_puppyrouter_native_provider(app.as_str().into())
-                .unwrap()
-                .unwrap_or_else(|| panic!("missing {} entry", app.as_str()));
-            let mut native_row = row;
-            native_row.settings_config = native;
+            let report = inspect(&state, &app).await;
             assert_eq!(
-                native_row.resolve_usage_credentials(&app).1,
-                "sk-explicit-enable-fixture",
-                "{}",
-                app.as_str()
+                (report.scope, report.issues),
+                (Scope::Native, vec![]),
+                "{app:?}"
             );
             ProviderService::remove_from_live_config(&state, app.clone(), id)
                 .unwrap_or_else(|error| panic!("remove {}: {error}", app.as_str()));
             assert!(
-                read_puppyrouter_native_provider(app.as_str().into())
-                    .unwrap()
-                    .is_none(),
-                "{}",
-                app.as_str()
+                inspect(&state, &app)
+                    .await
+                    .issues
+                    .contains(&Issue::NativeMissing),
+                "{app:?}"
             );
             assert_eq!(
                 state

@@ -75,7 +75,7 @@ export interface PuppyRouterApiKey {
   modelLimits?: string;
   usable: boolean;
   recommended: boolean;
-  providerKeyMatch: boolean;
+  providerKeyMatch: boolean | null;
   active: boolean;
 }
 
@@ -83,6 +83,34 @@ export interface PuppyRouterApiKeyList {
   keys: PuppyRouterApiKey[];
   total: number;
   selectedTokenId?: number;
+}
+
+export interface PuppyRouterConfigReport {
+  scope: "staged" | "direct" | "native" | "proxy" | "launch";
+  issues: (
+    | "ProviderMissing"
+    | "ProviderNotCurrent"
+    | "NativeMissing"
+    | "ProxyNotSelected"
+    | "ProxyDetached"
+    | "ProxyConfigMismatch"
+    | "ReadFailed"
+    | "SavedConfigInvalid"
+    | "EndpointMismatch"
+    | "KeyMissing"
+    | "KeyMismatch"
+    | "CodexConfigInvalid"
+    | "CodexProviderTableMissing"
+    | "CodexWireApiNotResponses"
+    | "AuthSource"
+    | "ExternalAuth"
+    | "DesktopUnsupported"
+    | "DesktopProfile"
+    | "GeminiAuthMode"
+    | "ModelConfigMismatch"
+    | "NativeProfileConflict"
+    | "NativeDisabled"
+  )[];
 }
 
 export interface PuppyRouterApplyKeyResult {
@@ -138,8 +166,11 @@ async function invokePuppyRouterAccount<T>(
 }
 
 export const puppyrouterAccountApi = {
-  async readNativeProvider(targetApp: string): Promise<unknown> {
-    return invoke("read_puppyrouter_native_provider", { targetApp });
+  async diagnoseConfig(targetApp: string): Promise<PuppyRouterConfigReport> {
+    return invoke("diagnose_puppyrouter_config", { targetApp });
+  },
+  async reapplyConfig(targetApp: string): Promise<boolean> {
+    return invoke("reapply_puppyrouter_config", { targetApp });
   },
   async getStatus(): Promise<PuppyRouterAccountStatus> {
     return await invokePuppyRouterAccount("get_puppyrouter_account_status");
