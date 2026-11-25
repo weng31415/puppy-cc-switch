@@ -517,6 +517,7 @@ jobs:
             $portableDir = 'release-assets/PuppyRouter-App-Portable'
             New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
             Copy-Item $exePath $portableDir
+            Copy-Item LICENSE (Join-Path $portableDir 'LICENSE.txt')
             $portableIniPath = Join-Path $portableDir 'portable.ini'
             $portableContent = if ($isArm64) {
               @(
@@ -540,6 +541,13 @@ jobs:
           } else {
             Write-Warning 'Portable exe not found'
           }
+
+      - name: Test upgrade from the previous Windows installer and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem release-assets -Filter '*.msi').FullName
+          ./scripts/test-windows-msi-upgrade.ps1 -Installer $installer -Architecture $env:RUNNER_ARCH
 
       - name: Prepare Linux Assets
         if: runner.os == 'Linux'

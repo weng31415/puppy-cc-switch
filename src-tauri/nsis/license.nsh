@@ -1,0 +1,10 @@
+!define PUPPYROUTER_LICENSE_FILE "${__FILEDIR__}\..\..\LICENSE"
+
+!macro NSIS_HOOK_POSTINSTALL
+  SetOutPath "$INSTDIR"
+  File "/oname=LICENSE.txt" "${PUPPYROUTER_LICENSE_FILE}"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Delete "$INSTDIR\LICENSE.txt"
+!macroend

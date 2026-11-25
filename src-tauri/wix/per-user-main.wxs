@@ -71,10 +71,12 @@
             NOT CREATEDESKTOPSHORTCUT AND (NOT (Installed OR WIX_UPGRADE_DETECTED) OR DESKTOPSHORTCUTEXISTS)
         </SetProperty>
 
+        <!-- Keep shared components installed while replacing the previous MSI. Older
+             uninstallers attach a wildcard cleanup of the user's Programs folder to one. -->
         {{#if allow_downgrades}}
-            <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
+            <MajorUpgrade Schedule="afterInstallExecute" AllowDowngrades="yes" />
         {{else}}
-            <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" AllowSameVersionUpgrades="yes" />
+            <MajorUpgrade Schedule="afterInstallExecute" DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" AllowSameVersionUpgrades="yes" />
         {{/if}}
 
         <InstallExecuteSequence>
@@ -273,7 +275,6 @@
 						  Target="[System64Folder]msiexec.exe"
 						  Arguments="/x [ProductCode]" />
 
-                <RemoveFile Id="RemoveUserProgramsFiles" Directory="TauriLocalAppDataPrograms" Name="*" On="uninstall" />
                 <RemoveFolder Id="RemoveUserProgramsFolder" Directory="TauriLocalAppDataPrograms" On="uninstall" />
 
 				<RemoveFolder Id="INSTALLDIR"
@@ -323,6 +324,7 @@
                 Absent="disallow">
 
             <ComponentRef Id="RegistryEntries"/>
+            <ComponentRef Id="PuppyRouterLicense"/>
 
             {{#each resource_file_ids as |resource_file_id| ~}}
                 <ComponentRef Id="{{ resource_file_id }}"/>

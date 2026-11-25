@@ -1,0 +1,11 @@
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="PuppyRouterLicense" Guid="*">
+                <File Id="LicenseText" Name="LICENSE.txt" Source="$(sys.SOURCEFILEDIR)..\..\LICENSE"/>
+                <RegistryValue Root="HKCU" Key="Software\com.puppyrouter.app\Installer"
+                               Name="License" Type="integer" Value="1" KeyPath="yes"/>
+            </Component>
+        </DirectoryRef>
+    </Fragment>
+</Wix>
