@@ -340,7 +340,10 @@ mod tests {
     impl IsolatedHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("create test home");
-            let env = EnvVars::new().set("CC_SWITCH_TEST_HOME", dir.path());
+            let env = EnvVars::new()
+                .set("CC_SWITCH_TEST_HOME", dir.path())
+                .set("NO_PROXY", "127.0.0.1")
+                .set("no_proxy", "127.0.0.1");
             settings::update_settings(AppSettings::default()).expect("reset settings");
             Self {
                 _env: env,
@@ -372,12 +375,18 @@ mod tests {
         let (tx, rx) = channel::<String>(1);
 
         let other_sync = sync_mutex().lock().await;
-        let worker = tokio::spawn(run_worker_loop::<B, _>(db, rx, app.handle().clone()));
+        let worker = run_worker_loop::<B, _>(db, rx, app.handle().clone());
+        tokio::pin!(worker);
         tx.send("providers".to_string())
             .await
             .expect("queue change");
-        // Past the debounce, so the upload is queued on the sync lock.
-        tokio::time::sleep(Duration::from_millis(AUTO_SYNC_DEBOUNCE_MS + 300)).await;
+        // Register the debounce timer, then drive the upload up to the held lock.
+        // Closing the sender during the debounce would cancel the queued change.
+        tokio::time::pause();
+        assert!(futures::poll!(worker.as_mut()).is_pending());
+        tokio::time::sleep(Duration::from_millis(AUTO_SYNC_DEBOUNCE_MS + 1)).await;
+        assert!(futures::poll!(worker.as_mut()).is_pending());
+        tokio::time::resume();
 
         match change {
             UserChange::Nothing => {}
@@ -390,8 +399,7 @@ mod tests {
         drop(tx);
         tokio::time::timeout(Duration::from_secs(10), worker)
             .await
-            .expect("worker should finish")
-            .expect("worker should not panic");
+            .expect("worker should finish");
         hits.load(Ordering::SeqCst)
     }
 
