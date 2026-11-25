@@ -25,7 +25,7 @@ jobs:
           - os: ubuntu-22.04
           - os: ubuntu-22.04-arm
             arch: arm64
-          - os: macos-14
+          - os: macos-15
 
     steps:
       - name: Checkout
@@ -36,8 +36,18 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Add Windows ARM64 target
         if: runner.os == 'Windows' && matrix.arch == 'arm64'
@@ -85,7 +95,6 @@ jobs:
         if: runner.os != 'Windows' || matrix.arch != 'arm64'
         uses: pnpm/action-setup@v6
         with:
-          version: 10.12.3
           run_install: false
 
       - name: Setup pnpm (Windows ARM64)
@@ -273,7 +282,7 @@ jobs:
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
-        run: pnpm dlx @tauri-apps/cli@2.10.1 build --ignore-version-mismatches --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: pnpm tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -590,7 +599,10 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: puppyrouter-public-downloads
+      cancel-in-progress: false
     needs: release
     permissions:
       contents: write
@@ -610,6 +622,9 @@ jobs:
         run: |
           set -euo pipefail
           ls -la release-assets
+
+      - name: Install release verification tools
+        run: sudo apt-get update && sudo apt-get install -y minisign
 
       - name: Generate official release manifests
         shell: bash
@@ -631,28 +646,7 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
-            echo "Cloudflare R2 secrets are missing; cannot publish official downloads." >&2
-            exit 1
-          fi
-          python3 -m pip install --user awscli
-          export PATH="$HOME/.local/bin:$PATH"
-          aws s3 sync release-assets "s3://${R2_BUCKET}/downloads/" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --cache-control "public, max-age=31536000, immutable" \
-            --delete \
-            --exclude "*" \
-            --include "PuppyRouter-App-*"
-          aws s3 cp release-assets/latest.json "s3://${R2_BUCKET}/downloads/latest.json" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --cache-control "no-cache, max-age=60" \
-            --content-type "application/json"
-          aws s3 cp release-assets/manual-latest.json "s3://${R2_BUCKET}/downloads/manual-latest.json" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --cache-control "no-cache, max-age=60" \
-            --content-type "application/json"
+        run: bash scripts/publish-release-downloads.sh release-assets
 
       - name: Upload official website download bundle
         uses: actions/upload-artifact@v7

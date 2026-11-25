@@ -13,7 +13,10 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: puppyrouter-public-downloads
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -31,6 +34,9 @@ jobs:
             --dir release-assets
           ls -lh release-assets
 
+      - name: Install release verification tools
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
       - name: Validate installers and generate release manifests
         shell: bash
         env:
@@ -43,8 +49,9 @@ jobs:
             --release="$RELEASE_TAG" \
             --base-url="$DOWNLOAD_BASE_URL"
 
-          linux_deb="$(find release-assets -maxdepth 1 -type f -name '*-Ubuntu-x86_64.deb' -print -quit)"
-          scripts/verify-linux-deb-updater.sh "$linux_deb"
+          for linux_deb in release-assets/*.deb; do
+            scripts/verify-linux-deb-updater.sh "$linux_deb"
+          done
 
           macos_updater="$(find release-assets -maxdepth 1 -type f -name '*-macOS.tar.gz' -print -quit)"
           python3 scripts/verify-macos-updater.py "$macos_updater"
@@ -57,31 +64,4 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || \
-             [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || \
-             [ -z "${R2_ACCOUNT_ID:-}" ] || \
-             [ -z "${R2_BUCKET:-}" ]; then
-            echo "Cloudflare R2 secrets are missing." >&2
-            exit 1
-          fi
-
-          python3 -m pip install --user awscli
-          export PATH="$HOME/.local/bin:$PATH"
-          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-
-          aws s3 cp release-assets/ "s3://${R2_BUCKET}/downloads/" \
-            --recursive \
-            --exclude "latest.json" \
-            --exclude "manual-latest.json" \
-            --endpoint-url "$endpoint" \
-            --cache-control "public, max-age=31536000, immutable"
-
-          for manifest in latest.json manual-latest.json; do
-            aws s3 cp "release-assets/$manifest" \
-              "s3://${R2_BUCKET}/downloads/$manifest" \
-              --endpoint-url "$endpoint" \
-              --cache-control "no-cache, max-age=60" \
-              --content-type "application/json"
-          done
+        run: bash scripts/publish-release-downloads.sh release-assets

@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 const args = Object.fromEntries(
@@ -65,6 +74,18 @@ if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseLabel)) {
   throw new Error(`Unexpected release label in ${windows}`);
 }
 
+if (
+  releaseLabel.split("-")[0] !== `v${version}` ||
+  (release.startsWith("v") && releaseLabel !== release) ||
+  files.some(
+    (name) =>
+      name.startsWith("PuppyRouter-App-") &&
+      !name.startsWith(`PuppyRouter-App-${releaseLabel}-`),
+  )
+) {
+  throw new Error("The installers do not all belong to the requested release");
+}
+
 const manual = {
   schema_version: 1,
   version,
@@ -78,6 +99,19 @@ const manual = {
   },
 };
 
+const { plugins } = JSON.parse(
+  readFileSync(
+    new URL("../src-tauri/tauri.conf.json", import.meta.url),
+    "utf8",
+  ),
+);
+const publicKey = Buffer.from(plugins.updater.pubkey, "base64")
+  .toString("utf8")
+  .trim()
+  .split(/\r?\n/)
+  .at(-1);
+const verified = new Set();
+
 const platforms = {};
 const addUpdaterPlatform = (key, filename) => {
   const signaturePath = path.join(dir, `${filename}.sig`);
@@ -86,6 +120,26 @@ const addUpdaterPlatform = (key, filename) => {
     signature = readFileSync(signaturePath, "utf8").trim();
   } catch {
     throw new Error(`Missing updater signature for ${filename}`);
+  }
+  if (!verified.has(filename)) {
+    const temp = mkdtempSync(path.join(tmpdir(), "puppyrouter-signature-"));
+    try {
+      const decoded = path.join(temp, "updater.minisig");
+      writeFileSync(decoded, Buffer.from(signature, "base64"));
+      execFileSync("minisign", [
+        "-V",
+        "-q",
+        "-P",
+        publicKey,
+        "-x",
+        decoded,
+        "-m",
+        path.join(dir, filename),
+      ]);
+      verified.add(filename);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   }
   platforms[key] = {
     signature,
