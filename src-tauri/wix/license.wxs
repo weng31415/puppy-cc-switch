@@ -1,7 +1,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Fragment>
         <DirectoryRef Id="INSTALLDIR">
-            <Component Id="PuppyRouterLicense" Guid="*">
+            <Component Id="PuppyRouterLicense" Guid="A0045D0B-B41C-534B-8B61-2B6AC3357315">
                 <File Id="LicenseText" Name="LICENSE.txt" Source="$(sys.SOURCEFILEDIR)..\..\LICENSE"/>
                 <RegistryValue Root="HKCU" Key="Software\com.puppyrouter.app\Installer"
                                Name="License" Type="integer" Value="1" KeyPath="yes"/>
