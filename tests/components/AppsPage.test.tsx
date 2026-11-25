@@ -99,10 +99,10 @@ describe("AppsPage layout, grouping and diagnostics", () => {
       if (tools.includes("codex")) await codexReady.promise;
       return getVersions(tools);
     });
-    // Finish the first dynamic import before starting a DOM wait. Under the full
-    // suite, transforming AppsPage can take longer than findByText's timeout.
-    await import("@/components/apps/AppsPage");
-    const loading = renderApps();
+    // The fixture holds Codex pending while we inspect the loading state.
+    // Start the idle-state wait only after releasing it.
+    const { AppsPage } = await import("@/components/apps/AppsPage");
+    mountApps(AppsPage);
     expect(await screen.findByText("appsPage.checkUpdates")).toHaveAttribute(
       "aria-hidden",
       "true",
@@ -114,7 +114,12 @@ describe("AppsPage layout, grouping and diagnostics", () => {
       screen.getByRole("button", { name: "appsPage.checking" }),
     ).toBeDisabled();
     await act(async () => codexReady.resolve());
-    await loading;
+    await waitFor(() =>
+      expect(screen.getByText("appsPage.checkUpdates")).toHaveAttribute(
+        "aria-hidden",
+        "false",
+      ),
+    );
     expect(updateButton("Codex")).toBeEnabled();
   });
 
