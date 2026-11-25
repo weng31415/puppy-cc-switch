@@ -5518,6 +5518,7 @@
     "diagnoseProxyNotSelected": "当前路由和已发布的聚合模型均未使用 PuppyRouter。要使用这张卡片，请在模式栏选择它。",
     "diagnoseProxyConfigMismatch": "客户端当前的代理地址或认证方式与本地路由不一致，请在模式栏重新接入。",
     "diagnoseReadFailed": "无法读取当前配置。请检查客户端文件及其读取权限后重试。",
+    "diagnoseSavedKeyMissing": "PuppyRouter 卡片尚未保存 API 密钥。请先应用可用密钥，再启用或修复客户端。",
     "diagnoseSavedConfigInvalid": "PuppyRouter 卡片的地址或配置无效，请检查该卡片。",
     "diagnoseAuthSource": "客户端的认证方式与当前供应商写入的配置不一致。",
     "diagnoseExternalAuth": "此配置使用其他认证来源，无法确认客户端使用了所选的云端密钥。",

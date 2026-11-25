@@ -169,6 +169,9 @@ async fn official_login_stays_separate_from_the_codex_route_and_real_bearer() {
         .await
         .issues
         .contains(&Issue::KeyMismatch));
+    assert!(reapply(&f.state, app.clone()).unwrap());
+    f.clean(&app, Scope::Direct).await;
+    assert_eq!(fs::read(&auth_path).unwrap(), login);
     config["model_providers"]["custom"]["experimental_bearer_token"] = toml_edit::value(KEY);
     config["model_providers"]["custom"]["env_key"] = toml_edit::value("FIXTURE_OTHER_KEY");
     fs::write(&path, config.to_string()).unwrap();
@@ -186,6 +189,8 @@ async fn official_login_stays_separate_from_the_codex_route_and_real_bearer() {
         .await
         .issues
         .contains(&Issue::CodexConfigInvalid));
+    assert!(!reapply(&f.state, app.clone()).unwrap());
+    assert_eq!(fs::read_to_string(path).unwrap(), "[broken");
     assert_eq!(fs::read(auth_path).unwrap(), login);
 }
 
@@ -212,6 +217,11 @@ async fn stage_diagnosis_respects_direct_selection_route_and_published_stack_mem
         inspect(&f.state, &app).await.issues,
         [Issue::ProxyNotSelected]
     );
+    assert!(enable_staged_direct(&f.state, app.clone(), provider_id(&app)).is_err());
+    assert_eq!(
+        inspect(&f.state, &app).await.issues,
+        [Issue::ProxyNotSelected]
+    );
     controller::enter_with_route(&f.state, &app, true, Some(&other.id))
         .await
         .unwrap();
@@ -227,6 +237,8 @@ async fn stage_diagnosis_respects_direct_selection_route_and_published_stack_mem
         [Issue::ProxyNotSelected]
     );
     controller::exit(&f.state, &app).await.unwrap();
+    enable_staged_direct(&f.state, app.clone(), provider_id(&app)).unwrap();
+    f.clean(&app, Scope::Direct).await;
     let agy = AppType::Agy;
     f.stage(&agy);
     f.clean(&agy, Scope::Launch).await;
@@ -243,7 +255,14 @@ async fn one_drifted_workbuddy_model_or_dsh_profile_fails_the_check() {
         .as_array_mut()
         .unwrap()
         .push(json!({"id":"other-fixture"}));
-    ProviderService::update(&f.state, app.clone(), None, row).unwrap();
+    ProviderService::update(&f.state, app.clone(), None, row.clone()).unwrap();
+    let mut wrong_endpoint = row.clone();
+    wrong_endpoint.settings_config["models"][0]["url"] = json!("https://other.invalid/v1");
+    f.state.db.save_provider(&app, &wrong_endpoint).unwrap();
+    let staged = inspect(&f.state, &app).await;
+    assert!(staged.issues.contains(&Issue::SavedConfigInvalid));
+    assert!(!staged.allows_cloud_repair(staged.scope));
+    f.state.db.save_provider(&app, &row).unwrap();
     f.enable(&app);
     f.clean(&app, Scope::Native).await;
     let path = crate::workbuddy_config::config_path();
@@ -280,7 +299,7 @@ async fn one_drifted_workbuddy_model_or_dsh_profile_fails_the_check() {
         inspect(&f.state, &dsh).await.issues,
         [Issue::NativeProfileConflict]
     );
-    assert!(reapply(&f.state, dsh.clone()).is_err());
+    assert!(!reapply(&f.state, dsh.clone()).unwrap());
     assert_eq!(fs::read_to_string(path).unwrap(), text);
 }
 
@@ -330,6 +349,7 @@ async fn a_disabled_mcode_card_preserves_the_clients_choice() {
         inspect(&f.state, &app).await.issues,
         [Issue::NativeDisabled]
     );
+    assert!(!reapply(&f.state, app.clone()).unwrap());
     assert_eq!(
         crate::mcode_config::get_providers().unwrap()[&row.id],
         disabled
@@ -373,4 +393,70 @@ async fn inspection_preserves_stale_preferences_and_reads_the_native_opencode_fo
     assert_eq!(inspect(&f.state, &app).await.issues, [Issue::KeyMismatch]);
     reapply(&f.state, app.clone()).unwrap();
     f.clean(&app, Scope::Native).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn fresh_cards_require_a_saved_key_and_never_repair_the_client() {
+    let f = Fixture::new().await;
+    for app in AppType::all() {
+        let report = inspect(&f.state, &app).await;
+        assert!(
+            report.issues.contains(&Issue::SavedKeyMissing),
+            "{app:?}: {report:?}"
+        );
+        assert!(
+            !report.issues.contains(&Issue::SavedConfigInvalid),
+            "{app:?}: {report:?}"
+        );
+        if app.spec().route_mode {
+            assert!(enable_staged_direct(&f.state, app.clone(), provider_id(&app)).is_err());
+        }
+        assert!(!reapply(&f.state, app).unwrap());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn every_writable_client_round_trips_drift_without_changing_the_saved_card() {
+    let f = Fixture::new().await;
+    for app in AppType::all().filter(|a| *a != AppType::Agy) {
+        if app == AppType::ClaudeDesktop && !desktop::is_supported_platform() {
+            continue;
+        }
+        let saved = f.stage(&app);
+        if matches!(app, AppType::Kimi | AppType::Copilot) {
+            ProviderService::add_to_live_config(&f.state, app.clone(), &saved.id).unwrap();
+        } else {
+            f.enable(&app);
+        }
+        let row = || {
+            f.state
+                .db
+                .get_provider_by_id(&saved.id, &app)
+                .unwrap()
+                .unwrap()
+        };
+        let before = serde_json::to_value(row()).unwrap();
+        let scope = if app.spec().additive {
+            Scope::Native
+        } else {
+            Scope::Direct
+        };
+        f.clean(&app, scope).await;
+        let drift = puppyrouter::with_api_key(&app, &row(), "sk-fixture-drift").unwrap();
+        assert!(
+            write_existing_client(&f.state, &app, &drift).unwrap(),
+            "{app:?}"
+        );
+        let report = inspect(&f.state, &app).await;
+        assert_eq!(report.issues, [Issue::KeyMismatch], "{app:?}");
+        assert!(reapply(&f.state, app.clone()).unwrap(), "{app:?}");
+        f.clean(&app, scope).await;
+        assert_eq!(serde_json::to_value(row()).unwrap(), before, "{app:?}");
+        assert!(
+            !reapply(&f.state, app.clone()).unwrap(),
+            "{app:?} already repaired"
+        );
+    }
 }

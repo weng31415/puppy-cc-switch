@@ -5518,6 +5518,7 @@
     "diagnoseProxyNotSelected": "目前的路由和已發佈的聚合模型均未使用 PuppyRouter。可在模式列選取此卡片。",
     "diagnoseProxyConfigMismatch": "用戶端的代理位址或驗證方式與本機路由不符，請在模式列重新接入。",
     "diagnoseReadFailed": "無法讀取目前設定。請檢查用戶端檔案和讀取權限後重試。",
+    "diagnoseSavedKeyMissing": "PuppyRouter 卡片尚未儲存 API 金鑰。請先套用可用金鑰，再啟用或修復用戶端。",
     "diagnoseSavedConfigInvalid": "PuppyRouter 卡片的位址或設定無效，請檢查該卡片。",
     "diagnoseAuthSource": "用戶端驗證方式與供應商寫入的設定不符。",
     "diagnoseExternalAuth": "此設定使用其他驗證來源，無法確認用戶端使用所選的雲端金鑰。",

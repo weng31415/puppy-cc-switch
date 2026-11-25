@@ -88,7 +88,6 @@ type DiagnoseFixAction = "cloud" | "live" | "enable";
 
 interface DiagnoseIssue {
   id: string;
-  message: string;
   fixAction?: DiagnoseFixAction;
 }
 
@@ -101,19 +100,8 @@ interface DiagnoseResult {
 
 function localFix(
   issue: PuppyRouterConfigReport["issues"][number],
-  { scope, issues }: PuppyRouterConfigReport,
+  scope: PuppyRouterConfigReport["scope"],
 ): DiagnoseFixAction | undefined {
-  if (
-    issues.some(
-      (id) =>
-        id === "SavedConfigInvalid" ||
-        id === "ExternalAuth" ||
-        id === "NativeProfileConflict" ||
-        id === "NativeDisabled" ||
-        id === "ReadFailed",
-    )
-  )
-    return;
   if (issue === "ProviderNotCurrent" || issue === "NativeMissing")
     return "enable";
   if (scope !== "direct" && scope !== "native") return;
@@ -150,16 +138,74 @@ function cloudIssue(
   list: PuppyRouterApiKeyList,
 ): { id: string; fixAction?: DiagnoseFixAction } | undefined {
   const selected = list.keys.find((key) => key.id === list.selectedTokenId);
-  if (list.selectedTokenId != null && !selected)
+  if (!list.keys.length || (list.selectedTokenId != null && !selected))
     return { id: "CloudKeyMissing" };
   const candidates = selected ? [selected] : list.keys;
-  if (selected && !selected.usable) return { id: "CloudKeyUnusable" };
+  if (!candidates.some((key) => key.usable)) return { id: "CloudKeyUnusable" };
   if (candidates.some((key) => key.providerKeyMatch && key.usable)) return;
   if (candidates.some((key) => key.providerKeyMatch))
     return { id: "CloudKeyUnusable" };
-  if (candidates.some((key) => key.providerKeyMatch == null))
+  if (candidates.some((key) => key.usable && key.providerKeyMatch == null))
     return { id: "CloudUnverified" };
   return { id: "CloudKeyMismatch", fixAction: selected ? "cloud" : undefined };
+}
+
+async function readDiagnosis(app: AppId): Promise<DiagnoseResult> {
+  const [local, cloud] = await Promise.allSettled([
+    puppyrouterAccountApi.diagnoseConfig(app),
+    puppyrouterAccountApi.listApiKeys(app),
+  ]);
+  if (
+    cloud.status === "rejected" &&
+    isPuppyRouterSessionExpiredError(cloud.reason)
+  )
+    throw cloud.reason;
+  const report: PuppyRouterConfigReport =
+    local.status === "fulfilled"
+      ? local.value
+      : { scope: "staged", issues: ["ReadFailed"] };
+  const cloudProblem: DiagnoseIssue | undefined =
+    cloud.status === "fulfilled"
+      ? cloudIssue(cloud.value)
+      : { id: "CloudUnverified" };
+  const protectedConfig = report.issues.some(
+    (id) =>
+      id === "ProviderMissing" ||
+      id === "SavedConfigInvalid" ||
+      id === "ExternalAuth" ||
+      id === "NativeProfileConflict" ||
+      id === "NativeDisabled" ||
+      id === "ReadFailed" ||
+      id === "CodexConfigInvalid" ||
+      id === "DesktopUnsupported",
+  );
+  const savedKeyMissing = report.issues.includes("SavedKeyMissing");
+  const issues = report.issues.map((id): DiagnoseIssue => {
+    const action = localFix(id, report.scope);
+    // Offline, an existing client can still be restored from its saved key.
+    const usableSource =
+      !cloudProblem ||
+      (action === "live" && cloudProblem.id === "CloudUnverified");
+    return {
+      id,
+      fixAction:
+        !protectedConfig && !savedKeyMissing && usableSource
+          ? action
+          : undefined,
+    };
+  });
+  if (cloudProblem)
+    issues.unshift({
+      id: cloudProblem.id,
+      fixAction: protectedConfig ? undefined : cloudProblem.fixAction,
+    });
+  return {
+    app,
+    scope: report.scope,
+    issues,
+    selectedTokenId:
+      cloud.status === "fulfilled" ? cloud.value.selectedTokenId : undefined,
+  };
 }
 
 function keyStatusLabel(t: TFunction, status: number) {
@@ -246,7 +292,7 @@ export function PuppyRouterAccountBanner({
     return () => {
       diagnoseGeneration.current++;
     };
-  }, [activeApp]);
+  }, [activeApp, sessionState, effectiveAccount?.user?.id]);
   const activeGrant = useRef<string | null>(null);
   const mounted = useRef(false);
   useEffect(() => {
@@ -644,107 +690,85 @@ export function PuppyRouterAccountBanner({
   };
 
   const handleDiagnosePuppyRouterConfig = async () => {
-    if (isDiagnosing) return;
+    if (isDiagnosing || !canLoadAccountData) return;
     const generation = diagnoseGeneration.current;
-    const app = APP_ICON_MAP[activeApp].label;
     setIsDiagnosing(true);
     try {
-      const [local, cloud] = await Promise.allSettled([
-        puppyrouterAccountApi.diagnoseConfig(activeApp),
-        puppyrouterAccountApi.listApiKeys(activeApp),
-      ]);
+      const result = await readDiagnosis(activeApp);
       if (generation !== diagnoseGeneration.current) return;
-      if (
-        cloud.status === "rejected" &&
-        isPuppyRouterSessionExpiredError(cloud.reason)
-      )
-        return;
-      const report: PuppyRouterConfigReport =
-        local.status === "fulfilled"
-          ? local.value
-          : { scope: "staged", issues: ["ReadFailed"] };
-      const issues: DiagnoseIssue[] = report.issues.map((id) => ({
-        id,
-        message: t(`puppyrouterAccount.diagnose${id}`, { app }),
-        fixAction: localFix(id, report),
-      }));
-      const cloudProblem =
-        cloud.status === "fulfilled"
-          ? cloudIssue(cloud.value)
-          : { id: "CloudUnverified" };
-      if (cloudProblem)
-        issues.unshift({
-          ...cloudProblem,
-          message: t(`puppyrouterAccount.diagnose${cloudProblem.id}`, { app }),
-        });
-      setDiagnoseResult({
-        app: activeApp,
-        scope: report.scope,
-        issues,
-        selectedTokenId:
-          cloud.status === "fulfilled"
-            ? cloud.value.selectedTokenId
-            : undefined,
-      });
+      setDiagnoseResult(result);
       setIsDiagnoseOpen(true);
+    } catch (error) {
+      if (!isPuppyRouterSessionExpiredError(error)) throw error;
     } finally {
       if (generation === diagnoseGeneration.current) setIsDiagnosing(false);
     }
   };
 
-  const handleFixDiagnoseIssue = async (action: DiagnoseFixAction) => {
+  const handleFixDiagnoseIssue = async (issue: DiagnoseIssue) => {
+    const action = issue.fixAction;
     if (
+      !action ||
       !diagnoseResult ||
       diagnoseResult.app !== activeApp ||
-      fixingDiagnoseAction
+      fixingDiagnoseAction ||
+      !canLoadAccountData
     )
       return;
     const generation = diagnoseGeneration.current;
     setFixingDiagnoseAction(action);
+    let attemptedWrite = false;
     try {
+      const fresh = await readDiagnosis(activeApp);
+      if (generation !== diagnoseGeneration.current) return;
+      setDiagnoseResult(fresh);
+      if (
+        fresh.scope !== diagnoseResult.scope ||
+        fresh.selectedTokenId !== diagnoseResult.selectedTokenId ||
+        !fresh.issues.some((i) => i.id === issue.id && i.fixAction === action)
+      )
+        return;
+
+      attemptedWrite = true;
       if (action === "cloud") {
-        if (diagnoseResult.selectedTokenId == null) return;
-        const keys = await puppyrouterAccountApi.listApiKeys(activeApp);
-        if (generation !== diagnoseGeneration.current) return;
+        if (fresh.selectedTokenId == null) return;
+        await puppyrouterAccountApi.applyApiKey(
+          fresh.selectedTokenId,
+          activeApp,
+          fresh.scope,
+        );
         if (
-          keys.selectedTokenId === diagnoseResult.selectedTokenId &&
-          cloudIssue(keys)?.fixAction === "cloud"
+          generation === diagnoseGeneration.current &&
+          fresh.scope === "direct" &&
+          needsClientRestart(activeApp)
         ) {
-          await puppyrouterAccountApi.applyApiKey(
-            diagnoseResult.selectedTokenId,
-            activeApp,
+          toast.info(
+            t("mode.toast.restartHint", { app: APP_ICON_MAP[activeApp].label }),
           );
         }
-        await queryClient.invalidateQueries({
-          queryKey: puppyrouterAccountKeys.apiKeys(activeApp),
-        });
-      } else {
-        const report = await puppyrouterAccountApi.diagnoseConfig(activeApp);
-        if (generation !== diagnoseGeneration.current) return;
-        // A stale dialog must never switch a newly chosen route or overwrite an official login.
+      } else if (action === "live") {
+        const applied = await puppyrouterAccountApi.reapplyConfig(activeApp);
         if (
-          report.scope === diagnoseResult.scope &&
-          report.issues.some((issue) => localFix(issue, report) === action)
+          applied &&
+          generation === diagnoseGeneration.current &&
+          fresh.scope === "direct" &&
+          needsClientRestart(activeApp)
         ) {
-          const providerId = PUPPYROUTER_PROVIDER_IDS[activeApp];
-          if (action === "live") {
-            const applied =
-              await puppyrouterAccountApi.reapplyConfig(activeApp);
-            if (
-              applied &&
-              report.scope === "direct" &&
-              needsClientRestart(activeApp)
-            ) {
-              toast.info(
-                t("mode.toast.restartHint", {
-                  app: APP_ICON_MAP[activeApp].label,
-                }),
-              );
-            }
-          } else if (activeApp === "kimi" || activeApp === "copilot") {
-            await providersApi.addToLiveConfig(providerId, activeApp);
-          } else {
-            const result = await providersApi.switch(providerId, activeApp);
+          toast.info(
+            t("mode.toast.restartHint", { app: APP_ICON_MAP[activeApp].label }),
+          );
+        }
+      } else {
+        const id = PUPPYROUTER_PROVIDER_IDS[activeApp];
+        if (activeApp === "kimi" || activeApp === "copilot") {
+          await providersApi.addToLiveConfig(id, activeApp);
+        } else {
+          const result = await providersApi.switch(
+            id,
+            activeApp,
+            issue.id === "ProviderNotCurrent",
+          );
+          if (generation === diagnoseGeneration.current) {
             if (result?.route) {
               toast.success(
                 routeSwitchNotification(
@@ -764,20 +788,33 @@ export function PuppyRouterAccountBanner({
           }
         }
       }
-      await queryClient.invalidateQueries({
-        queryKey: ["providers", activeApp],
-        refetchType: "all",
-      });
-      if (generation === diagnoseGeneration.current)
-        await handleDiagnosePuppyRouterConfig();
     } catch (error) {
-      if (!isPuppyRouterSessionExpiredError(error))
+      if (
+        generation === diagnoseGeneration.current &&
+        !isPuppyRouterSessionExpiredError(error)
+      )
         toast.error(t("puppyrouterAccount.diagnoseFixFailed"), {
           closeButton: true,
         });
     } finally {
-      if (generation === diagnoseGeneration.current)
-        setFixingDiagnoseAction(null);
+      try {
+        if (attemptedWrite && generation === diagnoseGeneration.current) {
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ["providers", activeApp],
+              refetchType: "all",
+            }),
+            queryClient.invalidateQueries({
+              queryKey: puppyrouterAccountKeys.apiKeys(activeApp),
+            }),
+          ]);
+          if (generation === diagnoseGeneration.current)
+            await handleDiagnosePuppyRouterConfig();
+        }
+      } finally {
+        if (generation === diagnoseGeneration.current)
+          setFixingDiagnoseAction(null);
+      }
     }
   };
 
@@ -1312,7 +1349,9 @@ export function PuppyRouterAccountBanner({
                     <div className="flex min-w-0 items-start gap-2">
                       <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
                       <span className="min-w-0 whitespace-pre-line">
-                        {issue.message}
+                        {t(`puppyrouterAccount.diagnose${issue.id}`, {
+                          app: APP_ICON_MAP[activeApp].label,
+                        })}
                       </span>
                     </div>
                     {issue.fixAction && (
@@ -1320,9 +1359,7 @@ export function PuppyRouterAccountBanner({
                         type="button"
                         size="sm"
                         variant="outline"
-                        onClick={() =>
-                          void handleFixDiagnoseIssue(issue.fixAction!)
-                        }
+                        onClick={() => void handleFixDiagnoseIssue(issue)}
                         disabled={fixingDiagnoseAction !== null || isDiagnosing}
                         className="shrink-0 border-primary/35 bg-primary/12 text-primary hover:bg-primary/20"
                       >

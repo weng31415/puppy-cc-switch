@@ -181,8 +181,16 @@ export const providersApi = {
     return await invoke("remove_provider_from_live_config", { id, app: appId });
   },
 
-  async switch(id: string, appId: AppId): Promise<SwitchResult> {
-    return await invoke("switch_provider", { id, app: appId });
+  async switch(
+    id: string,
+    appId: AppId,
+    stagedDirect?: boolean,
+  ): Promise<SwitchResult> {
+    return await invoke("switch_provider", {
+      id,
+      app: appId,
+      ...(stagedDirect && { stagedDirect }),
+    });
   },
 
   async importDefault(appId: AppId): Promise<boolean> {

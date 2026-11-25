@@ -5518,6 +5518,7 @@
     "diagnoseProxyNotSelected": "PuppyRouter is outside the current route and published stack models. Select it in the mode selector to use this card.",
     "diagnoseProxyConfigMismatch": "The client proxy address or authentication differs from the local router. Reconnect it from the mode selector.",
     "diagnoseReadFailed": "Could not read the current configuration. Check the client files and their permissions, then try again.",
+    "diagnoseSavedKeyMissing": "The saved PuppyRouter card has no API key. Apply a usable key before enabling or repairing this client.",
     "diagnoseSavedConfigInvalid": "Check the endpoint and settings saved on the PuppyRouter card.",
     "diagnoseAuthSource": "The client authentication differs from the provider configuration.",
     "diagnoseExternalAuth": "This configuration uses another credential source. The selected cloud key could not be verified for the client.",

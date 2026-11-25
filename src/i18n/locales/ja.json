@@ -5518,6 +5518,7 @@
     "diagnoseProxyNotSelected": "現在のルートにも公開済みのスタックモデルにも PuppyRouter は含まれていません。利用するにはモード選択で指定してください。",
     "diagnoseProxyConfigMismatch": "クライアントのプロキシアドレスまたは認証方式がローカルルーターと一致しません。再接続してください。",
     "diagnoseReadFailed": "現在の設定を読み取れません。ファイルと読み取り権限を確認して再試行してください。",
+    "diagnoseSavedKeyMissing": "PuppyRouter カードに API キーが保存されていません。有効なキーを適用してからクライアントを有効化または修復してください。",
     "diagnoseSavedConfigInvalid": "PuppyRouter カードのエンドポイントと設定を確認してください。",
     "diagnoseAuthSource": "クライアントの認証方式がプロバイダーの設定と一致しません。",
     "diagnoseExternalAuth": "別の認証情報源が設定されているため、選択したクラウドキーの使用を確認できません。",

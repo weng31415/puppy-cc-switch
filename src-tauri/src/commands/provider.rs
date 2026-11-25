@@ -199,12 +199,21 @@ fn switch_provider_internal(
     state: &AppState,
     app_type: AppType,
     id: &str,
+    staged_direct: bool,
 ) -> Result<SwitchResult, AppError> {
     // Codex：切换前后各看一次新会话落在哪组，跨组时提示（新版 Codex 会锁住另一组）。
     let codex_bucket_before = matches!(app_type, AppType::Codex)
         .then(crate::codex_history_migration::codex_live_history_bucket)
         .flatten();
-    let mut result = ProviderService::switch(state, app_type.clone(), id)?;
+    let mut result = if staged_direct {
+        crate::services::provider::puppyrouter::diagnostics::enable_staged_direct(
+            state,
+            app_type.clone(),
+            id,
+        )?
+    } else {
+        ProviderService::switch(state, app_type.clone(), id)?
+    };
     if matches!(app_type, AppType::Codex) {
         result.codex_history_split = crate::codex_history_migration::codex_history_split_hint(
             codex_bucket_before.as_deref(),
@@ -219,7 +228,7 @@ pub fn switch_provider_test_hook(
     app_type: AppType,
     id: &str,
 ) -> Result<SwitchResult, AppError> {
-    switch_provider_internal(state, app_type, id)
+    switch_provider_internal(state, app_type, id, false)
 }
 
 #[tauri::command]
@@ -227,6 +236,7 @@ pub async fn switch_provider(
     app_handle: tauri::AppHandle,
     app: String,
     id: String,
+    staged_direct: Option<bool>,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app)?;
     let handle = app_handle.clone();
@@ -234,7 +244,8 @@ pub async fn switch_provider(
         let state = handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
-        switch_provider_internal(state.inner(), app_type, &id).map_err(|e| e.to_string())
+        switch_provider_internal(state.inner(), app_type, &id, staged_direct.unwrap_or(false))
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("供应商切换任务执行失败: {e}"))??;

@@ -912,11 +912,11 @@ async fn refresh_codex_model_catalog_from_puppyrouter(
     Ok(())
 }
 
-async fn save_puppyrouter_provider_for_app(
+async fn prepare_puppyrouter_provider_for_app(
     state: &AppState,
     app_type: &AppType,
     api_key: &str,
-) -> Result<(), String> {
+) -> Result<crate::provider::Provider, String> {
     let existing = state
         .db
         .get_provider_by_id(puppyrouter::provider_id(app_type), app_type)
@@ -944,11 +944,7 @@ async fn save_puppyrouter_provider_for_app(
             return Err("模型列表加载期间供应商已更改，请重新选择密钥。".into());
         }
     }
-    // Upstream update owns all live writes and preserves direct/routing/stack state.
-    // It updates an additive entry only if already present, and never enables it.
-    ProviderService::update(state, app_type.clone(), None, provider)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    Ok(provider)
 }
 
 fn puppyrouter_provider_api_key_for_app(
@@ -1327,6 +1323,7 @@ pub async fn apply_puppyrouter_api_key(
     state: State<'_, AppState>,
     token_id: i64,
     target_app: Option<String>,
+    diagnostic_scope: Option<puppyrouter::diagnostics::Scope>,
 ) -> Result<PuppyRouterApplyKeyResult, String> {
     let target_app = parse_target_app(target_app)?;
     // Applying two selections at once must preserve both per-app choices.
@@ -1347,7 +1344,26 @@ pub async fn apply_puppyrouter_api_key(
     }
 
     let full_key = fetch_token_key(state.inner(), &client, &session, token_id).await?;
-    save_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
+    let provider =
+        prepare_puppyrouter_provider_for_app(state.inner(), &target_app, &full_key).await?;
+    if let Some(scope) = diagnostic_scope {
+        if selected_token_for_app(state.inner(), &target_app)?.map(|t| t.token_id) != Some(token_id)
+            || !puppyrouter::diagnostics::inspect(state.inner(), &target_app)
+                .await
+                .allows_cloud_repair(scope)
+        {
+            return Err("配置或选中的密钥已更改，请重新诊断。".into());
+        }
+    }
+    if !read_session(state.inner())?.is_some_and(|current| {
+        current.user.id == session.user.id
+            && current.cookie_header == session.cookie_header
+            && current.logged_in_at == session.logged_in_at
+    }) {
+        return Err("登录状态已更改，请重新选择密钥。".into());
+    }
+    ProviderService::update(state.inner(), target_app.clone(), None, provider)
+        .map_err(|e| e.to_string())?;
 
     let group = normalize_group(token.group.clone());
     let selected = StoredSelectedToken {
@@ -1738,9 +1754,11 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, official_snapshot).expect("seed official Grok Build live config");
 
-        save_puppyrouter_provider_for_app(&state, &AppType::GrokBuild, "sk-cloud-selected")
-            .await
-            .expect("stage cloud key in local PuppyRouter provider");
+        let prepared =
+            prepare_puppyrouter_provider_for_app(&state, &AppType::GrokBuild, "sk-cloud-selected")
+                .await
+                .expect("prepare local PuppyRouter provider");
+        ProviderService::update(&state, AppType::GrokBuild, None, prepared).unwrap();
 
         assert_eq!(
             crate::grok_config::read_grok_live_settings().expect("read unchanged live config")

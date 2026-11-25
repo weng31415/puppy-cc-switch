@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item, TableLike};
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, serde::Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Staged,
@@ -36,6 +36,7 @@ pub enum Issue {
     ProxyConfigMismatch,
     ReadFailed,
     SavedConfigInvalid,
+    SavedKeyMissing,
     EndpointMismatch,
     KeyMissing,
     KeyMismatch,
@@ -59,6 +60,22 @@ pub struct Report {
 }
 
 impl Report {
+    pub(crate) fn allows_cloud_repair(&self, scope: Scope) -> bool {
+        self.scope == scope
+            && !self.issues.iter().any(|issue| {
+                matches!(
+                    issue,
+                    Issue::ProviderMissing
+                        | Issue::SavedConfigInvalid
+                        | Issue::ExternalAuth
+                        | Issue::NativeProfileConflict
+                        | Issue::NativeDisabled
+                        | Issue::ReadFailed
+                        | Issue::CodexConfigInvalid
+                        | Issue::DesktopUnsupported
+                )
+            })
+    }
     fn new(scope: Scope) -> Self {
         Self {
             scope,
@@ -129,59 +146,178 @@ pub(crate) async fn inspect(state: &AppState, app: &AppType) -> Report {
     report
 }
 
-/// Reapply the database row through the normal mode-aware update. Never select a route,
-/// add a missing native entry, or import a possibly drifted credential from the client.
+/// Read the current card and client under the same switch lock as the writer.
+/// A repair writes only the client; it must never save an old snapshot over the card.
 pub(crate) fn reapply(state: &AppState, app: AppType) -> Result<bool, AppError> {
-    let id = provider_id(&app);
-    let active = if app.spec().additive {
-        crate::services::provider::provider_exists_in_live_config(&app, id)?
+    let _guard = if app.spec().route_mode {
+        futures::executor::block_on(crate::mode::controller::lock_settled(state, &app))?
     } else {
-        let mode = device::mode_state(&DeviceStore::for_device(), app.as_str())?;
-        app.spec().route_mode
-            && !mode.is_proxy()
-            && current::inspect_provider_id(&state.db, &app, &mode)?.as_deref() == Some(id)
+        futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()))
     };
-    if !active {
+    if app.spec().route_mode
+        && device::mode_state(&DeviceStore::for_device(), app.as_str())?.is_proxy()
+    {
         return Ok(false);
     }
-    let row = state
+    let Some(row) = state
         .db
-        .get_provider_by_id(id, &app)?
+        .get_provider_by_id(provider_id(&app), &app)?
         .filter(|r| owns(&app, r))
-        .ok_or_else(|| AppError::InvalidInput("PuppyRouter provider is missing".into()))?;
-    ProviderService::update(state, app, None, row)
+    else {
+        return Ok(false);
+    };
+    let mut report = Report::new(Scope::Staged);
+    if let Err(issue) =
+        futures::executor::block_on(inspect_row(state, &app, row.clone(), &mut report))
+    {
+        report.flag(issue);
+    }
+    if !matches!(report.scope, Scope::Direct | Scope::Native)
+        || report.issues.is_empty()
+        || !report.issues.iter().all(|issue| {
+            matches!(
+                issue,
+                Issue::KeyMissing
+                    | Issue::KeyMismatch
+                    | Issue::EndpointMismatch
+                    | Issue::CodexProviderTableMissing
+                    | Issue::CodexWireApiNotResponses
+                    | Issue::AuthSource
+                    | Issue::DesktopProfile
+                    | Issue::GeminiAuthMode
+                    | Issue::ModelConfigMismatch
+            )
+        })
+    {
+        return Ok(false);
+    }
+    write_existing_client(state, &app, &row)
+}
+
+/// A diagnosis of a staged card may offer a direct switch. If the user has since
+/// entered routing or Stack, leave the route alone even when the switch was queued.
+pub(crate) fn enable_staged_direct(
+    state: &AppState,
+    app: AppType,
+    id: &str,
+) -> Result<crate::services::provider::SwitchResult, AppError> {
+    let changed = || {
+        AppError::InvalidInput("PuppyRouter configuration changed; run diagnostics again".into())
+    };
+    if !app.spec().route_mode || id != provider_id(&app) {
+        return Err(changed());
+    }
+    let _guard = crate::mode::controller::lock_settled_blocking(state, &app)?;
+    if device::mode_state(&DeviceStore::for_device(), app.as_str())?.is_proxy() {
+        return Err(changed());
+    }
+    let report = futures::executor::block_on(inspect(state, &app));
+    if report.scope != Scope::Staged || report.issues != [Issue::ProviderNotCurrent] {
+        return Err(changed());
+    }
+    let rows = state.db.get_provider_rows(&app)?;
+    ProviderService::switch_normal(state, app, id, &rows.readable)
+}
+
+fn write_existing_client(
+    state: &AppState,
+    app: &AppType,
+    row: &Provider,
+) -> Result<bool, AppError> {
+    let id = &row.id;
+    let config = &row.settings_config;
+    match app {
+        AppType::Pi => Ok(crate::pi_config::replace_pi_provider_if_present(id, config)?.is_some()),
+        AppType::Omp => crate::omp_config::change_and_commit(
+            id,
+            Some(config),
+            crate::omp_config::Change::ReplaceIfPresent,
+            |old| Ok(old.is_some()),
+        ),
+        AppType::Copilot => {
+            crate::copilot_config::save_and_commit(id, Some(config), false, || Ok(true))
+        }
+        AppType::Dsh => {
+            crate::dsh_config::save_and_commit(id, Some(config.clone()), false, || Ok(true))
+        }
+        AppType::Kimi => {
+            crate::kimi_config::save_and_commit(id, Some(config.clone()), false, || Ok(true))
+        }
+        _ => {
+            crate::services::provider::write_live_for_state(state, app, row)?;
+            Ok(true)
+        }
+    }
 }
 
 async fn inspect_local(state: &AppState, app: &AppType, report: &mut Report) -> Result<(), Issue> {
-    let id = provider_id(app);
-    let mut row = state
+    let row = state
         .db
-        .get_provider_by_id(id, app)
+        .get_provider_by_id(provider_id(app), app)
         .map_err(|_| Issue::ReadFailed)?
         .filter(|p| owns(app, p))
         .ok_or(Issue::ProviderMissing)?;
+    inspect_row(state, app, row, report).await
+}
+
+async fn inspect_row(
+    state: &AppState,
+    app: &AppType,
+    mut row: Provider,
+    report: &mut Report,
+) -> Result<(), Issue> {
+    let id = provider_id(app);
     let expected = row.resolve_usage_credentials(app);
+    if expected.1.trim().is_empty() {
+        report.flag(Issue::SavedKeyMissing);
+    }
     let saved_url = if *app == AppType::Codex {
-        let codex::Route::Custom { table, .. } = codex_direct::project(&row)
-            .map_err(|_| Issue::SavedConfigInvalid)?
-            .route
-        else {
-            return Err(Issue::SavedConfigInvalid);
-        };
-        table
-            .get("base_url")
-            .and_then(Item::as_str)
-            .unwrap_or_default()
-            .to_owned()
+        match codex_direct::project(&row) {
+            Ok(projection) => {
+                let codex::Route::Custom { table, auth } = projection.route else {
+                    return Err(Issue::SavedConfigInvalid);
+                };
+                if table
+                    .get("wire_api")
+                    .is_some_and(|v| v.as_str() != Some("responses"))
+                {
+                    report.flag(Issue::SavedConfigInvalid);
+                }
+                if matches!(auth, codex::RouteAuth::EnvKey | codex::RouteAuth::Headers) {
+                    report.flag(Issue::ExternalAuth);
+                }
+                table
+                    .get("base_url")
+                    .and_then(Item::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+            Err(e) if codex::is_keyless_fallback(&e) => expected.0.clone(),
+            Err(_) => return Err(Issue::SavedConfigInvalid),
+        }
     } else {
         expected.0.clone()
     };
+    if uses_external_auth(app, &row.settings_config)
+        || (*app == AppType::Claude && claude_uses_other_auth(&row.settings_config))
+        || (*app == AppType::GrokBuild
+            && crate::grok_config::extract_model_config(string(&row.settings_config, "/config"))
+                .is_some_and(|m| m.env_key.is_some()))
+    {
+        report.flag(Issue::ExternalAuth);
+    }
     if !official_endpoint(&saved_url) {
         report.flag(Issue::SavedConfigInvalid);
     }
     if *app == AppType::Agy {
         report.scope = Scope::Launch;
-        let settings = agy_direct::live_settings(&row).map_err(|_| Issue::SavedConfigInvalid)?;
+        let settings = agy_direct::live_settings(&row).map_err(|error| match error {
+            AppError::Localized {
+                key: "gemini.validation.missing_api_key",
+                ..
+            } => Issue::SavedKeyMissing,
+            _ => Issue::SavedConfigInvalid,
+        })?;
         if string(&settings, "/env/GEMINI_API_KEY").is_empty() {
             report.flag(Issue::KeyMissing);
         }
@@ -205,8 +341,13 @@ async fn inspect_local(state: &AppState, app: &AppType, report: &mut Report) -> 
     }
     report.scope = Scope::Direct;
     if *app == AppType::ClaudeDesktop {
-        let credentials =
-            desktop::direct_gateway_credentials(&row).map_err(|_| Issue::SavedConfigInvalid)?;
+        let credentials = desktop::direct_gateway_credentials(&row).map_err(|_| {
+            if expected.1.trim().is_empty() {
+                Issue::SavedKeyMissing
+            } else {
+                Issue::SavedConfigInvalid
+            }
+        })?;
         return check_desktop(report, &(credentials.base_url, credentials.api_key));
     }
     let live = read_client(app)?;
@@ -266,6 +407,9 @@ fn check_native(
     expected: (String, String),
     report: &mut Report,
 ) -> Result<(), Issue> {
+    if *app == AppType::Mcode && mcode_disabled(&row.settings_config) {
+        report.flag(Issue::NativeDisabled);
+    }
     if *app == AppType::WorkBuddy {
         return check_workbuddy(&row, report);
     }
@@ -307,7 +451,7 @@ fn check_native(
         && model_settings(&row.settings_config).any(|model| {
             model["baseUrl"]
                 .as_str()
-                .is_some_and(|u| u.trim_end_matches('/') != expected.0)
+                .is_some_and(|u| u.trim_end_matches('/') != expected.0.trim_end_matches('/'))
                 || model["apiKey"].as_str().is_some_and(|k| k != expected.1)
         })
     {
@@ -326,31 +470,31 @@ fn check_native(
             );
         }
     }
-    let provider = &row.settings_config["provider"];
-    if *app == AppType::Mcode
-        && (row.settings_config["enabled"] == false
-            || !row.settings_config["models"]
-                .as_object()
-                .is_some_and(|models| {
-                    models
-                        .values()
-                        .any(|model| model.is_object() && model["enabled"] != false)
-                }))
-    {
+    if *app == AppType::Mcode && mcode_disabled(&row.settings_config) {
         report.flag(Issue::NativeDisabled);
     }
-    if (*app == AppType::Kimi
-        && (provider.get("api_key_env").is_some() || provider.get("oauth").is_some()))
-        || (*app == AppType::Copilot && provider.get("bearerToken").is_some())
-        || (*app == AppType::Pi && row.settings_config.get("oauth").is_some())
-        || (*app == AppType::Omp
-            && row.settings_config["auth"]
-                .as_str()
-                .is_some_and(|auth| auth != "apiKey"))
-    {
+    if uses_external_auth(app, &row.settings_config) {
         report.flag(Issue::ExternalAuth);
     }
     Ok(())
+}
+
+fn mcode_disabled(config: &Value) -> bool {
+    config["enabled"] == false
+        || !config["models"].as_object().is_some_and(|models| {
+            models
+                .values()
+                .any(|model| model.is_object() && model["enabled"] != false)
+        })
+}
+
+fn uses_external_auth(app: &AppType, config: &Value) -> bool {
+    let provider = &config["provider"];
+    (*app == AppType::Kimi
+        && (provider.get("api_key_env").is_some() || provider.get("oauth").is_some()))
+        || (*app == AppType::Copilot && provider.get("bearerToken").is_some())
+        || (*app == AppType::Pi && config.get("oauth").is_some())
+        || (*app == AppType::Omp && config["auth"].as_str().is_some_and(|auth| auth != "apiKey"))
 }
 
 async fn check_proxy(
@@ -426,6 +570,24 @@ fn claude_uses_other_auth(config: &Value) -> bool {
 }
 
 fn check_workbuddy(row: &Provider, report: &mut Report) -> Result<(), Issue> {
+    let saved = &row.settings_config;
+    let expected = saved["models"]
+        .as_array()
+        .ok_or(Issue::SavedConfigInvalid)?;
+    let (_, saved_key) = row.resolve_usage_credentials(&AppType::WorkBuddy);
+    let inherited = |model: &Value, field: &str| {
+        model
+            .get(field)
+            .or_else(|| saved.get(field))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    for model in expected {
+        if !official_endpoint(&inherited(model, "url")) || inherited(model, "apiKey") != saved_key {
+            report.flag(Issue::SavedConfigInvalid);
+        }
+    }
     let (models, all_selectable) =
         crate::workbuddy_config::read_provider_models(&row.id).map_err(|_| Issue::ReadFailed)?;
     if models.is_empty() {
@@ -435,10 +597,6 @@ fn check_workbuddy(row: &Provider, report: &mut Report) -> Result<(), Issue> {
     if !all_selectable {
         report.flag(Issue::NativeDisabled);
     }
-    let saved = &row.settings_config;
-    let expected = saved["models"]
-        .as_array()
-        .ok_or(Issue::SavedConfigInvalid)?;
     if models.len() != expected.len()
         || expected
             .iter()
@@ -446,29 +604,15 @@ fn check_workbuddy(row: &Provider, report: &mut Report) -> Result<(), Issue> {
     {
         report.flag(Issue::ModelConfigMismatch);
     }
-    let (_, saved_key) = row.resolve_usage_credentials(&AppType::WorkBuddy);
     for model in &models {
         let Some(source) = expected.iter().find(|m| m["id"] == model["id"]) else {
             report.flag(Issue::ModelConfigMismatch);
             continue;
         };
-        let field = |key: &str| {
-            source
-                .get(key)
-                .or_else(|| saved.get(key))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        let url = field("url");
-        let source_key = field("apiKey");
-        if !official_endpoint(&url) || source_key != saved_key {
-            report.flag(Issue::SavedConfigInvalid);
-        }
         report.credentials(
             string(model, "/url"),
             string(model, "/apiKey"),
-            &(url, source_key),
+            &(inherited(source, "url"), inherited(source, "apiKey")),
         );
     }
     Ok(())
@@ -521,7 +665,13 @@ fn active_table(doc: &DocumentMut) -> Option<&dyn TableLike> {
 }
 
 fn check_codex(row: &Provider, live: &Value, report: &mut Report) -> Result<(), Issue> {
-    let projection = codex_direct::project(row).map_err(|_| Issue::SavedConfigInvalid)?;
+    let projection = codex_direct::project(row).map_err(|e| {
+        if codex::is_keyless_fallback(&e) {
+            Issue::SavedKeyMissing
+        } else {
+            Issue::SavedConfigInvalid
+        }
+    })?;
     let codex::Route::Custom {
         table: expected,
         auth,

@@ -96,6 +96,7 @@ export interface PuppyRouterConfigReport {
     | "ProxyConfigMismatch"
     | "ReadFailed"
     | "SavedConfigInvalid"
+    | "SavedKeyMissing"
     | "EndpointMismatch"
     | "KeyMissing"
     | "KeyMismatch"
@@ -221,10 +222,12 @@ export const puppyrouterAccountApi = {
   async applyApiKey(
     tokenId: number,
     targetApp: string,
+    diagnosticScope?: PuppyRouterConfigReport["scope"],
   ): Promise<PuppyRouterApplyKeyResult> {
     return await invokePuppyRouterAccount("apply_puppyrouter_api_key", {
       tokenId,
       targetApp,
+      ...(diagnosticScope && { diagnosticScope }),
     });
   },
 };
