@@ -30,7 +30,7 @@ interface UpdateContextValue {
   // 自动更新（下载状态在后端，主窗口重建后从后端取回）
   /** 后台已下好、等确认安装的版本 */
   readyUpdate: ReadyUpdate | null;
-  /** 这台机器能不能自动安装（便携版、Linux 非 AppImage 不行） */
+  /** 这台机器能不能自动安装（便携版和没有匹配更新包的安装方式不支持） */
   autoUpdateSupported: boolean;
   /** 有应用在用路由服务（重启会切断进行中的请求），随 refreshAutoUpdate 更新 */
   routingInUse: boolean;
@@ -119,42 +119,35 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     };
   }, [refreshAutoUpdate]);
 
-  const isCheckingRef = useRef(false);
-
-  const checkUpdate = useCallback(async () => {
-    if (isCheckingRef.current) return false;
-    isCheckingRef.current = true;
+  const checkInFlight = useRef<Promise<boolean> | null>(null);
+  const checkUpdate = useCallback(() => {
+    if (checkInFlight.current) return checkInFlight.current;
     setIsChecking(true);
     setError(null);
 
-    try {
-      const result = await checkForUpdate({ timeout: 30000 });
-
-      if (result.status === "available") {
-        setHasUpdate(true);
-        setUpdateInfo(result.info);
-
-        // 检查是否已经关闭过这个版本的提醒
+    checkInFlight.current = checkForUpdate({ timeout: 30000 })
+      .then((result) => {
+        const info = result.status === "available" ? result.info : null;
+        setHasUpdate(!!info);
+        setUpdateInfo(info);
         setIsDismissed(
-          localStorage.getItem(DISMISSED_VERSION_KEY) ===
-            result.info.availableVersion,
+          !!info &&
+            localStorage.getItem(DISMISSED_VERSION_KEY) ===
+              info.availableVersion,
         );
-        return true; // 有更新
-      } else {
+        return !!info;
+      })
+      .catch((err) => {
+        console.error("检查更新失败:", err);
+        setError(extractErrorMessage(err) || "检查更新失败");
         setHasUpdate(false);
-        setUpdateInfo(null);
-        setIsDismissed(false);
-        return false; // 已是最新
-      }
-    } catch (err) {
-      console.error("检查更新失败:", err);
-      setError(extractErrorMessage(err) || "检查更新失败");
-      setHasUpdate(false);
-      throw err; // 抛出错误让调用方处理
-    } finally {
-      setIsChecking(false);
-      isCheckingRef.current = false;
-    }
+        throw err;
+      })
+      .finally(() => {
+        setIsChecking(false);
+        checkInFlight.current = null;
+      });
+    return checkInFlight.current;
   }, []);
 
   // 后台下好了新版本，但启动时那次检查没看到（应用开着期间才发版）：补查一次，

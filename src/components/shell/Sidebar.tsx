@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   ArrowLeft,
+  ArrowUpCircle,
   BookOpen,
   ChartColumn,
   ChevronsLeft,
@@ -16,6 +17,7 @@ import {
   KeyRound,
   Layers,
   LayoutGrid,
+  Loader2,
   Puzzle,
   Route,
   Server,
@@ -45,6 +47,8 @@ import { useSidebarStatus, type AppNavStatus } from "@/hooks/useSidebarStatus";
 import { HoverTip } from "@/components/ui/hover-tip";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE, isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { toast } from "@/lib/toast";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import puppyrouterLogo from "@/assets/icons/app-icon.png";
 import { APP_DISPLAY_NAME, AppGlyph } from "./AppGlyph";
 
@@ -95,7 +99,11 @@ export function Sidebar(props: SidebarProps) {
       >
         {t("nav.skipToContent")}
       </a>
-      <SidebarTopBar collapsed={collapsed} onToggle={toggle} />
+      <SidebarTopBar
+        collapsed={collapsed}
+        onToggle={toggle}
+        onOpenAbout={() => props.onSelectSettingsSection("about")}
+      />
       {inSettings ? (
         <SettingsDirectory {...props} collapsed={collapsed} />
       ) : (
@@ -108,17 +116,40 @@ export function Sidebar(props: SidebarProps) {
 function SidebarTopBar({
   collapsed,
   onToggle,
+  onOpenAbout,
 }: {
   collapsed: boolean;
   onToggle: () => void;
+  onOpenAbout: () => void;
 }) {
   const { t } = useTranslation();
+  const { hasUpdate, updateInfo, isChecking, checkUpdate } = useUpdate();
   const { data: version } = useQuery({
     queryKey: ["app-version"],
     queryFn: () => getVersion(),
     staleTime: Infinity,
     enabled: !collapsed,
   });
+  const updateLabel = isChecking
+    ? t("settings.checking")
+    : hasUpdate && updateInfo
+      ? t("settings.updateAvailable", { version: updateInfo.availableVersion })
+      : t("settings.checkForUpdates");
+
+  const handleVersionClick = async () => {
+    try {
+      if (hasUpdate || (await checkUpdate())) {
+        onOpenAbout();
+      } else {
+        toast.success(t("settings.upToDate"), { closeButton: true });
+      }
+    } catch (error) {
+      toast.error(t("settings.checkUpdateFailed"), {
+        description: extractErrorMessage(error) || undefined,
+        closeButton: true,
+      });
+    }
+  };
   const brand = !collapsed && (
     <div className="pointer-events-none flex min-w-0 flex-1 items-center gap-2">
       <img
@@ -132,7 +163,27 @@ function SidebarTopBar({
           puppyrouter tool
         </div>
         {version && (
-          <div className="text-caption tabular-nums text-fg-3">v{version}</div>
+          <HoverTip content={updateLabel} side="bottom">
+            <button
+              type="button"
+              style={NO_DRAG}
+              disabled={isChecking}
+              aria-busy={isChecking}
+              aria-label={`v${version} · ${updateLabel}`}
+              onClick={() => void handleVersionClick()}
+              className={cn(
+                "pointer-events-auto flex items-center gap-1 rounded-sm text-caption tabular-nums text-fg-2 hover:text-action-text hover:underline focus-visible:outline-action disabled:cursor-wait",
+                hasUpdate && "text-success-text",
+              )}
+            >
+              v{version}
+              {isChecking ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+              ) : hasUpdate ? (
+                <ArrowUpCircle className="h-3 w-3" aria-hidden />
+              ) : null}
+            </button>
+          </HoverTip>
         )}
       </div>
     </div>

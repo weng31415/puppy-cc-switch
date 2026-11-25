@@ -64,6 +64,29 @@ describe("UpdateProvider auto update", () => {
     info: { currentVersion: "4.0.0", availableVersion: version },
   });
 
+  it("shares one pending check and returns the available update to both callers", async () => {
+    let finish!: (result: ReturnType<typeof available>) => void;
+    mocks.checkForUpdate.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(
+      <UpdateProvider>
+        <Probe />
+      </UpdateProvider>,
+    );
+    await act(async () => {
+      const a = ctx.checkUpdate();
+      const b = ctx.checkUpdate();
+      expect(b).toBe(a);
+      finish(available("4.0.41"));
+      expect(await Promise.all([a, b])).toEqual([true, true]);
+    });
+    expect(mocks.checkForUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it("starts the background download as soon as the startup check finds a new version", async () => {
     // 开发构建不主动下载，这里按正式构建测
     vi.stubEnv("DEV", false);

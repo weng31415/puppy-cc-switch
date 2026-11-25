@@ -5392,7 +5392,7 @@
   "autoUpdate": {
     "toggle": "Updates automatisch herunterladen",
     "toggleHelp": "Lädt neue Versionen im Hintergrund herunter und fragt vor der Installation nach. Ohne Ihre Bestätigung wird nichts installiert.",
-    "unsupported": "Nicht verfügbar für die portable Version und Linux-deb-/rpm-Pakete",
+    "unsupported": "Für diese Installationsart sind keine Update-Downloads im Hintergrund verfügbar",
     "readyTitle": "v{{version}} wurde heruntergeladen",
     "readyBody": "Jetzt installieren? puppyrouter app wird neu gestartet.",
     "readyBodyRouting": "Jetzt installieren? puppyrouter app wird neu gestartet, laufende Anfragen über das lokale Routing werden abgebrochen.",

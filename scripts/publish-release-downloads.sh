@@ -24,9 +24,9 @@ if version(sys.argv[2]) < version(sys.argv[1]):
     sys.exit("A newer updater is already live")
 PY
 
-for asset in "$assets"/PuppyRouter-App-*; do
-  name=${asset##*/}
-  key="downloads/$name"
+publish_immutable() {
+  local asset=$1 name=$2 existing
+  local key="downloads/$name"
   existing=$(aws s3api list-objects-v2 --endpoint-url "$endpoint" --bucket "$R2_BUCKET" \
     --prefix "$key" --max-keys 1 --query 'Contents[0].Key' --output text)
   if [[ "$existing" != "$key" ]]; then
@@ -37,7 +37,22 @@ for asset in "$assets"/PuppyRouter-App-*; do
     --output "$work/download" "$public_base/$name"
   if ! cmp -s "$work/download" "$asset"; then
     echo "Public bytes do not match the verified release asset: $name" >&2
-    exit 1
+    return 1
+  fi
+}
+
+for asset in "$assets"/PuppyRouter-App-*; do
+  publish_immutable "$asset" "${asset##*/}"
+done
+
+# The portable client requests a ZIP by semantic version; release artifacts also carry the commit.
+release=$(jq -er '.release' "$assets/manual-latest.json")
+version=$(jq -er '.version' "$assets/latest.json")
+for suffix in Windows-Portable.zip Windows-arm64-Portable.zip; do
+  asset="$assets/PuppyRouter-App-$release-$suffix"
+  alias_name="PuppyRouter-App-v$version-$suffix"
+  if [[ -f "$asset" && "${asset##*/}" != "$alias_name" ]]; then
+    publish_immutable "$asset" "$alias_name"
   fi
 done
 

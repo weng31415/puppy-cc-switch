@@ -5392,7 +5392,7 @@
   "autoUpdate": {
     "toggle": "自動下載更新",
     "toggleHelp": "在背景下載新版本，下載完成後詢問是否安裝，不會未經確認就安裝。",
-    "unsupported": "可攜版和 Linux 的 deb / rpm 安裝套件不支援自動更新",
+    "unsupported": "此安裝方式不支援在背景下載更新",
     "readyTitle": "新版本 v{{version}} 已下載完成",
     "readyBody": "現在安裝嗎？puppyrouter app 會重新啟動。",
     "readyBodyRouting": "現在安裝嗎？puppyrouter app 會重新啟動，正在經本地路由的請求會中斷。",

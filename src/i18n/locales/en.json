@@ -5392,7 +5392,7 @@
   "autoUpdate": {
     "toggle": "Download updates automatically",
     "toggleHelp": "Downloads new versions in the background and asks before installing. Nothing is installed without your confirmation.",
-    "unsupported": "Not available for the portable build or Linux deb / rpm packages",
+    "unsupported": "Background update downloads are unavailable for this installation type",
     "readyTitle": "v{{version}} has been downloaded",
     "readyBody": "Install it now? puppyrouter app will restart.",
     "readyBodyRouting": "Install it now? puppyrouter app will restart, and requests in progress through local routing will be cut off.",

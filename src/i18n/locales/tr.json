@@ -5392,7 +5392,7 @@
   "autoUpdate": {
     "toggle": "Güncellemeleri otomatik indir",
     "toggleHelp": "Yeni sürümleri arka planda indirir ve kurmadan önce sorar. Onayınız olmadan hiçbir şey kurulmaz.",
-    "unsupported": "Taşınabilir sürümde ve Linux deb / rpm paketlerinde kullanılamaz",
+    "unsupported": "Bu kurulum türünde güncellemeler arka planda indirilemez",
     "readyTitle": "v{{version}} sürümü indirildi",
     "readyBody": "Şimdi kurulsun mu? puppyrouter app yeniden başlatılacak.",
     "readyBodyRouting": "Şimdi kurulsun mu? puppyrouter app yeniden başlatılacak ve yerel yönlendirme üzerinden devam eden istekler kesilecek.",

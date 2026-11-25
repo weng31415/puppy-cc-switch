@@ -17,7 +17,7 @@ export interface ReadyUpdate {
 
 /** 后端 `app_update::AutoUpdateStatus`。 */
 export interface AutoUpdateStatus {
-  /** 这台机器能不能自动安装（便携版、Linux 非 AppImage 不行） */
+  /** 这台机器能不能自动安装（便携版和没有匹配更新包的安装方式不支持） */
   supported: boolean;
   /** 自动下载开关是否打开 */
   enabled: boolean;

@@ -5,6 +5,12 @@ All notable changes to puppyrouter app will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## PuppyRouter Tool 4.0.41
+
+- Restored the sidebar version shortcut for checking and installing updates in the app.
+- Enabled background update downloads for official Linux DEB installations and published compatible links for Windows portable ZIPs.
+- Moved the database snapshot ahead of all schema changes when upgrading an older installation.
+
 ## PuppyRouter App 4.0.40
 
 - The application sidebar supports 16 clients, with Direct, Route and Stack modes where available.

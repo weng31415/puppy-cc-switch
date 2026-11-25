@@ -22,8 +22,21 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+const update = vi.hoisted(() => ({
+  hasUpdate: false,
+  checkUpdate: vi.fn<() => Promise<boolean>>(),
+  success: vi.fn(),
+  error: vi.fn(),
+}));
 vi.mock("@/contexts/UpdateContext", () => ({
-  useUpdate: () => ({ hasUpdate: false, updateInfo: null }),
+  useUpdate: () => ({
+    hasUpdate: update.hasUpdate,
+    checkUpdate: update.checkUpdate,
+    updateInfo: update.hasUpdate ? { availableVersion: "8.12.4" } : null,
+  }),
+}));
+vi.mock("@/lib/toast", () => ({
+  toast: { success: update.success, error: update.error },
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({
@@ -43,6 +56,7 @@ vi.mock("@/hooks/useSidebarStatus", () => ({
 
 const renderSidebar = (settings: Partial<Settings>, view: View = "usage") => {
   const client = createTestQueryClient();
+  const selectSettingsSection = vi.fn();
   // 不让设置查询回头去 mock 后端重取，盖掉这里给的值
   client.setQueryDefaults(["settings"], { staleTime: Infinity });
   client.setQueryData(["settings"], settings);
@@ -55,15 +69,54 @@ const renderSidebar = (settings: Partial<Settings>, view: View = "usage") => {
         settingsSection="general"
         onSelectApp={vi.fn()}
         onSelectPage={vi.fn()}
-        onSelectSettingsSection={vi.fn()}
+        onSelectSettingsSection={selectSettingsSection}
         onExitSettings={vi.fn()}
       />
     </QueryClientProvider>,
   );
+  return selectSettingsSection;
 };
 
 describe("sidebar branding", () => {
-  afterEach(() => localStorage.removeItem("cc-switch-sidebar-collapsed"));
+  afterEach(() => {
+    localStorage.removeItem("cc-switch-sidebar-collapsed");
+    update.hasUpdate = false;
+    vi.clearAllMocks();
+  });
+
+  it.each([false, true])(
+    "opens About from the version shortcut (already aware of update: %s)",
+    async (known) => {
+      update.hasUpdate = known;
+      update.checkUpdate.mockResolvedValue(true);
+      const openSection = renderSidebar({});
+      const button = await screen.findByRole("button", { name: /^v8\.12\.3/ });
+      button.focus();
+      await userEvent.setup().keyboard("{Enter}");
+      expect(update.checkUpdate).toHaveBeenCalledTimes(known ? 0 : 1);
+      expect(openSection).toHaveBeenCalledWith("about");
+    },
+  );
+
+  it("reports a clean check and a network error without navigating or installing", async () => {
+    update.checkUpdate
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error("offline"));
+    const openSection = renderSidebar({});
+    const button = await screen.findByRole("button", { name: /^v8\.12\.3/ });
+    const user = userEvent.setup();
+    await user.click(button);
+    expect(update.success).toHaveBeenCalledWith(
+      "settings.upToDate",
+      expect.anything(),
+    );
+    await user.click(button);
+    expect(update.error).toHaveBeenCalledWith(
+      "settings.checkUpdateFailed",
+      expect.anything(),
+    );
+    expect(openSection).not.toHaveBeenCalled();
+  });
 
   it.each(["usage", "settings"] as const)(
     "shows the brand and actual app version on separate lines in %s",

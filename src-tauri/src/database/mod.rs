@@ -251,9 +251,7 @@ impl Database {
             log_count_cache: Arc::new(Mutex::new(None)),
             read_cache,
         };
-        db.create_tables()?;
-
-        // Pre-migration backup: only when upgrading from an existing database
+        // The snapshot must precede create_tables as well: it also updates existing schemas.
         {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
@@ -268,6 +266,7 @@ impl Database {
             }
         }
 
+        db.create_tables()?;
         db.apply_schema_migrations()?;
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");

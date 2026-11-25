@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { http, HttpResponse } from "msw";
+import { version as appVersion } from "../../package.json";
 import { providersApi } from "@/lib/api/providers";
 import {
   resetProviderState,
@@ -315,7 +316,7 @@ describe("App integration with MSW", () => {
     setSettings({
       firstRunNoticeConfirmed: true,
       newLayoutNoticeConfirmed: true,
-      whatsNewSeenVersion: "4.0.40",
+      whatsNewSeenVersion: appVersion,
     });
     setCurrentProviderId("gemini", "gemini-official");
     const { default: App } = await import("@/App");
@@ -1071,11 +1072,15 @@ describe("App integration with MSW", () => {
   });
 
   it("navigates OpenClaw and Hermes pages with underline tabs", async () => {
+    setSettings({
+      firstRunNoticeConfirmed: true,
+      newLayoutNoticeConfirmed: true,
+      whatsNewSeenVersion: appVersion,
+    });
     const { default: App } = await import("@/App");
     renderApp(App);
 
     fireEvent.click(sidebarApp("OpenClaw"));
-    // 首次启动提示是模态对话框，页面其余部分是 aria-hidden，所以带上 hidden
     const openclawTabs = await screen.findByRole("tablist", {
       name: "OpenClaw",
       hidden: true,

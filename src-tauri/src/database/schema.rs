@@ -4860,37 +4860,106 @@ mod puppyrouter_upgrade_tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn puppyrouter_v11_upgrade_keeps_existing_providers_and_per_app_account_choices() {
-        let conn = Connection::open_in_memory().unwrap();
+        let home = crate::test_support::TestHome::new();
+        let dir = crate::config::get_app_config_dir();
+        assert_eq!(dir, home.path().join(".puppyrouter-app"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("puppyrouter-app.db");
+        let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(include_str!("../../tests/fixtures/puppyrouter-3.19.5.sql"))
             .unwrap();
-        for (app, id, current) in [
+        let providers = [
             ("claude", "universal-claude-puppyrouter", 1),
             ("opencode", "puppyrouter", 0),
             ("grokbuild", "my-route", 0),
-        ] {
-            conn.execute("INSERT INTO providers (id,app_type,name,settings_config,notes,is_current) VALUES (?1,?2,'Saved',?3,'user note',?4)", params![id, app, r#"{"fixture":"preserve"}"#, current]).unwrap();
+        ];
+        let config = r#"{"fixture":"preserve"}"#;
+        for (app, id, current) in providers {
+            conn.execute(
+                "INSERT INTO providers (id,app_type,name,settings_config,notes,is_current)
+                 VALUES (?1,?2,'Saved',?3,'user note',?4)",
+                params![id, app, config, current],
+            )
+            .unwrap();
         }
-        let choices = r#"{"claude":{"id":12},"opencode":{"id":24}}"#;
-        conn.execute("INSERT INTO settings(key,value) VALUES ('puppyrouter_account_selected_tokens_by_app',?1)", [choices]).unwrap();
-        Database::create_tables_on_conn(&conn).unwrap();
-        Database::apply_schema_migrations_on_conn(&conn).unwrap();
+        let account_settings = [
+            (
+                "puppyrouter_account_session",
+                r#"{"user":{"id":7,"username":"fixture"},"cookieHeader":"test=fixture","loggedInAt":100}"#,
+            ),
+            (
+                "puppyrouter_account_selected_tokens_by_app",
+                r#"{"claude":{"tokenId":12,"name":"A","maskedKey":"***12"},"opencode":{"tokenId":24,"name":"B","maskedKey":"***24"}}"#,
+            ),
+        ];
+        for (key, value) in account_settings {
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES (?1,?2)",
+                [key, value],
+            )
+            .unwrap();
+        }
+        let assert_saved_data = |conn: &Connection| {
+            for (app, id, current) in providers {
+                let saved: (String, String, i32) = conn.query_row(
+                    "SELECT settings_config,notes,is_current FROM providers WHERE app_type=?1 AND id=?2",
+                    [app, id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                ).unwrap();
+                assert_eq!(
+                    saved,
+                    (config.to_string(), "user note".to_string(), current)
+                );
+            }
+            for (key, value) in account_settings {
+                let saved: String = conn
+                    .query_row("SELECT value FROM settings WHERE key=?1", [key], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(saved, value);
+            }
+        };
+        let table_names = |conn: &Connection| -> String {
+            conn.query_row(
+                "SELECT group_concat(name) FROM (SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name)",
+                [], |r| r.get(0),
+            ).unwrap()
+        };
+        let old_tables = table_names(&conn);
+        drop(conn);
+        let list_backups = || {
+            let mut paths: Vec<_> = std::fs::read_dir(dir.join("backups"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "db"))
+                .collect();
+            paths.sort();
+            paths
+        };
+        drop(Database::init().unwrap());
+        let backups = list_backups();
+        // Enabling incremental vacuum may also snapshot the already-migrated database.
+        let old_snapshots = backups
+            .iter()
+            .filter(|path| {
+                let backup =
+                    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                        .unwrap();
+                if Database::get_user_version(&backup).unwrap() != 11 {
+                    return false;
+                }
+                assert_eq!(table_names(&backup), old_tables);
+                assert_saved_data(&backup);
+                true
+            })
+            .count();
+        assert_eq!(old_snapshots, 1);
+        drop(Database::init().unwrap());
+        assert_eq!(list_backups(), backups);
+        let conn = Connection::open(&db_path).unwrap();
         assert_eq!(Database::get_user_version(&conn).unwrap(), SCHEMA_VERSION);
-        let rows: i32 = conn
-            .query_row(
-                "SELECT count(*) FROM providers WHERE notes='user note' AND settings_config=?1",
-                [r#"{"fixture":"preserve"}"#],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(rows, 3);
-        let actual: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key='puppyrouter_account_selected_tokens_by_app'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(actual, choices);
+        assert_saved_data(&conn);
     }
 }

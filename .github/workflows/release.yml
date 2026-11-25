@@ -536,10 +536,8 @@ jobs:
             Compress-Archive -Path "$portableDir/*" -DestinationPath $portableZip -Force
             Remove-Item -Recurse -Force $portableDir
             Write-Host "Windows portable zip created: PuppyRouter-App-$VERSION-Windows$assetSuffix-Portable.zip"
-          } elseif ($isArm64) {
-            throw 'Portable ARM64 exe not found'
           } else {
-            Write-Warning 'Portable exe not found'
+            throw 'Portable executable not found'
           }
 
       - name: Test upgrade from the previous Windows installer and uninstall
@@ -574,6 +572,30 @@ jobs:
           cp "$DEB" "release-assets/$NEW_DEB"
           cp "$DEB.sig" "release-assets/$NEW_DEB.sig"
           echo "DEB updater copied: $NEW_DEB"
+
+      - name: Test DEB upgrade from the published 3.19.5 package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(dpkg --print-architecture)" in
+            amd64) arch=x86_64; digest=c4304c4f087362512d77453c54a42b1debe38e3a8baba5ade2ec036f39c05d7e ;;
+            arm64) arch=arm64; digest=3a2cccb2b8b685e9660809e99725cbe71c716a91fc73e2d748806dba682b4e6a ;;
+            *) exit 1 ;;
+          esac
+          previous="$RUNNER_TEMP/puppyrouter-3.19.5.deb"
+          current="$PWD/release-assets/PuppyRouter-App-$GITHUB_REF_NAME-Linux-$arch.deb"
+          curl --fail --location --retry 3 --output "$previous" \
+            "https://pub-46dbf53707f84a02979c772ef87254ab.r2.dev/downloads/PuppyRouter-App-v3.19.5-69a9633-Linux-$arch.deb"
+          echo "$digest  $previous" | sha256sum --check
+          package="$(dpkg-deb -f "$current" Package)"
+          test "$(dpkg-deb -f "$previous" Package)" = "$package"
+          sudo apt-get install -y "$previous"
+          test "$(dpkg-query -W -f='${Version}' "$package")" = '3.19.5'
+          sudo dpkg -i "$current"
+          test "$(dpkg-query -W -f='${Version}' "$package")" = "$(dpkg-deb -f "$current" Version)"
+          dpkg-deb -x "$current" "$RUNNER_TEMP/puppyrouter-current"
+          cmp /usr/bin/puppyrouter-app "$RUNNER_TEMP/puppyrouter-current/usr/bin/puppyrouter-app"
 
       - name: List prepared assets
         shell: bash

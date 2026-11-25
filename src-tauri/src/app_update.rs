@@ -44,7 +44,7 @@ pub struct ReadyUpdate {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoUpdateStatus {
-    /// 这台机器能不能自动安装（便携版、Linux 非 AppImage 不行）。
+    /// 这台机器能不能自动安装（便携版和没有匹配更新包的安装方式不支持）。
     pub supported: bool,
     /// 自动下载开关（设备级）。前端查到新版本时据此立刻触发下载，不用等后台循环。
     pub enabled: bool,
@@ -63,10 +63,13 @@ pub fn is_portable() -> bool {
         .unwrap_or(false)
 }
 
-/// Tauri updater 在 Linux 上只会替换 AppImage；deb / rpm 装的版本由系统包管理器管。
+/// 正式 DEB 由更新器验签后交给 dpkg 安装；AppImage 沿用已有的更新方式。
 #[cfg(target_os = "linux")]
 fn platform_supports_self_install() -> bool {
-    std::env::var_os("APPIMAGE").is_some()
+    matches!(
+        tauri::utils::platform::bundle_type(),
+        Some(tauri::utils::config::BundleType::Deb)
+    ) || std::env::var_os("APPIMAGE").is_some()
 }
 
 #[cfg(not(target_os = "linux"))]

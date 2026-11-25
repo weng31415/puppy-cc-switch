@@ -1,0 +1,25 @@
+{
+  "version": "4.0.41",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "点击侧栏版本号即可检查更新并打开安装入口。",
+      "zh-TW": "點選側欄版本號即可檢查更新並開啟安裝入口。",
+      "en": "Click the sidebar version to check for updates and open the installer in About.",
+      "ja": "サイドバーのバージョンをクリックして更新を確認し、アプリ内でインストールできます。"
+    },
+    {
+      "type": "fix",
+      "zh": "修复 Windows 便携包下载，Linux DEB 可在后台下载更新。",
+      "zh-TW": "修正 Windows 可攜版下載，Linux DEB 可在背景下載更新。",
+      "en": "Windows portable downloads use the correct ZIP. Linux DEB supports background update downloads.",
+      "ja": "Windows ポータブル版の配布を修正し、Linux DEB の更新を自動取得できます。"
+    }
+  ],
+  "details": {
+    "zh": "3.19.5 安装版可直接更新到 4.0.41，无需先安装 4.0.40。在「设置 → 关于」点击「检查更新」，再点「更新到 v4.0.41」。升级时沿用原有账户、供应商和密钥选择。首次打开时会先尝试备份旧数据库，再迁移数据。Windows 便携版请退出应用后解压新版 ZIP。",
+    "zh-TW": "3.19.5 安裝版可直接升級到 4.0.41。在「設定 → 關於」檢查更新並點選新版即可安裝。升級會沿用原有帳戶、供應商及金鑰選擇。首次開啟時會先嘗試備份舊資料庫，再遷移資料。Windows 可攜版請結束應用程式後解壓新版 ZIP。",
+    "en": "Installed copies of 3.19.5 can upgrade directly to 4.0.41. Open Settings → About, check for updates, then select the new version. The app keeps your account, providers and key selections and attempts to back up the old database before migration. For Windows portable, quit the app and extract the new ZIP.",
+    "ja": "3.19.5 のインストール版から 4.0.41 に直接更新できます。「設定 → このアプリについて」で更新を確認し、新しいバージョンを選んでください。アカウント、プロバイダー、キーの選択は引き継がれます。初回起動時に旧データベースのバックアップを試みてから移行します。Windows ポータブル版は終了してから新しい ZIP を展開してください。"
+  }
+}

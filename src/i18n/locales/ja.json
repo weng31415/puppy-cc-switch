@@ -5392,7 +5392,7 @@
   "autoUpdate": {
     "toggle": "アップデートを自動でダウンロード",
     "toggleHelp": "新しいバージョンをバックグラウンドでダウンロードし、インストール前に確認します。確認なしにインストールすることはありません。",
-    "unsupported": "ポータブル版と Linux の deb / rpm パッケージでは利用できません",
+    "unsupported": "このインストール形式では更新をバックグラウンドでダウンロードできません",
     "readyTitle": "新しいバージョン v{{version}} のダウンロードが完了しました",
     "readyBody": "今すぐインストールしますか？puppyrouter app が再起動します。",
     "readyBodyRouting": "今すぐインストールしますか？puppyrouter app が再起動し、ローカルルーティングを経由中のリクエストは中断されます。",
