@@ -2125,17 +2125,15 @@ function App() {
             <DialogTitle>{t("providerRestartNotice.title")}</DialogTitle>
             <DialogDescription className="whitespace-pre-line">
               {restartNotice &&
-                t("providerRestartNotice.message", {
-                  provider: restartNotice.provider,
-                  appName: APP_DISPLAY_NAME[restartNotice.app],
-                  manager: t(
-                    isWindows()
-                      ? "providerRestartNotice.taskManager"
-                      : isMac()
-                        ? "providerRestartNotice.activityMonitor"
-                        : "providerRestartNotice.processManager",
-                  ),
-                })}
+                t(
+                  restartNotice.app === "claude"
+                    ? "providerRestartNotice.claude"
+                    : "providerRestartNotice.message",
+                  {
+                    provider: restartNotice.provider,
+                    appName: APP_DISPLAY_NAME[restartNotice.app],
+                  },
+                )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

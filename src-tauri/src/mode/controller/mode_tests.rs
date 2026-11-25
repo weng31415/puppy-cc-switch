@@ -293,6 +293,93 @@ async fn route_switch_results_follow_the_applied_mode_not_the_viewed_tab() {
 
 #[tokio::test]
 #[serial]
+async fn next_request_uses_the_switched_route_while_an_old_request_finishes() {
+    use axum::{routing::post, Json, Router};
+    use tokio::sync::Notify;
+
+    let _home = Home::new();
+    seed_settings(USER_SETTINGS);
+    let arrived = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut rows = Vec::new();
+    let mut servers = Vec::new();
+    for id in ["first", "next"] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        rows.push(renamed(claude(id, &base, json!({})), "Shared model list"));
+        let arrived = arrived.clone();
+        let release = release.clone();
+        let router = Router::new().route("/v1/messages", post(move || async move {
+            if id == "first" {
+                arrived.notify_one();
+                release.notified().await;
+            }
+            Json(json!({"id": id, "type":"message", "model":"claude-sonnet-4-6","role":"assistant",
+                "content":[{"type":"text","text":id}], "stop_reason":"end_turn", "usage":{"input_tokens":1,"output_tokens":1}}))
+        }));
+        servers.push(tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap()
+        }));
+    }
+    let state = state_with(AppType::Claude, &rows, "first").await;
+    enter(&state, &AppType::Claude, false).await.unwrap();
+    let config = settings();
+    let url = format!(
+        "{}/v1/messages",
+        config["env"]["ANTHROPIC_BASE_URL"]
+            .as_str()
+            .unwrap()
+            .trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let request = || {
+        client.post(&url)
+        .header("x-api-key", "local-fixture").header("anthropic-version","2023-06-01")
+        .json(&json!({"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"ping"}],"max_tokens":10}))
+    };
+    let old = tokio::spawn(request().send());
+    tokio::time::timeout(std::time::Duration::from_secs(5), arrived.notified())
+        .await
+        .expect("first upstream received the request");
+    let result = set_route(&state, &AppType::Claude, "next").await.unwrap();
+    assert_eq!(result.kind, RouteSwitchKind::Route);
+    assert!(!result.client_config_changed);
+    assert_eq!(settings(), config);
+    let next = request()
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(next["id"], "next");
+    release.notify_one();
+    let first = old
+        .await
+        .unwrap()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(first["id"], "first");
+    exit(&state, &AppType::Claude).await.unwrap();
+    for server in servers {
+        server.abort();
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn a_route_switch_with_the_same_contract_leaves_the_client_file_alone() {
     let _home = Home::new();
     seed_settings(USER_SETTINGS);

@@ -506,6 +506,35 @@ describe("SwitchModePanel — mode layer", () => {
     return calls;
   }
 
+  it.each(["codex", "gemini", "grokbuild", "claude"] as const)(
+    "shows the appropriate client restart guidance before and after attaching %s",
+    async (app) => {
+      const user = userEvent.setup();
+      mockMode("direct", null, "a");
+      captureTakeover();
+      renderPanel(app, { a: provider("a") });
+      await user.click(
+        await screen.findByRole("button", { name: /mode\.names\.route/ }),
+      );
+      await user.click(
+        screen.getByRole("button", { name: "mode.activate.route" }),
+      );
+      const confirm = await screen.findByText("mode.dialog.confirmRoute");
+      expect(
+        Boolean(screen.queryByText("mode.dialog.desktopRouteNoteRestart")),
+      ).toBe(app !== "claude");
+      await user.click(confirm);
+      await waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith(
+          app === "claude"
+            ? "mode.toast.enteredRoute"
+            : "mode.toast.enteredRoutemode.toast.restartHint",
+          expect.anything(),
+        ),
+      );
+    },
+  );
+
   it("picks the Codex sub-agent model in the enter-Stack dialog and saves it before entering", async () => {
     const user = userEvent.setup();
     mockMode("direct", null, "a");

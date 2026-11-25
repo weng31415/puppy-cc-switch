@@ -2126,36 +2126,51 @@ fn problem_dot_sits_bottom_right_with_a_clear_ring() {
 
 #[test]
 fn feedback_only_for_switches_that_need_a_client_restart() {
-    let name = || "DeepSeek".to_string();
-    for app in [AppType::Codex, AppType::Gemini, AppType::GrokBuild] {
-        assert_eq!(
-            switch_feedback(&app, TrayMode::Direct, name()),
-            Some(TrayFeedback::Switched {
-                app: app.clone(),
-                name: name()
-            })
-        );
-        // 路由 / 故障转移换一家立即生效。
-        assert_eq!(switch_feedback(&app, TrayMode::Route, name()), None);
-        assert_eq!(switch_feedback(&app, TrayMode::Failover, name()), None);
-    }
-    assert_eq!(
-        switch_feedback(&AppType::Claude, TrayMode::Direct, name()),
-        None
-    );
-    // Desktop 只在启动时读配置：直连、路由换一家都要重启。
-    for mode in [TrayMode::Direct, TrayMode::Route] {
+    let name = || "fixture".to_string();
+    let route = |kind, client_config_changed| {
+        Some(RouteSwitchResult {
+            kind,
+            client_config_changed,
+        })
+    };
+    for app in [
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::GrokBuild,
+        AppType::ClaudeDesktop,
+    ] {
         assert!(matches!(
-            switch_feedback(&AppType::ClaudeDesktop, mode, name()),
+            switch_feedback(&app, None, name()),
             Some(TrayFeedback::Switched { .. })
         ));
-    }
-    for app in [AppType::Claude, AppType::Codex] {
+        for kind in [
+            RouteSwitchKind::Route,
+            RouteSwitchKind::Stack,
+            RouteSwitchKind::Remembered,
+        ] {
+            assert_eq!(
+                switch_feedback(&app, route(kind, false).as_ref(), name()),
+                None
+            );
+        }
         assert!(matches!(
-            switch_feedback(&app, TrayMode::Stack, name()),
+            switch_feedback(&app, route(RouteSwitchKind::Route, true).as_ref(), name()),
+            Some(TrayFeedback::Switched { .. })
+        ));
+        assert!(matches!(
+            switch_feedback(&app, route(RouteSwitchKind::Stack, true).as_ref(), name()),
             Some(TrayFeedback::StackDefault { .. })
         ));
     }
+    assert_eq!(switch_feedback(&AppType::Claude, None, name()), None);
+    assert_eq!(
+        switch_feedback(
+            &AppType::Claude,
+            route(RouteSwitchKind::Stack, true).as_ref(),
+            name()
+        ),
+        None
+    );
 }
 
 #[test]

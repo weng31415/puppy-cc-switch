@@ -5,7 +5,7 @@ import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
 const extractGrokBuildApiKey = (text: string) =>
   parseGrokBuildConfig(text).apiKey;
 import { APP_IDS } from "@/config/appSpecs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { motion } from "framer-motion";
@@ -37,6 +37,7 @@ import {
   type AppId,
   type PuppyRouterAccountStatus,
   type PuppyRouterApiKey,
+  type PuppyRouterApiKeyList,
   type PuppyRouterLoginStart,
   vscodeApi,
 } from "@/lib/api";
@@ -63,6 +64,10 @@ import {
   isPuppyRouterProvider,
   PUPPYROUTER_PROVIDER_IDS,
 } from "@/utils/lockedProviders";
+import {
+  needsClientRestart,
+  routeSwitchNotification,
+} from "@/utils/routeSwitchNotification";
 import { parse as parseToml } from "smol-toml";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { getApiKeyFromConfig } from "@/utils/providerConfigUtils";
@@ -339,31 +344,39 @@ function readApiKeyFromSettings(
   return getApiKeyFromConfig(JSON.stringify(settings), appId);
 }
 
-async function puppyRouterIsConfigured(app: AppId): Promise<boolean> {
+type KeyUsage = "staged" | "direct" | "native" | "proxy" | "launch";
+
+async function puppyRouterKeyUsage(app: AppId): Promise<KeyUsage> {
   const id = PUPPYROUTER_PROVIDER_IDS[app];
-  if (!id) return false;
+  if (app === "agy") return "launch";
   if (appHas(app, "routeMode")) {
     const mode = await proxyApi.getAppMode(app);
     if (mode.mode !== "direct") {
-      if (!mode.attached) return false;
-      if (mode.routeProviderId === id) return true;
-      return (
+      if (!mode.attached) return "staged";
+      if (mode.routeProviderId === id) return "proxy";
+      const member =
         mode.mode === "stack" &&
         (await proxyApi.getProxyStack(app)).members.some(
           (row) => row.providerId === id,
-        )
-      );
+        );
+      return member ? "proxy" : "staged";
     }
+    if (mode.directProviderId && mode.directProviderId !== id) return "staged";
   }
-  if (app === "agy") return (await providersApi.getCurrent(app)) === id;
-  if (app === "claude-desktop")
+  if (app === "claude-desktop") {
     return isPuppyRouterUrl(
       (await providersApi.getClaudeDesktopStatus()).actualBaseUrl ?? "",
-    );
-  const live = appHas(app, "additive")
+    )
+      ? "direct"
+      : "staged";
+  }
+  const additive = appHas(app, "additive");
+  const live = additive
     ? await puppyrouterAccountApi.readNativeProvider(app)
     : await vscodeApi.getLiveProviderSettings(app);
-  return isPuppyRouterUrl(readBaseUrlFromSettings(app, live, id));
+  if (!isPuppyRouterUrl(readBaseUrlFromSettings(app, live, id)))
+    return "staged";
+  return additive ? "native" : "direct";
 }
 
 export function PuppyRouterAccountBanner({
@@ -371,9 +384,9 @@ export function PuppyRouterAccountBanner({
 }: PuppyRouterAccountBannerProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const { data: configured } = useQuery({
+  const { data: keyUsage } = useQuery({
     queryKey: ["providers", activeApp, "puppyrouterLiveConfig"],
-    queryFn: () => puppyRouterIsConfigured(activeApp),
+    queryFn: () => puppyRouterKeyUsage(activeApp),
     retry: false,
   });
   const { data: settings } = useSettingsQuery();
@@ -392,16 +405,19 @@ export function PuppyRouterAccountBanner({
   const sessionState = effectiveAccount?.sessionState ?? "signed_out";
   const isLoggedIn = effectiveAccount?.loggedIn ?? false;
   const canLoadAccountData = isLoggedIn && sessionState === "authenticated";
-  const { data: balance, isFetching: isBalanceFetching } =
-    usePuppyRouterAccountBalance(canLoadAccountData);
+  const {
+    data: balance,
+    isFetching: isLoadingBalance,
+    refetch: refetchBalance,
+  } = usePuppyRouterAccountBalance(canLoadAccountData);
   const { data: accountGroups, isFetching: isGroupsFetching } =
     usePuppyRouterAccountGroups(canLoadAccountData);
-  const { data: keyList, isFetching: isKeysFetching } = usePuppyRouterApiKeys(
-    canLoadAccountData,
-    activeApp,
-  );
-  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
-  const [isRefreshingKeys, setIsRefreshingKeys] = useState(false);
+  const {
+    data: keyList,
+    isFetching: isLoadingKeys,
+    refetch: refetchKeys,
+    isError: keysUnavailable,
+  } = usePuppyRouterApiKeys(canLoadAccountData, activeApp);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginStart, setLoginStart] = useState<PuppyRouterLoginStart | null>(
     null,
@@ -422,8 +438,23 @@ export function PuppyRouterAccountBanner({
   const [fixingDiagnoseAction, setFixingDiagnoseAction] =
     useState<DiagnoseFixAction | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const isLoadingBalance = isBalanceFetching || isRefreshingBalance;
-  const isLoadingKeys = isKeysFetching || isRefreshingKeys;
+  const activeGrant = useRef<string | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (activeGrant.current)
+        void puppyrouterAccountApi
+          .cancelLogin(activeGrant.current)
+          .catch(() => {});
+    };
+  }, []);
+
+  const pollRequest = useRef<{
+    code: string;
+    result: ReturnType<typeof puppyrouterAccountApi.pollLogin>;
+  } | null>(null);
 
   useEffect(() => {
     const handleSessionExpired = () => {
@@ -477,13 +508,8 @@ export function PuppyRouterAccountBanner({
   );
 
   const loadKeys = useCallback(async () => {
-    setIsRefreshingKeys(true);
     try {
-      const result = await puppyrouterAccountApi.listApiKeys(activeApp);
-      queryClient.setQueryData(
-        puppyrouterAccountKeys.apiKeys(activeApp),
-        result,
-      );
+      await refetchKeys({ throwOnError: true });
     } catch (error) {
       if (isPuppyRouterSessionExpiredError(error)) return;
       console.error("[PuppyRouterAccountBanner] Failed to load keys", error);
@@ -492,17 +518,12 @@ export function PuppyRouterAccountBanner({
           error: extractErrorMessage(error),
         }),
       );
-    } finally {
-      setIsRefreshingKeys(false);
-      setApplyingKeyId(null);
     }
-  }, [activeApp, queryClient, t]);
+  }, [refetchKeys, t]);
 
   const loadBalance = useCallback(async () => {
-    setIsRefreshingBalance(true);
     try {
-      const result = await puppyrouterAccountApi.getBalance();
-      queryClient.setQueryData(puppyrouterAccountKeys.balance(), result);
+      await refetchBalance({ throwOnError: true });
     } catch (error) {
       if (isPuppyRouterSessionExpiredError(error)) return;
       console.error("[PuppyRouterAccountBanner] Failed to load balance", error);
@@ -511,10 +532,8 @@ export function PuppyRouterAccountBanner({
           error: extractErrorMessage(error),
         }),
       );
-    } finally {
-      setIsRefreshingBalance(false);
     }
-  }, [queryClient, t]);
+  }, [refetchBalance, t]);
 
   const handleOpenWallet = async () => {
     try {
@@ -529,28 +548,46 @@ export function PuppyRouterAccountBanner({
   };
 
   const resetLoginState = useCallback(() => {
+    activeGrant.current = null;
     setLoginStart(null);
     setLoginPollMessage("");
     setIsPollingLogin(false);
   }, []);
 
   const finishApprovedLogin = useCallback(
-    async (accountStatus: PuppyRouterAccountStatus) => {
+    (accountStatus: PuppyRouterAccountStatus) => {
+      void queryClient.cancelQueries({ queryKey: puppyrouterAccountKeys.all });
+      clearPuppyRouterAccountCache(queryClient, accountStatus);
       setIsLoginOpen(false);
       resetLoginState();
       toast.success(t("puppyrouterAccount.loginSuccess"));
-      try {
-        await loadKeys();
-        await loadBalance();
-      } finally {
-        queryClient.setQueryData(
-          puppyrouterAccountKeys.status(),
-          accountStatus,
-        );
-      }
     },
-    [loadBalance, loadKeys, queryClient, resetLoginState, t],
+    [queryClient, resetLoginState, t],
   );
+
+  const changeLoginOpen = (open: boolean) => {
+    if (!open && (isStartingLogin || isCopyingLoginLink)) return;
+    setIsLoginOpen(open);
+    if (!open) {
+      if (activeGrant.current)
+        void puppyrouterAccountApi
+          .cancelLogin(activeGrant.current)
+          .catch(() => {});
+      resetLoginState();
+    }
+  };
+
+  const newGrant = async () => {
+    const start = await puppyrouterAccountApi.beginLogin();
+    if (!mounted.current) {
+      await puppyrouterAccountApi.cancelLogin(start.deviceCode);
+      return;
+    }
+    activeGrant.current = start.deviceCode;
+    setLoginStart(start);
+    setLoginPollMessage(t("puppyrouterAccount.waitingForBrowser"));
+    return start;
+  };
 
   const handleStartBrowserLogin = async () => {
     if (loginStart?.authorizeUrl) {
@@ -568,9 +605,8 @@ export function PuppyRouterAccountBanner({
 
     setIsStartingLogin(true);
     try {
-      const start = await puppyrouterAccountApi.beginLogin();
-      setLoginStart(start);
-      setLoginPollMessage(t("puppyrouterAccount.waitingForBrowser"));
+      const start = await newGrant();
+      if (!start) return;
       await settingsApi.openExternal(start.authorizeUrl);
     } catch (error) {
       console.error(
@@ -592,9 +628,8 @@ export function PuppyRouterAccountBanner({
     try {
       let authorizeUrl = loginStart?.authorizeUrl;
       if (!authorizeUrl) {
-        const start = await puppyrouterAccountApi.beginLogin();
-        setLoginStart(start);
-        setLoginPollMessage(t("puppyrouterAccount.waitingForBrowser"));
+        const start = await newGrant();
+        if (!start) return;
         authorizeUrl = start.authorizeUrl;
       }
 
@@ -623,53 +658,72 @@ export function PuppyRouterAccountBanner({
     let cancelled = false;
     let timer: number | undefined;
 
+    const expiresAt = loginStart.expiresAt * 1000;
+    let retryDelay = Math.max(1, loginStart.interval) * 1000;
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(
+        poll,
+        Math.max(0, Math.min(delay, expiresAt - Date.now())),
+      );
+    };
     const poll = async () => {
+      if (Date.now() >= expiresAt) {
+        resetLoginState();
+        toast.error(t("puppyrouterAccount.loginExpired"));
+        return;
+      }
       setIsPollingLogin(true);
       try {
-        const result = await puppyrouterAccountApi.pollLogin(
-          loginStart.deviceCode,
-        );
-        if (cancelled) return;
+        if (pollRequest.current?.code !== loginStart.deviceCode) {
+          pollRequest.current = {
+            code: loginStart.deviceCode,
+            result: puppyrouterAccountApi.pollLogin(loginStart.deviceCode),
+          };
+        }
+        const request = pollRequest.current;
+        const result = await request.result.finally(() => {
+          if (pollRequest.current === request) pollRequest.current = null;
+        });
+        if (cancelled) {
+          if (result.status === "approved") {
+            void queryClient.invalidateQueries({
+              queryKey: puppyrouterAccountKeys.status(),
+              exact: true,
+            });
+          }
+          return;
+        }
 
         if (result.status === "approved") {
           setIsPollingLogin(false);
-          await finishApprovedLogin(result.account);
+          finishApprovedLogin(result.account);
           return;
         }
 
         if (result.status === "pending") {
-          setLoginPollMessage(
-            result.message || t("puppyrouterAccount.waitingForApproval"),
-          );
-          timer = window.setTimeout(
-            poll,
-            Math.max(1, result.interval || loginStart.interval || 2) * 1000,
-          );
+          setLoginPollMessage(t("puppyrouterAccount.waitingForApproval"));
+          retryDelay =
+            Math.max(1, result.interval || loginStart.interval) * 1000;
+          schedule(retryDelay);
           return;
         }
 
-        setIsPollingLogin(false);
-        setLoginPollMessage("");
-        setLoginStart(null);
+        resetLoginState();
         toast.error(
           t(`puppyrouterAccount.loginStatus.${result.status}`, {
             defaultValue:
               result.message || t("puppyrouterAccount.loginExpired"),
           }),
         );
-      } catch (error) {
+      } catch {
         if (cancelled) return;
-        console.error("[PuppyRouterAccountBanner] Login polling failed", error);
-        setIsPollingLogin(false);
-        toast.error(
-          t("puppyrouterAccount.loginFailed", {
-            error: extractErrorMessage(error),
-          }),
-        );
+        setLoginPollMessage(t("puppyrouterAccount.loginReconnecting"));
+        schedule(retryDelay);
+        retryDelay = Math.min(10000, retryDelay * 2);
       }
     };
 
-    timer = window.setTimeout(poll, 800);
+    schedule(800);
 
     return () => {
       cancelled = true;
@@ -677,7 +731,14 @@ export function PuppyRouterAccountBanner({
         window.clearTimeout(timer);
       }
     };
-  }, [finishApprovedLogin, isLoginOpen, loginStart, t]);
+  }, [
+    finishApprovedLogin,
+    isLoginOpen,
+    loginStart,
+    queryClient,
+    resetLoginState,
+    t,
+  ]);
 
   const handleApplyKey = async (key: PuppyRouterApiKey) => {
     if (isManualOnlyApp || !key.usable || applyingKeyId !== null) {
@@ -687,24 +748,32 @@ export function PuppyRouterAccountBanner({
     setApplyingKeyId(key.id);
     try {
       const result = await puppyrouterAccountApi.applyApiKey(key.id, activeApp);
-      queryClient.setQueryData(
+      queryClient.setQueryData<PuppyRouterApiKeyList>(
         puppyrouterAccountKeys.apiKeys(activeApp),
-        markPuppyRouterApiKeyActive(keyList, key.id),
-      );
-      toast.success(
-        t("puppyrouterAccount.syncSuccess", {
-          name: result.name,
-          app: APP_ICON_MAP[activeApp].label,
-        }),
+        (current) => markPuppyRouterApiKeyActive(current, key.id),
       );
       await queryClient.invalidateQueries({
         queryKey: ["providers", activeApp],
         refetchType: "all",
       });
-      await queryClient.refetchQueries({
-        queryKey: ["providers", activeApp],
-        type: "all",
-      });
+      const usage = queryClient.getQueryState<KeyUsage>([
+        "providers",
+        activeApp,
+        "puppyrouterLiveConfig",
+      ]);
+      const app = APP_ICON_MAP[activeApp].label;
+      const scope = usage?.status === "success" ? usage.data : undefined;
+      toast.success(
+        t("puppyrouterAccount.syncSuccess", { name: result.name, app }),
+        {
+          description:
+            scope === "direct" && needsClientRestart(activeApp)
+              ? t("mode.toast.restartHint", { app })
+              : scope
+                ? t(`puppyrouterAccount.keyUsage.${scope}`, { app })
+                : undefined,
+        },
+      );
     } catch (error) {
       if (isPuppyRouterSessionExpiredError(error)) return;
       console.error("[PuppyRouterAccountBanner] Apply key failed", error);
@@ -1100,17 +1169,29 @@ export function PuppyRouterAccountBanner({
         if (activeApp === "kimi" || activeApp === "copilot") {
           await providersApi.addToLiveConfig(providerId, activeApp);
         } else {
-          await providersApi.switch(providerId, activeApp);
+          const result = await providersApi.switch(providerId, activeApp);
+          if (result?.route) {
+            toast.success(
+              routeSwitchNotification(
+                result.route,
+                activeApp,
+                "PuppyRouter",
+                t,
+              ),
+            );
+          } else if (needsClientRestart(activeApp)) {
+            toast.info(
+              t("mode.toast.restartHint", {
+                app: APP_ICON_MAP[activeApp].label,
+              }),
+            );
+          }
         }
       }
 
       await queryClient.invalidateQueries({
         queryKey: ["providers", activeApp],
         refetchType: "all",
-      });
-      await queryClient.refetchQueries({
-        queryKey: ["providers", activeApp],
-        type: "all",
       });
       await handleDiagnosePuppyRouterConfig();
     } catch (error) {
@@ -1128,6 +1209,7 @@ export function PuppyRouterAccountBanner({
     setIsLoggingOut(true);
     try {
       await puppyrouterAccountApi.logout();
+      void queryClient.cancelQueries({ queryKey: puppyrouterAccountKeys.all });
       clearPuppyRouterAccountCache(queryClient);
       toast.success(t("puppyrouterAccount.logoutSuccess"));
     } catch (error) {
@@ -1152,7 +1234,7 @@ export function PuppyRouterAccountBanner({
 
   return (
     <section className="mt-2 space-y-3">
-      {configured === false && (
+      {keyUsage === "staged" && (
         <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
           <ShieldAlert className="h-4 w-4 shrink-0" />
           {t("puppyrouterAccount.clientNotConfiguredWarning", {
@@ -1597,7 +1679,7 @@ export function PuppyRouterAccountBanner({
                   </div>
                 ))}
               </div>
-            ) : !canLoadAccountData ? (
+            ) : !canLoadAccountData || keysUnavailable ? (
               <div className="rounded-lg border border-amber-500/25 dark:border-amber-400/25 bg-amber-400/8 px-3 py-3 text-sm text-amber-900/70 dark:text-amber-100/75">
                 {t("puppyrouterAccount.accountDataUnavailable")}
               </div>
@@ -1712,13 +1794,7 @@ export function PuppyRouterAccountBanner({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={isLoginOpen}
-        onOpenChange={(open) => {
-          setIsLoginOpen(open);
-          if (!open) resetLoginState();
-        }}
-      >
+      <Dialog open={isLoginOpen} onOpenChange={changeLoginOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{t("puppyrouterAccount.loginTitle")}</DialogTitle>
@@ -1757,7 +1833,7 @@ export function PuppyRouterAccountBanner({
             <Button
               type="button"
               variant="ghost"
-              onClick={() => setIsLoginOpen(false)}
+              onClick={() => changeLoginOpen(false)}
               disabled={isStartingLogin || isCopyingLoginLink}
               className="w-full"
             >

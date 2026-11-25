@@ -1585,6 +1585,7 @@ pub fn run() {
             commands::get_puppyrouter_account_balance,
             commands::begin_puppyrouter_account_login,
             commands::poll_puppyrouter_account_login,
+            commands::cancel_puppyrouter_account_login,
             commands::logout_puppyrouter_account,
             commands::list_puppyrouter_api_keys,
             commands::list_puppyrouter_account_groups,

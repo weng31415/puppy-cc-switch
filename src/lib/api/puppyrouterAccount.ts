@@ -153,6 +153,10 @@ export const puppyrouterAccountApi = {
     return await invokePuppyRouterAccount("begin_puppyrouter_account_login");
   },
 
+  async cancelLogin(deviceCode: string): Promise<void> {
+    await invoke("cancel_puppyrouter_account_login", { deviceCode });
+  },
+
   async pollLogin(deviceCode: string): Promise<PuppyRouterLoginPollResult> {
     return await invokePuppyRouterAccount("poll_puppyrouter_account_login", {
       deviceCode,

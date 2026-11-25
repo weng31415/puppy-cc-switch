@@ -225,8 +225,7 @@ export function useProviderActions(
 
       try {
         const result = await switchProviderMutation.mutateAsync(provider.id);
-        if (!result?.route && !isProxyTakeover)
-          onDirectSwitch?.(activeApp, provider.id);
+        if (!result?.route) onDirectSwitch?.(activeApp, provider.id);
         await syncClaudePlugin(provider);
 
         // Surface switch warnings by code — a generic "backfill failed"

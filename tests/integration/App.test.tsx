@@ -311,6 +311,40 @@ describe("App integration with MSW", () => {
     expect(toastSuccessMock).toHaveBeenCalled();
   }, 10_000);
 
+  it("shows a dismissible restart notice for a direct built-in Gemini switch from the tray", async () => {
+    setSettings({
+      firstRunNoticeConfirmed: true,
+      newLayoutNoticeConfirmed: true,
+      whatsNewSeenVersion: "4.0.40",
+    });
+    setCurrentProviderId("gemini", "gemini-official");
+    const { default: App } = await import("@/App");
+    renderApp(App);
+    await waitFor(() =>
+      expect(screen.getByTestId("current-provider")).toHaveTextContent(
+        "claude-1",
+      ),
+    );
+    act(() =>
+      emitTauriEvent("provider-switched", {
+        appType: "gemini",
+        providerId: "gemini-official",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "providerRestartNotice.title",
+    });
+    expect(
+      within(dialog).getByText("providerRestartNotice.message"),
+    ).toBeVisible();
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "providerRestartNotice.confirm",
+      }),
+    );
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
   it("refreshes the route pointer when the proxy fails over to another provider", async () => {
     let routeProviderId = "claude-1";
     let modeRequests = 0;

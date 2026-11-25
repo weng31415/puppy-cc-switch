@@ -8,6 +8,7 @@
 //! 分三层：`collect_*` 从数据库和设备状态读出快照，`build_menu_model` 把快照变成纯数据的菜单
 //! 模型（单测覆盖这一层），`attach_*` 把模型挂到 Tauri 原生菜单上。
 
+use crate::mode::controller::{RouteSwitchKind, RouteSwitchResult};
 use crate::sync_utils::MutexExt;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1830,31 +1831,33 @@ struct FeedbackRecord {
 
 static FEEDBACK: Mutex<Option<FeedbackRecord>> = Mutex::new(None);
 
-/// 切换成功后要不要说一句：客户端只在启动时读配置的才说；Claude Code 直连、路由 / 故障转移
-/// 换一家立即生效，不说。Claude Desktop 换一家都要重启 Desktop（路由那家的模型列表写在配置
-/// 里，聚合换默认也一样）。
-fn switch_feedback(app: &AppType, mode: TrayMode, name: String) -> Option<TrayFeedback> {
-    match mode {
-        TrayMode::Direct | TrayMode::Route | TrayMode::Stack if *app == AppType::ClaudeDesktop => {
-            Some(TrayFeedback::Switched {
-                app: app.clone(),
-                name,
-            })
-        }
-        TrayMode::Direct
-            if matches!(app, AppType::Codex | AppType::Gemini | AppType::GrokBuild) =>
-        {
-            Some(TrayFeedback::Switched {
-                app: app.clone(),
-                name,
-            })
-        }
-        TrayMode::Stack => Some(TrayFeedback::StackDefault {
-            app: app.clone(),
-            name,
-        }),
-        _ => None,
+/// The switch runs under the mode lock. Its result determines whether the client needs to reload.
+fn switch_feedback(
+    app: &AppType,
+    route: Option<&RouteSwitchResult>,
+    name: String,
+) -> Option<TrayFeedback> {
+    if !matches!(
+        app,
+        AppType::Codex | AppType::Gemini | AppType::GrokBuild | AppType::ClaudeDesktop
+    ) {
+        return None;
     }
+    if let Some(route) = route {
+        if route.kind == RouteSwitchKind::Remembered || !route.client_config_changed {
+            return None;
+        }
+        if route.kind == RouteSwitchKind::Stack {
+            return Some(TrayFeedback::StackDefault {
+                app: app.clone(),
+                name,
+            });
+        }
+    }
+    Some(TrayFeedback::Switched {
+        app: app.clone(),
+        name,
+    })
 }
 
 /// 记下最近一次托盘操作的结果（覆盖上一条）。调用方随后会重建菜单。
@@ -3382,9 +3385,9 @@ pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> boo
     let provider_id = provider_id.to_string();
     tauri::async_runtime::spawn_blocking(move || {
         match handle_provider_click(&app_handle, &app_type, &provider_id) {
-            Ok(ClickOutcome::Switched { mode, name }) => {
+            Ok(ClickOutcome::Switched { route, name }) => {
                 clear_app_problems(&app_type);
-                if let Some(feedback) = switch_feedback(&app_type, mode, name) {
+                if let Some(feedback) = switch_feedback(&app_type, route.as_ref(), name) {
                     record_feedback(&app_handle, feedback);
                 }
                 emit_switched(&app_handle, &app_type, &provider_id);
@@ -3414,8 +3417,10 @@ pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> boo
 }
 
 enum ClickOutcome {
-    /// 切过去了；`mode` 是点击时的模式，决定要不要出反馈行。
-    Switched { mode: TrayMode, name: String },
+    Switched {
+        route: Option<RouteSwitchResult>,
+        name: String,
+    },
     /// 已经在用 / 故障转移开着（只读）：什么都不做。
     Unchanged,
     /// 直连下点了需要路由的那家：不直接切。
@@ -3456,9 +3461,9 @@ fn handle_provider_click(
     if mode == TrayMode::Direct && provider_needs_routing(app_type, &provider) {
         return Ok(ClickOutcome::NeedsRoute);
     }
-    crate::services::ProviderService::switch(state, app_type.clone(), provider_id)?;
+    let result = crate::services::ProviderService::switch(state, app_type.clone(), provider_id)?;
     Ok(ClickOutcome::Switched {
-        mode,
+        route: result.route,
         name: provider.name,
     })
 }

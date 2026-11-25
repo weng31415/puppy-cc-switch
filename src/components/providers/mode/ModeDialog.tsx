@@ -1,3 +1,4 @@
+import { needsClientRestart } from "@/utils/routeSwitchNotification";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
@@ -194,6 +195,9 @@ function EnterBody({
             t("mode.dialog.routeNoteFile", {
               file: CLIENT_FILE[app] ?? "",
             }),
+            ...(needsClientRestart(app)
+              ? [t("mode.dialog.desktopRouteNoteRestart", { app: appName })]
+              : []),
             t("mode.dialog.routeNoteSwitch"),
             t("mode.dialog.routeNoteKeepRunning"),
           ]

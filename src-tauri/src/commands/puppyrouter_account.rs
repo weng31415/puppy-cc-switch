@@ -14,6 +14,7 @@ use crate::services::model_fetch::FetchedModel;
 use crate::services::provider::puppyrouter;
 use crate::services::ProviderService;
 use crate::store::AppState;
+use crate::sync_utils::MutexExt;
 
 const PUPPYROUTER_BASE_URL: &str = "https://puppyrouter.com";
 const PUPPYROUTER_UNIVERSAL_ID: &str = "puppyrouter";
@@ -212,7 +213,6 @@ struct StatusData {
 struct DesktopAuthStartData {
     device_code: String,
     user_code: String,
-    authorize_url: String,
     expires_at: i64,
     interval: Option<i64>,
 }
@@ -338,11 +338,40 @@ fn clear_setting(state: &AppState, key: &str) -> Result<(), String> {
     state.db.set_setting(key, "").map_err(|e| e.to_string())
 }
 
-fn clear_account_auth_state(state: &AppState) -> Result<(), String> {
-    clear_setting(state, ACCOUNT_SESSION_SETTING)?;
-    clear_setting(state, LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
-    clear_setting(state, SELECTED_TOKEN_SETTING)?;
-    clear_setting(state, SELECTED_TOKEN_BY_APP_SETTING)
+// A delayed 401 can arrive after a new login. Compare and clear under one database lock.
+fn clear_account_auth_state(
+    state: &AppState,
+    expected: Option<&StoredAccountSession>,
+) -> Result<bool, crate::error::AppError> {
+    let mut conn = crate::database::lock_conn!(state.db.conn);
+    let tx = conn.transaction()?;
+    if let Some(expected) = expected {
+        let matches: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM settings WHERE key = ?1
+              AND json_extract(NULLIF(value, ''), '$.cookieHeader') = ?2
+              AND json_extract(NULLIF(value, ''), '$.loggedInAt') = ?3)",
+            rusqlite::params![
+                ACCOUNT_SESSION_SETTING,
+                expected.cookie_header,
+                expected.logged_in_at
+            ],
+            |row| row.get(0),
+        )?;
+        if !matches {
+            return Ok(false);
+        }
+    }
+    tx.execute(
+        "UPDATE settings SET value = '' WHERE key IN (?1, ?2, ?3, ?4)",
+        [
+            ACCOUNT_SESSION_SETTING,
+            LEGACY_ACCOUNT_PENDING_SESSION_SETTING,
+            SELECTED_TOKEN_SETTING,
+            SELECTED_TOKEN_BY_APP_SETTING,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(true)
 }
 
 fn read_session(state: &AppState) -> Result<Option<StoredAccountSession>, String> {
@@ -396,55 +425,31 @@ fn expired_account_status() -> PuppyRouterAccountStatus {
     }
 }
 
-fn cookie_pairs_from_set_cookie(headers: &reqwest::header::HeaderMap) -> Vec<String> {
+fn desktop_session_cookie(headers: &reqwest::header::HeaderMap) -> String {
     headers
         .get_all(SET_COOKIE)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .filter_map(|value| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && value.contains('='))
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn merge_cookie_header(existing: Option<&str>, headers: &reqwest::header::HeaderMap) -> String {
-    let mut cookies: HashMap<String, String> = HashMap::new();
-
-    if let Some(existing) = existing {
-        for pair in existing.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some((name, _)) = pair.split_once('=') {
-                cookies.insert(name.to_string(), pair.to_string());
-            }
-        }
-    }
-
-    for pair in cookie_pairs_from_set_cookie(headers) {
-        if let Some((name, _)) = pair.split_once('=') {
-            cookies.insert(name.to_string(), pair);
-        }
-    }
-
-    let mut values: Vec<String> = cookies.into_values().collect();
-    values.sort();
-    values.join("; ")
+        .filter_map(|header| header.to_str().ok())
+        .filter_map(|header| header.split(';').next()?.trim().split_once('='))
+        .filter(|(name, _)| *name == "session")
+        .next_back()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(_, value)| format!("session={value}"))
+        .unwrap_or_default()
 }
 
 async fn parse_api_response<T: DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<(ApiResponse<T>, String), String> {
     let status = response.status();
-    let set_cookie_header = merge_cookie_header(None, response.headers());
+    if !status.is_success() {
+        return Err(format!("PuppyRouter HTTP {status}"));
+    }
+    let set_cookie_header = desktop_session_cookie(response.headers());
     let text = response
         .text()
         .await
         .map_err(|e| format!("读取 PuppyRouter 响应失败: {e}"))?;
-
-    if !status.is_success() {
-        let body = text.trim();
-        let body = if body.len() > 240 { &body[..240] } else { body };
-        return Err(format!("PuppyRouter HTTP {status}: {body}"));
-    }
 
     let api = serde_json::from_str::<ApiResponse<T>>(&text)
         .map_err(|e| format!("解析 PuppyRouter 响应失败: {e}"))?;
@@ -453,11 +458,15 @@ async fn parse_api_response<T: DeserializeOwned>(
 
 async fn parse_authenticated_api_response<T: DeserializeOwned>(
     state: &AppState,
+    session: &StoredAccountSession,
     response: reqwest::Response,
 ) -> Result<(ApiResponse<T>, String), String> {
     if response.status() == StatusCode::UNAUTHORIZED {
-        clear_account_auth_state(state)?;
-        return Err(SESSION_EXPIRED_ERROR.to_string());
+        return Err(if clear_account_auth_state(state, Some(session))? {
+            SESSION_EXPIRED_ERROR.to_string()
+        } else {
+            "PuppyRouter 账号已切换。".to_string()
+        });
     }
     parse_api_response(response).await
 }
@@ -506,7 +515,7 @@ async fn auth_get<T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, session, response).await?;
     ensure_api_success(api)
 }
 
@@ -524,7 +533,7 @@ async fn auth_post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, session, response).await?;
     ensure_api_success(api)
 }
 
@@ -542,7 +551,7 @@ async fn auth_patch_json<B: Serialize + ?Sized, T: DeserializeOwned>(
         .send()
         .await
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
-    let (api, _) = parse_authenticated_api_response::<T>(state, response).await?;
+    let (api, _) = parse_authenticated_api_response::<T>(state, session, response).await?;
     ensure_api_success(api)
 }
 
@@ -1010,8 +1019,13 @@ pub async fn get_puppyrouter_account_status(
     };
 
     if response.status() == StatusCode::UNAUTHORIZED {
-        clear_account_auth_state(state.inner())?;
-        return Ok(expired_account_status());
+        return Ok(
+            if clear_account_auth_state(state.inner(), Some(&session))? {
+                expired_account_status()
+            } else {
+                account_status_from_session(read_session(state.inner())?)
+            },
+        );
     }
 
     if !response.status().is_success() {
@@ -1062,8 +1076,46 @@ pub async fn get_puppyrouter_account_balance(
     })
 }
 
+// The browser may approve after the dialog is cancelled or a newer grant is opened.
+#[derive(Default)]
+struct LoginAttempt {
+    generation: u64,
+    device_code: Option<String>,
+}
+
+impl LoginAttempt {
+    fn reset(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.device_code = None;
+        self.generation
+    }
+
+    fn set_grant(&mut self, generation: u64, code: &str) -> Result<(), String> {
+        if self.generation != generation {
+            return Err("本次登录已取消。".into());
+        }
+        self.device_code = Some(code.into());
+        Ok(())
+    }
+
+    fn cancel(&mut self, code: &str) {
+        if self.device_code.as_deref() == Some(code) {
+            self.reset();
+        }
+    }
+}
+
+static ACTIVE_LOGIN: std::sync::LazyLock<std::sync::Mutex<LoginAttempt>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[tauri::command]
+pub fn cancel_puppyrouter_account_login(device_code: String) {
+    ACTIVE_LOGIN.lock_recover().cancel(&device_code);
+}
+
 #[tauri::command]
 pub async fn begin_puppyrouter_account_login() -> Result<PuppyRouterLoginStart, String> {
+    let generation = ACTIVE_LOGIN.lock_recover().reset();
     let client = http_client();
     let response = account_request(&client, Method::POST, "/api/desktop-auth/start")
         .json(&serde_json::json!({
@@ -1074,11 +1126,24 @@ pub async fn begin_puppyrouter_account_login() -> Result<PuppyRouterLoginStart, 
         .map_err(|e| format!("连接 PuppyRouter 失败: {e}"))?;
 
     let (api, _) = parse_api_response::<DesktopAuthStartData>(response).await?;
-    let data = ensure_api_success(api)?;
+    let start = login_start(ensure_api_success(api)?)?;
+    ACTIVE_LOGIN
+        .lock_recover()
+        .set_grant(generation, &start.device_code)?;
+    Ok(start)
+}
+
+fn login_start(data: DesktopAuthStartData) -> Result<PuppyRouterLoginStart, String> {
+    if data.device_code.trim().is_empty() || data.user_code.trim().is_empty() {
+        return Err("PuppyRouter 授权响应缺少授权码。".into());
+    }
+    let authorize_url =
+        reqwest::Url::parse_with_params(&endpoint("/desktop-auth"), &[("code", &data.user_code)])
+            .map_err(|e| e.to_string())?;
     Ok(PuppyRouterLoginStart {
         device_code: data.device_code,
         user_code: data.user_code,
-        authorize_url: data.authorize_url,
+        authorize_url: authorize_url.into(),
         expires_at: data.expires_at,
         interval: data.interval.unwrap_or(2).max(1),
     })
@@ -1122,8 +1187,15 @@ pub async fn poll_puppyrouter_account_login(
                 cookie_header,
                 logged_in_at: now_timestamp(),
             };
-            set_setting_json(state.inner(), ACCOUNT_SESSION_SETTING, &session)?;
+            let mut active = ACTIVE_LOGIN.lock_recover();
+            if active.device_code.as_deref() != Some(&device_code) {
+                return Ok(PuppyRouterLoginPollResult::Invalid {
+                    message: String::new(),
+                });
+            }
             clear_setting(state.inner(), LEGACY_ACCOUNT_PENDING_SESSION_SETTING)?;
+            set_setting_json(state.inner(), ACCOUNT_SESSION_SETTING, &session)?;
+            active.reset();
             Ok(PuppyRouterLoginPollResult::Approved {
                 account: account_status_from_session(Some(session)),
             })
@@ -1137,7 +1209,9 @@ pub async fn poll_puppyrouter_account_login(
 
 #[tauri::command]
 pub fn logout_puppyrouter_account(state: State<'_, AppState>) -> Result<bool, String> {
-    clear_account_auth_state(state.inner())?;
+    let mut active = ACTIVE_LOGIN.lock_recover();
+    active.reset();
+    clear_account_auth_state(state.inner(), None)?;
     Ok(true)
 }
 
@@ -1415,6 +1489,79 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_or_replaced_login_cannot_overwrite_a_newer_grant() {
+        let mut active = LoginAttempt::default();
+        let old = active.reset();
+        let latest = active.reset();
+        active.set_grant(latest, "current").unwrap();
+        assert!(active.set_grant(old, "stale").is_err());
+        active.cancel("stale");
+        assert_eq!(active.device_code.as_deref(), Some("current"));
+        active.cancel("current");
+        assert!(active.device_code.is_none());
+        assert!(active.set_grant(latest, "current").is_err());
+    }
+
+    #[test]
+    fn only_an_issued_session_cookie_completes_desktop_login() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.append(SET_COOKIE, "other=fixture; Path=/".parse().unwrap());
+        assert!(desktop_session_cookie(&headers).is_empty());
+        headers.append(SET_COOKIE, "session=fixture==; HttpOnly".parse().unwrap());
+        assert_eq!(desktop_session_cookie(&headers), "session=fixture==");
+        headers.append(SET_COOKIE, "session=; Max-Age=0".parse().unwrap());
+        assert!(desktop_session_cookie(&headers).is_empty());
+    }
+
+    #[test]
+    fn browser_approval_link_contains_only_the_displayed_code_on_the_official_origin() {
+        let start = login_start(
+            serde_json::from_value(json!({
+                "device_code": "local-test-device",
+                "user_code": "ABCD EFGH",
+                "authorize_url": "https://example.invalid/",
+                "expires_at": 120,
+                "interval": 2
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            start.authorize_url,
+            "https://puppyrouter.com/desktop-auth?code=ABCD+EFGH"
+        );
+    }
+
+    #[test]
+    fn delayed_unauthorized_response_preserves_the_new_login_and_selection() {
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        let old: StoredAccountSession = serde_json::from_value(json!({
+            "user": {"id": 1, "username": "fixture"}, "loggedInAt": 1, "cookieHeader": "session=first-fixture"
+        })).unwrap();
+        let new = StoredAccountSession {
+            cookie_header: "session=second-fixture".into(),
+            ..old.clone()
+        };
+        set_setting_json(&state, ACCOUNT_SESSION_SETTING, &new).unwrap();
+        state
+            .db
+            .set_setting(SELECTED_TOKEN_BY_APP_SETTING, "fixture selection")
+            .unwrap();
+        assert!(!clear_account_auth_state(&state, Some(&old)).unwrap());
+        assert!(read_session(&state).unwrap().is_some());
+        assert_eq!(
+            state
+                .db
+                .get_setting(SELECTED_TOKEN_BY_APP_SETTING)
+                .unwrap()
+                .as_deref(),
+            Some("fixture selection")
+        );
+        assert!(clear_account_auth_state(&state, Some(&new)).unwrap());
+        assert!(read_session(&state).unwrap().is_none());
+    }
+
+    #[test]
     fn clearing_expired_session_preserves_unrelated_local_configuration() {
         let state = AppState::new(Arc::new(Database::memory().expect("create database")));
         for key in [
@@ -1433,7 +1580,7 @@ mod tests {
             .set_setting("unrelated_local_provider_config", "keep-me")
             .expect("seed unrelated local configuration");
 
-        clear_account_auth_state(&state).expect("clear expired account session");
+        clear_account_auth_state(&state, None).expect("clear expired account session");
 
         for key in [
             ACCOUNT_SESSION_SETTING,

@@ -64,9 +64,11 @@ export function getLockedProviderRank(
   return null;
 }
 
-/** Running sessions of these four applications need a restart after switching a built-in card in direct mode. */
+/** Built-in direct switches with client-specific activation guidance. */
 export function restartNoticeProvider(app: AppId, id: string): string | null {
-  if (!["claude", "claude-desktop", "codex", "grokbuild"].includes(app))
+  if (
+    !["claude", "claude-desktop", "codex", "gemini", "grokbuild"].includes(app)
+  )
     return null;
   if (PUPPYROUTER_PROVIDER_IDS[app] === id) return "PuppyRouter";
   return OFFICIAL_PROVIDER_IDS[app] === id ? "Official" : null;

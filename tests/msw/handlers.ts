@@ -56,6 +56,9 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/read_puppyrouter_native_provider`, () =>
     success(null),
   ),
+  http.post(`${TAURI_ENDPOINT}/cancel_puppyrouter_account_login`, () =>
+    success(null),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_puppyrouter_account_status`, () =>
     HttpResponse.json({ loggedIn: false, sessionState: "signed_out" }),
   ),
