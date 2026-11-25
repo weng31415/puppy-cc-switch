@@ -1,8 +1,9 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/shell/Sidebar";
+import type { View } from "@/lib/navigation";
 import type { Settings, VisibleApps } from "@/types";
 import { createTestQueryClient } from "../../utils/testQueryClient";
 
@@ -25,6 +26,10 @@ vi.mock("@/contexts/UpdateContext", () => ({
   useUpdate: () => ({ hasUpdate: false, updateInfo: null }),
 }));
 
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: async () => "8.12.3",
+}));
+
 vi.mock("@/hooks/useSidebarStatus", () => ({
   useSidebarStatus: () => ({
     appStatus: () => ({ mode: "direct", alert: false }),
@@ -36,7 +41,7 @@ vi.mock("@/hooks/useSidebarStatus", () => ({
   }),
 }));
 
-const renderSidebar = (settings: Partial<Settings>) => {
+const renderSidebar = (settings: Partial<Settings>, view: View = "usage") => {
   const client = createTestQueryClient();
   // 不让设置查询回头去 mock 后端重取，盖掉这里给的值
   client.setQueryDefaults(["settings"], { staleTime: Infinity });
@@ -45,7 +50,7 @@ const renderSidebar = (settings: Partial<Settings>) => {
     <QueryClientProvider client={client}>
       <Sidebar
         activeApp="claude"
-        view="usage"
+        view={view}
         visibleApps={{} as VisibleApps}
         settingsSection="general"
         onSelectApp={vi.fn()}
@@ -56,6 +61,37 @@ const renderSidebar = (settings: Partial<Settings>) => {
     </QueryClientProvider>,
   );
 };
+
+describe("sidebar branding", () => {
+  afterEach(() => localStorage.removeItem("cc-switch-sidebar-collapsed"));
+
+  it.each(["usage", "settings"] as const)(
+    "shows the brand and actual app version on separate lines in %s",
+    async (view) => {
+      renderSidebar({}, view);
+      const nav = within(screen.getByRole("navigation"));
+      const name = nav.getByText("puppyrouter tool", { exact: true });
+      const version = await nav.findByText("v8.12.3", { exact: true });
+      expect(name.nextElementSibling).toBe(version);
+      expect(nav.queryByText(/puppyrouter app/)).toBeNull();
+      expect(screen.getByRole("navigation")).toHaveStyle({ width: "224px" });
+    },
+  );
+
+  it("restores the brand and version after expanding the icon rail", async () => {
+    const user = userEvent.setup();
+    renderSidebar({});
+    await screen.findByText("v8.12.3");
+    await user.click(
+      screen.getByRole("button", { name: "nav.collapseSidebar" }),
+    );
+    expect(screen.queryByText("puppyrouter tool")).toBeNull();
+    expect(screen.queryByText("v8.12.3")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "nav.expandSidebar" }));
+    expect(screen.getByText("puppyrouter tool")).toBeVisible();
+    expect(screen.getByText("v8.12.3")).toBeVisible();
+  });
+});
 
 describe("sidebar Today label", () => {
   it.each([

@@ -13,7 +13,7 @@ export const SIDEBAR_AUTO_COLLAPSE_WIDTH = 960;
 
 const STORAGE_KEY = "cc-switch-sidebar-collapsed";
 
-export const SIDEBAR_EXPANDED_WIDTH = 200;
+export const SIDEBAR_EXPANDED_WIDTH = 224;
 /** 收起时的图标轨宽度：macOS 的红绿灯（新版更大）要约 74px，Mac 上放宽到 84 */
 export const sidebarRailWidth = () => (isMac() ? 84 : 72);
 

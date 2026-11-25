@@ -45,7 +45,7 @@ import { useSidebarStatus, type AppNavStatus } from "@/hooks/useSidebarStatus";
 import { HoverTip } from "@/components/ui/hover-tip";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE, isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import ccswitchLogo from "@/assets/icons/app-icon.png";
+import puppyrouterLogo from "@/assets/icons/app-icon.png";
 import { APP_DISPLAY_NAME, AppGlyph } from "./AppGlyph";
 
 const NO_DRAG = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
@@ -68,9 +68,9 @@ interface SidebarProps {
 type DirectoryProps = SidebarProps & { collapsed: boolean };
 
 /**
- * 主导航（v7）：顶条 44 → 应用列表（唯一滚动的区域）→ 全局 6 项（贴底）→ 底栏「应用 · 设置」。
- * 进入设置后整条侧栏换成设置目录。收起时是 72px 的图标轨；
- * 展开 / 收起时宽度一步到位，边缘的滑动由盖板的 transform 动画画出（见 useSidebarCollapsed），文字不换行、被裁掉而不是挤成两行。
+ * 主导航：品牌区 → 应用列表（唯一滚动的区域）→ 全局导航 → 底栏「应用 · 设置」。
+ * 进入设置后，品牌区下面换成设置目录。展开 / 收起时宽度一步到位，
+ * 边缘的滑动由盖板的 transform 动画画出（见 useSidebarCollapsed）。
  * 收起时各行只剩图标，名字由 HoverTip 从右侧报；展开时文字可见，不再挂提示。
  */
 export function Sidebar(props: SidebarProps) {
@@ -113,6 +113,30 @@ function SidebarTopBar({
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
+  const { data: version } = useQuery({
+    queryKey: ["app-version"],
+    queryFn: () => getVersion(),
+    staleTime: Infinity,
+    enabled: !collapsed,
+  });
+  const brand = !collapsed && (
+    <div className="pointer-events-none flex min-w-0 flex-1 items-center gap-2">
+      <img
+        src={puppyrouterLogo}
+        alt=""
+        draggable={false}
+        className="h-5 w-5 shrink-0"
+      />
+      <div className="min-w-0 whitespace-normal">
+        <div className="text-strong font-semibold leading-tight text-fg-1">
+          puppyrouter tool
+        </div>
+        {version && (
+          <div className="text-caption tabular-nums text-fg-3">v{version}</div>
+        )}
+      </div>
+    </div>
+  );
   const tipSide = collapsed ? "right" : "left";
   const label = collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar");
   const Icon = collapsed ? ChevronsRight : ChevronsLeft;
@@ -123,7 +147,7 @@ function SidebarTopBar({
         onClick={onToggle}
         aria-label={label}
         style={NO_DRAG}
-        className="flex h-7 w-7 items-center justify-center rounded-control text-fg-2 transition-[background-color,color,scale] hover:bg-subtle hover:text-fg-1 active:scale-[0.96]"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-fg-2 transition-[background-color,color,scale] hover:bg-subtle hover:text-fg-1 active:scale-[0.96]"
       >
         <Icon className="h-4 w-4" strokeWidth={1.5} />
       </button>
@@ -141,19 +165,11 @@ function SidebarTopBar({
         />
         {/* 品牌区与导航之间不画分隔线：靠侧栏底色和留白分开，免得和右侧页头下边框近似平行却差 11px */}
         <div
-          className="-mt-[18px] mb-2 flex h-9 shrink-0 items-center gap-2 pe-2 ps-4"
+          className="-mt-[18px] mb-2 flex min-h-10 shrink-0 items-center gap-2 py-1 pe-2 ps-4"
           {...DRAG_REGION_ATTR}
           style={DRAG_REGION_STYLE as React.CSSProperties}
         >
-          <img
-            src={ccswitchLogo}
-            alt=""
-            draggable={false}
-            className="pointer-events-none h-5 w-5 shrink-0"
-          />
-          <span className="pointer-events-none me-auto min-w-0 truncate text-strong font-semibold text-fg-1">
-            puppyrouter app
-          </span>
+          {brand}
           {toggleButton}
         </div>
       </>
@@ -180,27 +196,13 @@ function SidebarTopBar({
   return (
     <div
       className={cn(
-        "flex h-11 shrink-0 items-center gap-0.5 px-2",
-        collapsed ? "justify-center" : "justify-end",
+        "flex min-h-11 shrink-0 items-center gap-2 py-1 pe-2",
+        collapsed ? "justify-center ps-2" : "ps-3.5",
       )}
       {...DRAG_REGION_ATTR}
       style={DRAG_REGION_STYLE as React.CSSProperties}
     >
-      {!collapsed && !isMac() && (
-        // 左上角品牌（Windows / Linux）：图标 + 名字。macOS 左上角留给红绿灯，不放。
-        // 图片不接收指针事件，拖它也是在拖窗口
-        <span className="pointer-events-none me-auto flex min-w-0 items-center gap-2 ps-1.5">
-          <img
-            src={ccswitchLogo}
-            alt=""
-            draggable={false}
-            className="h-[22px] w-[22px] shrink-0"
-          />
-          <span className="truncate text-strong font-semibold text-fg-1">
-            puppyrouter app
-          </span>
-        </span>
-      )}
+      {brand}
       {toggleButton}
     </div>
   );
@@ -484,7 +486,7 @@ function AppNavItem({
       onClick={onSelect}
       aria-current={selected ? "page" : undefined}
       className={cn(
-        "mx-2 flex h-nav-row w-[184px] shrink-0 items-center gap-2 rounded-control px-2 text-start transition-colors hover:bg-subtle",
+        "mx-2 flex h-nav-row shrink-0 items-center gap-2 rounded-control px-2 text-start transition-colors hover:bg-subtle",
         selected && "bg-selected font-medium hover:bg-selected",
       )}
     >
@@ -647,7 +649,7 @@ function NavItem({
         className={cn(
           "flex h-nav-row shrink-0 items-center gap-2 rounded-control px-2 text-start transition-colors hover:bg-subtle",
           // 底栏两项按各自文字分宽度：「Apps」这类短词不必占满一半，长词（Optionen、Настройки）才放得下
-          compact ? "min-w-0 flex-auto shrink" : "mx-2 w-[184px]",
+          compact ? "min-w-0 flex-auto shrink" : "mx-2",
           selected && "bg-selected font-medium hover:bg-selected",
         )}
       >
@@ -713,11 +715,6 @@ function SettingsDirectory({
 }: DirectoryProps) {
   const { t } = useTranslation();
   const { hasUpdate } = useUpdate();
-  const { data: version } = useQuery({
-    queryKey: ["app-version"],
-    queryFn: () => getVersion(),
-    staleTime: Infinity,
-  });
 
   return (
     <>
@@ -733,7 +730,7 @@ function SettingsDirectory({
         <button
           type="button"
           onClick={onExitSettings}
-          className="mx-2 flex h-nav-row w-[184px] shrink-0 items-center gap-2 rounded-control px-2 text-start text-fg-2 transition-colors hover:bg-subtle hover:text-fg-1"
+          className="mx-2 flex h-nav-row shrink-0 items-center gap-2 rounded-control px-2 text-start text-fg-2 transition-colors hover:bg-subtle hover:text-fg-1"
         >
           <ArrowLeft className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
           {t("nav.back")}
@@ -768,11 +765,6 @@ function SettingsDirectory({
           />
         ))}
       </div>
-      {!collapsed && version && (
-        <div className="shrink-0 px-4 pb-4 text-caption text-fg-3">
-          puppyrouter app v{version}
-        </div>
-      )}
     </>
   );
 }
